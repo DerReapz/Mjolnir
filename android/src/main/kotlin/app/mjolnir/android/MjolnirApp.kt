@@ -7,6 +7,8 @@ import android.os.Build
 import app.mjolnir.BuildConfig
 import app.mjolnir.android.data.PhoneConfig
 import app.mjolnir.android.data.TrayItem
+import app.mjolnir.android.session.PhoneSession
+import app.mjolnir.android.session.SwitchingRelayApi
 import app.mjolnir.client.FileSeenDeliveries
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.LocalUpload
@@ -17,9 +19,6 @@ import app.mjolnir.client.RelayClient
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
-import java.lang.reflect.InvocationHandler
-import java.lang.reflect.InvocationTargetException
-import java.lang.reflect.Proxy
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.serializer
 
@@ -41,7 +40,13 @@ class AppContainer(context: Context) {
     // `caught` (received-items history) is added by the receive task.
 
     /** Talks to the relay at the current `relayUrl`; the client is rebuilt when the URL changes and reads the token live. */
-    val api: RelayApi = switchingApi()
+    val api: RelayApi = SwitchingRelayApi(::currentClient)
+
+    /** The one registration guard for the whole app. */
+    val session = PhoneSession(api, config)
+
+    /** Call after the relay URL was written to [config]; the next call builds a client for the new address. */
+    fun invalidateRelayClient() = synchronized(clientLock) { cachedUrl = null }
 
     val outbox = Outbox(
         store = JsonFileStore(File(filesDir, "outbox.json"), ListSerializer(serializer<OutgoingFiles>())) { emptyList() },
@@ -88,26 +93,16 @@ class AppContainer(context: Context) {
         if (parent != null && (parent == dir || parent.path.startsWith(dir.path + File.separator))) file.delete()
     }
 
-    private fun switchingApi(): RelayApi {
-        val lock = Any()
-        var url: String? = null
-        var client: RelayClient? = null
-        fun current(): RelayClient = synchronized(lock) {
-            val wanted = config.read().relayUrl
-            if (client == null || url != wanted) {
-                client?.close()
-                client = RelayClient.create(wanted) { config.read().token }
-                url = wanted
-            }
-            client!!
-        }
-        val handler = InvocationHandler { _, method, args ->
-            try {
-                method.invoke(current(), *(args ?: emptyArray()))
-            } catch (e: InvocationTargetException) {
-                throw e.targetException
-            }
-        }
-        return Proxy.newProxyInstance(RelayApi::class.java.classLoader, arrayOf(RelayApi::class.java), handler) as RelayApi
+    private val clientLock = Any()
+    private var cachedUrl: String? = null
+    private var client: RelayClient? = null
+
+    /** Cached so calls never read config.json; rebuilt (old client closed) after [invalidateRelayClient]. */
+    private fun currentClient(): RelayApi = synchronized(clientLock) {
+        val existing = client
+        if (existing != null && cachedUrl != null) return existing
+        val url = config.read().relayUrl
+        existing?.close()
+        RelayClient.create(url) { config.read().token }.also { client = it; cachedUrl = url }
     }
 }

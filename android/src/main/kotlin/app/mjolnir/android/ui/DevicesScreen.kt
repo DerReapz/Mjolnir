@@ -44,14 +44,14 @@ class DevicesViewModel(private val api: RelayApi, private val session: PhoneSess
     private val _state = MutableStateFlow(DevicesUi())
     val state: StateFlow<DevicesUi> = _state.asStateFlow()
 
-    fun refresh() = run { _state.value = _state.value.copy(peers = api.peers(), notice = null) }
+    fun refresh() = run("Couldn't load devices") { _state.value = _state.value.copy(peers = api.peers(), notice = null) }
 
-    fun unpair(deviceId: String) = run {
+    fun unpair(deviceId: String) = run("Couldn't unpair") {
         api.unpair(deviceId)
         _state.value = _state.value.copy(peers = api.peers(), notice = null)
     }
 
-    private fun run(block: suspend () -> Unit) {
+    private fun run(failure: String, block: suspend () -> Unit) {
         viewModelScope.launch {
             try {
                 block()
@@ -60,7 +60,7 @@ class DevicesViewModel(private val api: RelayApi, private val session: PhoneSess
                     try { session.reset() } catch (_: RelayException) { }
                     _state.value = DevicesUi(notice = Messages.RESET)
                 } else {
-                    _state.value = _state.value.copy(notice = Messages.failureReason(e.kind, "your PC"))
+                    _state.value = _state.value.copy(notice = "$failure: ${Messages.failureReason(e.kind, "your PC")}.")
                 }
             }
         }

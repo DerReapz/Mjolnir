@@ -35,23 +35,45 @@ import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.RelayUrls
+import java.io.IOException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-data class SettingsUi(val config: PhoneConfig, val notice: String? = null)
+data class SettingsUi(val config: PhoneConfig? = null, val notice: String? = null)
 
 class SettingsViewModel(
     private val api: RelayApi,
     private val config: JsonFileStore<PhoneConfig>,
     private val session: PhoneSession,
+    /** Called after the relay URL was written to [config], so cached clients are rebuilt. */
+    private val onRelayUrlChanged: () -> Unit = {},
+    private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
-    private val _state = MutableStateFlow(SettingsUi(config.read()))
+    private val _state = MutableStateFlow(SettingsUi())
     val state: StateFlow<SettingsUi> = _state.asStateFlow()
 
+    init {
+        viewModelScope.launch {
+            val stored = try { withContext(io) { config.read() } } catch (e: IOException) { return@launch }
+            _state.update { it.copy(config = stored) }
+        }
+    }
+
     private fun set(transform: (PhoneConfig) -> PhoneConfig) {
-        _state.value = SettingsUi(config.update(transform), _state.value.notice)
+        viewModelScope.launch {
+            try {
+                val updated = withContext(io) { config.update(transform) }
+                _state.update { it.copy(config = updated) }
+            } catch (e: IOException) {
+                _state.update { it.copy(notice = "Couldn't save the setting.") }
+            }
+        }
     }
 
     fun setSensitivity(value: Sensitivity) = set { it.copy(sensitivity = value) }
@@ -61,31 +83,47 @@ class SettingsViewModel(
     /** Ignores an invalid address; a changed address resets the registration. */
     fun changeRelayUrl(input: String) {
         val url = RelayUrls.normalize(input) ?: return
-        if (url == config.read().relayUrl) return
-        config.update { it.copy(relayUrl = url) }
-        guarded { session.reset() }
+        viewModelScope.launch {
+            try {
+                val updated = withContext(io) {
+                    if (config.read().relayUrl == url) null else config.update { it.copy(relayUrl = url) }
+                } ?: return@launch
+                onRelayUrlChanged()
+                _state.update { it.copy(config = updated) }
+            } catch (e: IOException) {
+                _state.update { it.copy(notice = "Couldn't save the setting.") }
+                return@launch
+            }
+            guarded("Couldn't register with the new relay") { session.reset() }
+        }
     }
 
+    /** The name is stored only once the relay accepted it. */
     fun rename(input: String) {
         val name = input.trim()
         if (name.length !in 1..64) return
-        set { it.copy(deviceName = name) }
-        guarded { api.rename(name) }
+        viewModelScope.launch {
+            guarded("Couldn't rename") {
+                api.rename(name)
+                val updated = withContext(io) { config.update { it.copy(deviceName = name) } }
+                _state.update { it.copy(config = updated) }
+            }
+        }
     }
 
-    private fun guarded(block: suspend () -> Unit) {
-        viewModelScope.launch {
-            try {
-                block()
-                _state.value = SettingsUi(config.read(), null)
-            } catch (e: RelayException) {
-                if (e.kind == RelayErrorKind.UNAUTHORIZED) {
-                    try { session.reset() } catch (_: RelayException) { }
-                    _state.value = SettingsUi(config.read(), Messages.RESET)
-                } else {
-                    _state.value = SettingsUi(config.read(), Messages.failureReason(e.kind, "the relay"))
-                }
+    private suspend fun guarded(failure: String, block: suspend () -> Unit) {
+        try {
+            block()
+            _state.update { it.copy(notice = null) }
+        } catch (e: RelayException) {
+            if (e.kind == RelayErrorKind.UNAUTHORIZED) {
+                try { session.reset() } catch (_: RelayException) { }
+                _state.update { it.copy(notice = Messages.RESET) }
+            } else {
+                _state.update { it.copy(notice = "$failure: ${Messages.failureReason(e.kind, "the relay")}.") }
             }
+        } catch (e: IOException) {
+            _state.update { it.copy(notice = "$failure.") }
         }
     }
 }
@@ -95,7 +133,7 @@ private val THRESHOLDS = listOf(10, 25, 50, 100)
 @Composable
 fun SettingsScreen(vm: SettingsViewModel, modifier: Modifier = Modifier) {
     val state by vm.state.collectAsState()
-    val config = state.config
+    val config = state.config ?: return
     var url by remember { mutableStateOf(config.relayUrl) }
     var name by remember { mutableStateOf(config.deviceName) }
     val normalized = RelayUrls.normalize(url)

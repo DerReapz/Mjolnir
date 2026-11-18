@@ -33,12 +33,14 @@ class PairingViewModelTest {
     private val pc = Peer("pc1", "DESKTOP-4F2K", DeviceKind.PC)
     private lateinit var config: JsonFileStore<PhoneConfig>
     private lateinit var vm: PairingViewModel
+    private var onUnauthorizedCalls = 0
+    private var unauthorizedFailure: RelayException? = null
 
     @Before fun setUp() {
         config = JsonFileStore(File(tmp.root, "config.json"), serializer<PhoneConfig>()) {
             PhoneConfig("https://relay.example", "d", "t", "Pixel 8")
         }
-        vm = PairingViewModel(api, config)
+        vm = PairingViewModel(api, config, onUnauthorized = { onUnauthorizedCalls++; unauthorizedFailure?.let { throw it } }, io = main.dispatcher)
         api.onClaim = { ClaimResponse("p1", pc) }
     }
 
@@ -115,5 +117,38 @@ class PairingViewModelTest {
         vm.submit("k7m-2qx"); runCurrent()
         vm.restart(); runCurrent()
         assertEquals(PairingUi.Entering(), vm.state.value)
+    }
+
+    @Test fun unauthorizedClaimShowsResetEvenIfResetFails() = runTest {
+        unauthorizedFailure = RelayException(RelayErrorKind.NETWORK, "down")
+        api.onClaim = { throw RelayException(RelayErrorKind.UNAUTHORIZED, "x") }
+        vm.submit("k7m-2qx"); runCurrent()
+        assertEquals(1, onUnauthorizedCalls)
+        assertEquals(PairingUi.Entering(app.mjolnir.client.Messages.RESET), vm.state.value)
+    }
+
+    @Test fun unauthorizedWhilePollingShowsResetEvenIfResetFails() = runTest {
+        unauthorizedFailure = RelayException(RelayErrorKind.RATE_LIMITED, "slow")
+        vm.submit("k7m-2qx"); runCurrent()
+        api.failAllWith = RelayException(RelayErrorKind.UNAUTHORIZED, "x")
+        advanceTimeBy(2_001)
+        assertEquals(1, onUnauthorizedCalls)
+        assertEquals(PairingUi.Failed(app.mjolnir.client.Messages.RESET), vm.state.value)
+    }
+
+    @Test fun slowNetworkCallsCountTowardFiveMinuteCap() = runTest {
+        api.onClaim = { ClaimResponse("p1", pc) }
+        vm.submit("k7m-2qx"); runCurrent()
+        api.failAllWith = null
+        // each poll takes 60s of virtual time to fail
+        val slow = object : app.mjolnir.client.RelayApi by api {
+            override suspend fun pairingStatus(pairingId: String): PairingStatus {
+                kotlinx.coroutines.delay(60_000); throw RelayException(RelayErrorKind.NETWORK, "timeout")
+            }
+        }
+        val vm2 = PairingViewModel(slow, config, io = main.dispatcher)
+        vm2.submit("k7m-2qx"); runCurrent()
+        advanceTimeBy(300_001)
+        assertEquals(PairingUi.Failed("The code expired. Get a new code on the PC."), vm2.state.value)
     }
 }
