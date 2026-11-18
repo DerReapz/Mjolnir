@@ -7,7 +7,7 @@ import app.mjolnir.client.uniqueTarget
 import app.mjolnir.protocol.Delivery
 import java.io.File
 import java.nio.file.Files
-import java.nio.file.StandardCopyOption
+import kotlinx.coroutines.CancellationException
 
 class DesktopCatcher(
     private val api: RelayApi,
@@ -16,7 +16,7 @@ class DesktopCatcher(
     private val notify: (String) -> Unit,
     private val markDownloaded: (File) -> Unit = ::markOfTheWeb,
 ) {
-    /** Saves every file (all-or-nothing), then opens the tabs, then notifies. A failure propagates. */
+    /** Saves every file (all-or-nothing), then opens the tabs, then notifies. A save failure propagates; a notify failure does not. */
     suspend fun handle(d: Delivery) {
         val root = saveDir()
         val saved = receiveFiles(
@@ -26,11 +26,21 @@ class DesktopCatcher(
         ) { part, target, _ ->
             val dir = File(root, target.folder ?: "").apply { mkdirs() }
             val dest = uniqueTarget(dir, target.fileName)
-            Files.move(part.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            // uniqueTarget chose a free name; if one appeared meanwhile, failing beats overwriting it
+            Files.move(part.toPath(), dest.toPath())
             markDownloaded(dest)
             dest
         }
         val tabsOpened = opener.open(d.tabs)
-        if (tabsOpened > 0 || saved.isNotEmpty()) notify(Messages.caught(tabsOpened, saved.size, d.from.name))
+        if (tabsOpened > 0 || saved.isNotEmpty()) {
+            // A failed notification must not fail the delivery: a redelivery would save the files again.
+            try {
+                notify(Messages.caught(tabsOpened, saved.size, d.from.name))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // ignored
+            }
+        }
     }
 }

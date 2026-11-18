@@ -66,4 +66,10 @@ class DesktopCatcherTest {
         assertTrue(files.single().canonicalPath.startsWith(dir.canonicalPath + File.separator))
         assertEquals("evil.bat", files.single().name)
     }
+    // R15: a failing notification does not fail the delivery (which would save it again on redelivery)
+    @Test fun notifyFailureDoesNotFailHandle(@TempDir dir: File) = runTest {
+        val api = FakeRelayApi(); val ref = api.putBlob("f1", "a.txt", "x".toByteArray())
+        DesktopCatcher(api, opener, { dir }, { error("tray gone") }, {}).handle(d(emptyList(), listOf(ref)))
+        assertEquals("x", File(dir, "a.txt").readText())
+    }
 }

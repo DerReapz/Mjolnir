@@ -1,3 +1,5 @@
+import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.compose)
@@ -25,3 +27,26 @@ tasks.processResources {
 }
 
 tasks.test { useJUnitPlatform() }
+
+compose.desktop {
+    application {
+        mainClass = "app.mjolnir.desktop.MainKt"
+        nativeDistributions {
+            targetFormats(TargetFormat.Msi)
+            packageName = "Mjolnir"
+            packageVersion = "1.0.0"
+            description = "Send tabs and files between your phone and this PC"
+            vendor = "Mjolnir"
+            // From suggestRuntimeModules, plus jdk.crypto.ec, which TLS (ECDHE) needs on JDK 21 but jdeps cannot see.
+            modules("java.instrument", "java.management", "jdk.unsupported", "jdk.crypto.ec")
+            windows {
+                menuGroup = "Mjolnir"
+                perUserInstall = true
+                shortcut = true
+                iconFile.set(project.file("src/main/resources/mjolnir.ico"))
+                // Generated once; never change it, or upgrades install side by side.
+                upgradeUuid = "4d1b4e02-79e1-44b8-9b45-0a822cce7a31"
+            }
+        }
+    }
+}

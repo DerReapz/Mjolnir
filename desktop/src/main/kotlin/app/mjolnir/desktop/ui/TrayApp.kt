@@ -1,0 +1,115 @@
+package app.mjolnir.desktop.ui
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.ApplicationScope
+import androidx.compose.ui.window.DialogWindow
+import androidx.compose.ui.window.Notification
+import androidx.compose.ui.window.Tray
+import androidx.compose.ui.window.rememberDialogState
+import androidx.compose.ui.window.rememberTrayState
+import app.mjolnir.desktop.AppController
+import app.mjolnir.protocol.RelayEvent
+import javax.imageio.ImageIO
+import kotlinx.coroutines.launch
+
+fun loadIcon(): Painter {
+    val image = AppController::class.java.getResourceAsStream("/tray.png")!!.use { ImageIO.read(it) }
+    return BitmapPainter(image.toComposeImageBitmap())
+}
+
+@Composable
+fun ApplicationScope.TrayApp(c: AppController, onQuit: () -> Unit) {
+    val trayState = rememberTrayState()
+    val config by c.config.collectAsState()
+    val peers by c.peers.collectAsState()
+    val tooltip by c.tooltip.collectAsState()
+    val pairRequest by c.pairRequest.collectAsState()
+    val icon = remember { loadIcon() }
+
+    var showSend by remember { mutableStateOf(false) }
+    var showPair by remember { mutableStateOf(false) }
+    var showDevices by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(config.relayUrl.isBlank()) }
+
+    LaunchedEffect(Unit) {
+        c.notifications.collect { trayState.sendNotification(Notification("Mjolnir", it)) }
+    }
+
+    Tray(icon = icon, state = trayState, tooltip = tooltip, onAction = { showSend = true }, menu = {
+        Item("Send to phone…", onClick = { showSend = true })
+        val lastPhoneId = config.lastPhoneId
+        if (lastPhoneId != null) {
+            val name = peers.find { it.deviceId == lastPhoneId }?.name ?: "phone"
+            Item("Send clipboard to $name", onClick = { c.sendClipboard() })
+        }
+        Item("Open received files", onClick = { c.openReceivedFiles() })
+        Separator()
+        Item("Pair a phone…", onClick = { showPair = true })
+        Item("Paired devices…", onClick = { showDevices = true })
+        Item("Settings…", onClick = { showSettings = true })
+        Separator()
+        Item("Quit Mjolnir", onClick = onQuit)
+    })
+
+    if (showSend) SendWindow(c, icon, onPair = { showPair = true }, onClose = { showSend = false })
+    if (showPair) PairWindow(c, icon, onClose = { showPair = false })
+    if (showDevices) DevicesWindow(c, icon, onPair = { showPair = true }, onClose = { showDevices = false })
+    if (showSettings) SettingsWindow(c, icon, onClose = { showSettings = false })
+    pairRequest?.let { PairRequestDialog(c, it, icon) }
+}
+
+/** `Pair with {name}?` — closing the dialog counts as Reject. */
+@Composable
+private fun PairRequestDialog(c: AppController, request: RelayEvent.PairRequested, icon: Painter) {
+    val scope = rememberCoroutineScope()
+    DialogWindow(
+        onCloseRequest = { scope.launch { c.reject(request) } },
+        state = rememberDialogState(size = DpSize(360.dp, 170.dp)),
+        title = "Mjolnir",
+        icon = icon,
+        alwaysOnTop = true,
+    ) {
+        MjolnirTheme {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                Text("Pair with ${request.from.name}?", style = MaterialTheme.typography.titleMedium)
+                Row {
+                    Spacer(Modifier.weight(1f))
+                    OutlinedButton(onClick = { scope.launch { c.reject(request) } }) { Text("Reject") }
+                    Spacer(Modifier.width(12.dp))
+                    Button(onClick = { scope.launch { c.accept(request) } }) { Text("Accept") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MjolnirTheme(content: @Composable () -> Unit) {
+    MaterialTheme {
+        Surface(color = MaterialTheme.colorScheme.background) { content() }
+    }
+}

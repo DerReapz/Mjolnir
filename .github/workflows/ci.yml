@@ -13,3 +13,17 @@ jobs:
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew check
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew :desktop:packageMsi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mjolnir-msi
+          path: desktop/build/compose/binaries/main/msi/*.msi

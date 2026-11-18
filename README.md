@@ -52,3 +52,28 @@ Without this the relay still works; the phone simply is not woken immediately.
 2. Download `google-services.json` and place it in `android/` (it is git-ignored; do not commit it).
 3. In Project settings, Service accounts, generate a new private key. This is the service-account JSON the relay uses (see the Fly.io step above, or set `GOOGLE_APPLICATION_CREDENTIALS` when running locally).
 4. Restart the relay. The log should say `FCM enabled`. The phone registers its token with `PUT /v1/devices/me/push-token`, and each send then rings it with a data message `{"type":"inbox"}`.
+
+## Install the Windows app
+
+The PC app is a tray app for Windows 10/11 (x64), packaged as an MSI.
+
+1. Get the MSI: download the `mjolnir-msi` artifact from the latest `windows` CI run, or build it on Windows with `./gradlew :desktop:packageMsi` (output in `desktop/build/compose/binaries/main/msi/`). To bake a default relay URL into the build, add `-Pmjolnir.relayUrl=https://<app>.fly.dev`.
+2. Run the MSI. It installs for the current user only (no admin rights needed) and adds Mjolnir to the Start menu.
+3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray; click it to open *Send to phone…*. The tray menu also has *Pair a phone…*, *Paired devices…*, *Open received files* and *Settings…*.
+4. Received files are saved to `Downloads\Mjolnir` (changeable in Settings). Tick *Start Mjolnir when I sign in to Windows* in Settings to start it automatically.
+
+Settings and state live in `%APPDATA%\Mjolnir` (`config.json`, `seen.json`, `outbox.json`). Delete that folder to start over.
+
+### Test without a phone
+
+`scripts/fake-phone.ps1` acts as a phone against your relay (state in `fake-phone.json`, downloads in `.\inbox\`):
+
+```
+.\scripts\fake-phone.ps1 -Relay https://<app>.fly.dev -Pair K7M-2QX   # use the code from "Pair a phone…"
+.\scripts\fake-phone.ps1 -Send https://example.com,https://example.org
+.\scripts\fake-phone.ps1 -SendFile .\report.pdf
+.\scripts\fake-phone.ps1 -SendFolder .\Photos
+.\scripts\fake-phone.ps1 -Inbox
+```
+
+The tray icon is the Material Symbols "hardware" glyph (Apache License 2.0).

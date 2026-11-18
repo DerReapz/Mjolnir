@@ -16,9 +16,11 @@ data class DesktopConfig(
 )
 
 /** The save folder: the configured one, else `%USERPROFILE%\Downloads\Mjolnir`; created on demand. */
-fun DesktopConfig.saveDirFile(): File {
-    val dir = saveDir?.let(::File)
-        ?: File(File(System.getenv("USERPROFILE") ?: System.getProperty("user.home"), "Downloads"), "Mjolnir")
+fun DesktopConfig.saveDirFile(): File = saveDirFile(System.getenv("USERPROFILE") ?: System.getProperty("user.home"))
+
+/** As [saveDirFile], with an explicit home folder; a blank [DesktopConfig.saveDir] means the default. */
+internal fun DesktopConfig.saveDirFile(home: String): File {
+    val dir = saveDir?.takeIf { it.isNotBlank() }?.let(::File) ?: File(File(home, "Downloads"), "Mjolnir")
     dir.mkdirs()
     return dir
 }
