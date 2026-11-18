@@ -44,12 +44,22 @@ Run these from the `server/` directory after `./gradlew :server:buildFatJar` (th
 
 Use the `https://<app>.fly.dev` address as the relay URL in the PC and phone apps. Relay URLs must be `https://` (plain `http://` only for localhost).
 
+## Build the APK
+
+The phone app is built from the `:android` module, which needs an Android SDK (platform 36, build-tools 36.0.0). Point Gradle at it with `ANDROID_HOME`, or `sdk.dir=/path/to/sdk` in `local.properties` (git-ignored). Without an SDK every other module still builds.
+
+```
+./gradlew :android:assembleDebug     # android/build/outputs/apk/debug/android-debug.apk
+```
+
+CI builds the same APK and uploads it as the `mjolnir-apk` artifact. To bake a default relay URL into the build, add `-Pmjolnir.relayUrl=https://<app>.fly.dev`. Debug builds also allow plain `http://` to `10.0.2.2`, `localhost` and `127.0.0.1` (for the emulator). Install with `adb install -r android-debug.apk` or copy the file to the phone. The app needs Android 10 (API 29) or newer.
+
 ## Enable phone notifications (Firebase)
 
 Without this the relay still works; the phone simply is not woken immediately.
 
 1. Create a project in the [Firebase console](https://console.firebase.google.com) and add an Android app with package name `app.mjolnir`.
-2. Download `google-services.json` and place it in `android/` (it is git-ignored; do not commit it).
+2. Download `google-services.json` and place it in `android/` (it is git-ignored; do not commit it), then rebuild the APK. The Google services plugin is only applied when that file exists.
 3. In Project settings, Service accounts, generate a new private key. This is the service-account JSON the relay uses (see the Fly.io step above, or set `GOOGLE_APPLICATION_CREDENTIALS` when running locally).
 4. Restart the relay. The log should say `FCM enabled`. The phone registers its token with `PUT /v1/devices/me/push-token`, and each send then rings it with a data message `{"type":"inbox"}`.
 
