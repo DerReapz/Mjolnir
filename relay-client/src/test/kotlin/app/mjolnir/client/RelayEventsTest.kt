@@ -6,6 +6,10 @@ import app.mjolnir.protocol.Tab
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
@@ -42,6 +46,17 @@ class RelayEventsTest {
             listOf(RelayEvent.Connected, RelayEvent.Unpaired("x"), RelayEvent.Connected),
             withTimeout(10_000) { client.events().take(3).toList() },
         )
+    }
+
+    @Test fun heartbeatsKeepConnectionAliveAndAreNotEmitted() = heartbeatOnlyWsTest { client ->
+        val seen = mutableListOf<RelayEvent>()
+        coroutineScope {
+            val job = launch { client.events().collect { seen.add(it) } }
+            // Real time on purpose: the watchdog window is 200 ms, so a reconnect would show up as a 2nd Connected.
+            withContext(Dispatchers.Default) { delay(1_000) }
+            job.cancel()
+        }
+        assertEquals(listOf<RelayEvent>(RelayEvent.Connected), seen)
     }
 
     @Test fun unauthorizedStopsWithoutRetry() = clientTest {

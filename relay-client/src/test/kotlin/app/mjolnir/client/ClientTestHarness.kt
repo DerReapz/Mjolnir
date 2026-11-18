@@ -55,6 +55,19 @@ fun fakeWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
     RelayClient(http, "http://localhost", reconnectDelayMs = { 10L }) { "t" }.use { block(it) }
 }
 
+fun heartbeatOnlyWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
+    application {
+        install(WebSockets)
+        routing {
+            webSocket("/v1/ws") {
+                while (true) { send(Frame.Text("""{"type":"heartbeat"}""")); delay(50) }
+            }
+        }
+    }
+    val http = createClient { installMjolnirDefaults() }
+    RelayClient(http, "http://localhost", reconnectDelayMs = { 10L }, idleTimeoutMs = 200) { "t" }.use { block(it) }
+}
+
 fun silentWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
     application {
         install(WebSockets)

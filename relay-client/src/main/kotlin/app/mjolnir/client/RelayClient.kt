@@ -51,7 +51,11 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import kotlin.math.min
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 fun HttpClientConfig<*>.installMjolnirDefaults() {
     install(ContentNegotiation) { json(MjolnirJson) }
@@ -60,6 +64,12 @@ fun HttpClientConfig<*>.installMjolnirDefaults() {
         connectTimeoutMillis = 10_000
         requestTimeoutMillis = 20_000
     }
+}
+
+private fun isHeartbeat(text: String): Boolean = try {
+    (MjolnirJson.parseToJsonElement(text) as? JsonObject)?.get("type")?.jsonPrimitive?.contentOrNull == "heartbeat"
+} catch (_: Exception) {
+    false
 }
 
 internal fun backoffMs(attempt: Int): Long = min(30_000L, 1_000L shl attempt.coerceIn(0, 20))
@@ -83,7 +93,14 @@ class RelayClient(
 
     companion object {
         fun create(baseUrl: String, token: () -> String?): RelayClient =
-            RelayClient(HttpClient(OkHttp) { installMjolnirDefaults() }, baseUrl, token = token)
+            RelayClient(
+                HttpClient(OkHttp) {
+                    installMjolnirDefaults()
+                    engine { config { pingInterval(20, TimeUnit.SECONDS) } }
+                },
+                baseUrl,
+                token = token,
+            )
     }
 
     private fun HttpRequestBuilder.auth() { token()?.let { bearerAuth(it) } }
@@ -200,7 +217,8 @@ class RelayClient(
                         val frame = result.getOrNull() ?: break
                         if (frame is Frame.Text) {
                             val event = try {
-                                MjolnirJson.decodeFromString(RelayEvent.serializer(), frame.readText())
+                                val text = frame.readText()
+                                if (isHeartbeat(text)) null else MjolnirJson.decodeFromString(RelayEvent.serializer(), text)
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (_: Exception) {

@@ -174,9 +174,10 @@ fun relayTest(
     limits: RelayLimits = RelayLimits(),
     files: FileStorage = FileStorage(createTempDirectory("mjolnir-files").toFile()),
     push: PushSender = NoopPushSender,
+    heartbeatMs: Long = 30_000,
     block: suspend RelayTestScope.() -> Unit,
 ) = testApplication {
-    val deps = RelayDeps(store = Store("jdbc:sqlite::memory:"), clock = clock, limits = limits, files = files, push = push)
+    val deps = RelayDeps(store = Store("jdbc:sqlite::memory:"), clock = clock, limits = limits, files = files, push = push, heartbeatMs = heartbeatMs)
     application { relayModule(deps) }
     val client = createClient {
         install(ContentNegotiation) { json(MjolnirJson) }

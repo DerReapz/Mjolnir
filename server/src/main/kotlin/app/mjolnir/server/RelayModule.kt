@@ -62,6 +62,8 @@ data class RelayDeps(
     val push: PushSender = NoopPushSender,
     /** Scope for fire-and-forget work such as push pings; cancelled when the application stops. */
     val asyncScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    /** Interval of the `{"type":"heartbeat"}` text frame sent on every open WebSocket (clients use it to detect dead links). */
+    val heartbeatMs: Long = 30_000,
 )
 
 data class DevicePrincipal(val deviceId: String, val name: String, val kind: DeviceKind)

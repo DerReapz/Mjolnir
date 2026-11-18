@@ -1,5 +1,8 @@
 package app.mjolnir.server
 
+import io.ktor.websocket.Frame
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import app.mjolnir.protocol.ClaimRequest
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.ErrorResponse
@@ -25,6 +28,8 @@ import io.ktor.server.websocket.webSocket
 private fun ApplicationCall.me() = principal<DevicePrincipal>()!!
 
 private suspend fun ApplicationCall.notFound() = respond(HttpStatusCode.NotFound, ErrorResponse("not_found"))
+
+const val HEARTBEAT_FRAME = """{"type":"heartbeat"}"""
 
 fun Route.pairingRoutes(deps: RelayDeps) {
     val store = deps.store
@@ -108,9 +113,16 @@ fun Route.pairingRoutes(deps: RelayDeps) {
         webSocket("/v1/ws") {
             val me = call.me()
             hub.add(me.deviceId, this)
+            val heartbeat = launch {
+                while (true) {
+                    delay(deps.heartbeatMs)
+                    send(Frame.Text(HEARTBEAT_FRAME))
+                }
+            }
             try {
                 for (frame in incoming) { /* client frames are ignored; the channel is server-push */ }
             } finally {
+                heartbeat.cancel()
                 hub.remove(me.deviceId, this)
             }
         }
