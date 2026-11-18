@@ -62,6 +62,10 @@ The PC app is a tray app for Windows 10/11 (x64), packaged as an MSI.
 3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray; click it to open *Send to phone…*. The tray menu also has *Pair a phone…*, *Paired devices…*, *Open received files* and *Settings…*.
 4. Received files are saved to `Downloads\Mjolnir` (changeable in Settings). Tick *Start Mjolnir when I sign in to Windows* in Settings to start it automatically.
 
+Mjolnir adds itself to Explorer's *Send to* menu (right-click files or folders → *Send to* → *Mjolnir*; on Windows 11 it is under *Show more options*). The selection opens in the Send window of the running Mjolnir, or starts it. Untick *Show Mjolnir in Explorer's Send to menu* in Settings to remove the entry.
+
+**Uninstalling** leaves the *Send to* shortcut behind: untick *Show Mjolnir in Explorer's Send to menu* in Settings first, or delete `%APPDATA%\Microsoft\Windows\SendTo\Mjolnir.lnk` afterwards.
+
 Settings and state live in `%APPDATA%\Mjolnir` (`config.json`, `seen.json`, `outbox.json`). Delete that folder to start over.
 
 ### Test without a phone

@@ -444,6 +444,15 @@ class AppController(
         if (app.mjolnir.desktop.setLaunchAtLogin(enabled)) updateConfig { it.copy(launchAtLogin = enabled) }
     }
 
+    /** Runs PowerShell (or deletes the shortcut) in [scope]; the setting is stored only when it succeeded. */
+    fun setSendToMenu(enabled: Boolean): Job = scope.launch {
+        if (setSendToShortcut(enabled)) updateConfig { it.copy(sendToMenu = enabled) }
+    }
+
+    /** Recreates the *Send to* shortcut at startup when the setting is on (repairs a deleted or moved one). */
+    fun ensureSendToShortcut(): Job? =
+        if (_config.value.sendToMenu) scope.launch { setSendToShortcut(true) } else null
+
     fun shutdown() {
         synchronized(clientLock) { (client as? AutoCloseable)?.close(); client = null }
         scope.coroutineContext[Job]?.cancel()

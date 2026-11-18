@@ -57,6 +57,7 @@ import java.io.File
 import java.net.URI
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.withContext
 import javax.swing.JFileChooser
 import javax.swing.SwingUtilities
@@ -75,7 +76,7 @@ fun fileGroups(files: List<LocalUpload>): List<FileGroup> =
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
-fun SendWindow(c: AppController, icon: Painter, onPair: () -> Unit, onClose: () -> Unit) {
+fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<File>>, onPair: () -> Unit, onClose: () -> Unit) {
     val peers by c.peers.collectAsState()
     val config by c.config.collectAsState()
     var state by remember { mutableStateOf(SendState().withPhones(peers, config.lastPhoneId)) }
@@ -121,6 +122,14 @@ fun SendWindow(c: AppController, icon: Painter, onPair: () -> Unit, onClose: () 
 
     Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(560.dp, 640.dp)), title = "Send to phone", icon = icon) {
         val awtWindow = window
+        // Explorer's *Send to*: add the paths (scanned off the UI thread), aim at the last phone, and come to the front.
+        LaunchedEffect(Unit) {
+            for (files in handoff) {
+                c.config.value.lastPhoneId?.let { state = state.selectTarget(it) }
+                addFiles(files)
+                bringToFront(awtWindow)
+            }
+        }
         MjolnirTheme {
             Column(
                 Modifier.fillMaxSize().padding(16.dp).dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget),
@@ -209,4 +218,13 @@ private fun PhonePicker(state: SendState, onPick: (String) -> Unit, onPair: () -
         }
     }
     Spacer(Modifier.width(8.dp))
+}
+
+/** Restores [w] if minimized and raises it above other windows (the alwaysOnTop toggle gets past focus rules). */
+private fun bringToFront(w: Frame) {
+    if (w.extendedState and Frame.ICONIFIED != 0) w.extendedState = w.extendedState and Frame.ICONIFIED.inv()
+    w.isAlwaysOnTop = true
+    w.toFront()
+    w.requestFocus()
+    w.isAlwaysOnTop = false
 }

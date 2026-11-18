@@ -95,6 +95,11 @@ fun SettingsWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
                     Checkbox(checked = config.launchAtLogin, onCheckedChange = { c.setLaunchAtLogin(it) })
                     Text("Start Mjolnir when I sign in to Windows")
                 }
+
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = config.sendToMenu, onCheckedChange = { c.setSendToMenu(it) })
+                    Text("Show Mjolnir in Explorer's Send to menu")
+                }
             }
         }
     }

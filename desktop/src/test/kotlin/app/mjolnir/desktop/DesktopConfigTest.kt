@@ -14,4 +14,10 @@ class DesktopConfigTest {
         val custom = File(home, "Elsewhere")
         assertEquals(custom, DesktopConfig(relayUrl = "", deviceName = "PC", saveDir = custom.path).saveDirFile(home.path))
     }
+    // the Send to menu is on by default, also for a config.json written before the setting existed
+    @Test fun sendToMenuDefaultsOn() {
+        assertTrue(DesktopConfig(relayUrl = "", deviceName = "PC").sendToMenu)
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        assertTrue(json.decodeFromString(DesktopConfig.serializer(), """{"relayUrl":"","deviceName":"PC"}""").sendToMenu)
+    }
 }

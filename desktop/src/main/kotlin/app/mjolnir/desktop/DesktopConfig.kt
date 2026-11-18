@@ -13,6 +13,7 @@ data class DesktopConfig(
     val lastPhoneId: String? = null,
     val launchAtLogin: Boolean = false,
     val saveDir: String? = null,
+    val sendToMenu: Boolean = true,
 )
 
 /** The save folder: the configured one, else `%USERPROFILE%\Downloads\Mjolnir`; created on demand. */
