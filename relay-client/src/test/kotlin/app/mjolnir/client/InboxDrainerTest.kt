@@ -37,4 +37,23 @@ class InboxDrainerTest {
         assertEquals(1, n)
         assertEquals(listOf("d2"), handled); assertEquals(listOf("d2"), api.acked)
     }
+
+    // R12: a failed ack does not stop the drain; the next drain acks it without handling it again.
+    @Test fun ackFailureDoesNotBlockOthersAndIsRetriedNextDrain() = runTest {
+        val fake = FakeRelayApi().apply { inbox += listOf(delivery("d1"), delivery("d2")) }
+        var failAck = true
+        val api = object : RelayApi by fake {
+            override suspend fun ack(deliveryId: String) {
+                if (failAck && deliveryId == "d1") throw RelayException(RelayErrorKind.NETWORK, "down")
+                fake.ack(deliveryId)
+            }
+        }
+        val handled = mutableListOf<String>()
+        val drainer = InboxDrainer(api, MemorySeen()) { handled += it.id }
+        assertEquals(2, drainer.drain())
+        assertEquals(listOf("d1", "d2"), handled); assertEquals(listOf("d2"), fake.acked)
+        failAck = false
+        assertEquals(0, drainer.drain())
+        assertEquals(listOf("d1", "d2"), handled); assertEquals(listOf("d2", "d1"), fake.acked)
+    }
 }

@@ -10,7 +10,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.io.File
-import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -32,7 +31,9 @@ private const val MAX_CONFLICTS = 5
  * Uploads [file] in chunks of [chunkBytes], resuming its relay session when [LocalUpload.uploadId] is set.
  * [open] must return a stream positioned at the given offset. [onState] receives every state worth persisting
  * (the new upload id, then the finished ref). [onProgress] receives the number of bytes the relay holds.
- * A read failure of the stream is reported as RelayException(NETWORK) so callers retry later.
+ * A local failure to open or read the source (missing file, revoked permission, I/O error) is reported as
+ * RelayException(INVALID, Messages.unreadable(name)) so callers give up instead of retrying forever; only relay calls
+ * fail with NETWORK/SERVER.
  */
 suspend fun uploadResumable(
     api: RelayApi,
@@ -78,13 +79,13 @@ suspend fun uploadResumable(
             throw RelayException(RelayErrorKind.SERVER, "relay reports offset ${status.offset} of $size")
         }
         onProgress(status.offset)
-        val stream = withContext(Dispatchers.IO) { readFailure { open(status.offset) } }
+        val stream = withContext(Dispatchers.IO) { readFailure(state) { open(status.offset) } }
         try {
             var pos = status.offset
             while (true) {
                 val len = minOf(chunkBytes, size - pos).toInt()
                 val chunk = buf ?: ByteArray(minOf(chunkBytes, size).toInt()).also { buf = it }
-                val read = withContext(Dispatchers.IO) { readFailure { stream.readNBytes(chunk, 0, len) } }
+                val read = withContext(Dispatchers.IO) { readFailure(state) { stream.readNBytes(chunk, 0, len) } }
                 if (read < len) throw RelayException(RelayErrorKind.INVALID, "${state.path} is shorter than $size bytes")
                 status = api.uploadChunk(uploadId, pos, size, chunk, len)
                 if (status.file != null) break
@@ -105,12 +106,15 @@ suspend fun uploadResumable(
     }
 }
 
-private inline fun <T> readFailure(block: () -> T): T = try {
+/** Runs a local open/read of [file]'s source; any failure becomes INVALID "Couldn't read <name>". */
+private inline fun <T> readFailure(file: LocalUpload, block: () -> T): T = try {
     block()
 } catch (e: CancellationException) {
     throw e
-} catch (e: IOException) {
-    throw RelayException(RelayErrorKind.NETWORK, e.message ?: "read failed", e)
+} catch (e: RelayException) {
+    throw e // a deliberate classification by the caller's open()
+} catch (e: Exception) {
+    throw RelayException(RelayErrorKind.INVALID, Messages.unreadable(file.relativePath.substringAfterLast('/')), e)
 }
 
 /** Where a received file goes: [folder] (null = the save root, else e.g. "Photos (1)/2024") and its [fileName]. */
@@ -119,6 +123,7 @@ data class ReceivedPath(val folder: String?, val fileName: String)
 /**
  * Downloads every ref into `stagingDir/<id>.part` (resuming existing parts), and only once all of them are present
  * and hash-checked publishes them in order, giving each distinct top folder one unique name via [folderExists].
+ * Chosen names are compared case-insensitively ("Photos" and "photos" never share a folder on Windows).
  * [publish] is last so it can be a trailing lambda. Each part is deleted after its publish. On failure the exception is rethrown and parts are kept for resume.
  */
 suspend fun <T> receiveFiles(
@@ -138,7 +143,9 @@ suspend fun <T> receiveFiles(
     val paths = refs.map { safeRelativePath(it.relativePath) }
     val folderNames = mutableMapOf<String, String>()
     for (top in paths.mapNotNull(::topFolder).distinct()) {
-        folderNames[top] = uniqueName(top, keepExtension = false) { folderExists(it) || it in folderNames.values }
+        folderNames[top] = uniqueName(top, keepExtension = false) { c ->
+            folderExists(c) || folderNames.values.any { it.equals(c, ignoreCase = true) }
+        }
     }
     return refs.indices.map { i ->
         val segments = paths[i].split('/')

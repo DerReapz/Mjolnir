@@ -126,4 +126,29 @@ class FileTransferTest {
         }
         assertEquals(RelayErrorKind.STORAGE_FULL, e.kind)
     }
+
+    // R14: a source that cannot be opened is reported as INVALID with the user-facing message, not NETWORK.
+    @Test fun unopenableSourceIsInvalidNotNetwork() = runTest {
+        val e = assertFailsWith<RelayException> {
+            uploadResumable(api, LocalUpload("/nope/x.bin", "Docs/x.bin", "application/octet-stream", 3),
+                { throw java.io.FileNotFoundException("/nope/x.bin") }, {})
+        }
+        assertEquals(RelayErrorKind.INVALID, e.kind); assertEquals(Messages.unreadable("x.bin"), e.message)
+    }
+
+    // R14: a read error mid-stream (before the chunk is sent) is also INVALID.
+    @Test fun streamReadFailureIsInvalid() = runTest {
+        val broken = object : java.io.InputStream() { override fun read(): Int = throw java.io.IOException("disk gone") }
+        val e = assertFailsWith<RelayException> {
+            uploadResumable(api, LocalUpload("p", "x.bin", "application/octet-stream", 3), { broken }, {})
+        }
+        assertEquals(RelayErrorKind.INVALID, e.kind); assertEquals(Messages.unreadable("x.bin"), e.message)
+    }
+
+    // R14: top folders differing only in case get distinct names (Windows folders are case-insensitive).
+    @Test fun topFoldersDifferingOnlyInCaseGetDistinctNames() = runTest {
+        val refs = listOf(api.putBlob("1", "Photos/a.jpg", byteArrayOf(1)), api.putBlob("2", "photos/b.jpg", byteArrayOf(2)))
+        val got = receiveFiles(api, refs, staging, folderExists = { false }) { _, t, _ -> t.folder!! }
+        assertEquals(listOf("Photos", "photos (1)"), got)
+    }
 }

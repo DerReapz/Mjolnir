@@ -5,6 +5,8 @@ import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 import kotlinx.serialization.builtins.ListSerializer
 
 class JsonFileStoreTest {
@@ -23,5 +25,13 @@ class JsonFileStoreTest {
     @Test fun corruptFileGivesDefault() {
         val f = File(dir, "s.json"); f.writeText("{nope")
         assertEquals(emptyList(), store(f).read())
+    }
+
+    // R12: a real read error must propagate, or update() would overwrite the queue with the default.
+    @Test fun readErrorPropagatesInsteadOfDefault() {
+        val f = File(dir, "s.json").apply { mkdirs() }   // a directory where the file should be
+        assertFailsWith<java.io.IOException> { store(f).read() }
+        assertFailsWith<java.io.IOException> { store(f).update { it + Tab("https://x.com") } }
+        assertTrue(f.isDirectory)
     }
 }

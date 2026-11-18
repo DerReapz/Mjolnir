@@ -7,7 +7,10 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import kotlinx.serialization.KSerializer
 
-/** Small JSON-backed value on disk. Missing or corrupt files read as [default]; writes are atomic. */
+/**
+ * Small JSON-backed value on disk. A missing file or corrupt content reads as [default]; any other read error
+ * (an IOException) propagates, so a transient failure never lets [update] overwrite real data. Writes are atomic.
+ */
 class JsonFileStore<T>(private val file: File, private val serializer: KSerializer<T>, private val default: () -> T) {
     private val lock = Any()
 
@@ -19,10 +22,14 @@ class JsonFileStore<T>(private val file: File, private val serializer: KSerializ
         transform(readLocked()).also { writeLocked(it) }
     }
 
-    private fun readLocked(): T = try {
-        if (!file.isFile) default() else MjolnirJson.decodeFromString(serializer, file.readText())
-    } catch (e: Exception) {
-        default()
+    private fun readLocked(): T {
+        if (!file.exists()) return default()
+        val text = file.readText() // IOException propagates
+        return try {
+            MjolnirJson.decodeFromString(serializer, text)
+        } catch (e: IllegalArgumentException) { // includes SerializationException: corrupt content
+            default()
+        }
     }
 
     private fun writeLocked(value: T) {

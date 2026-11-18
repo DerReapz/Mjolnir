@@ -12,7 +12,10 @@ class InboxDrainer(
 ) {
     private val mutex = Mutex()
 
-    /** Handles each unseen delivery, then acks it. Returns the number handled. A failing handler leaves its delivery unacked. */
+    /**
+     * Handles each unseen delivery, then acks it. Returns the number handled. A failing handler leaves its delivery
+     * unacked. A failing ack is skipped; the delivery is already seen, so the next drain only acks it.
+     */
     suspend fun drain(): Int = mutex.withLock {
         var handled = 0
         for (d in api.inbox()) {
@@ -27,7 +30,13 @@ class InboxDrainer(
                 seen.add(d.id)
                 handled++
             }
-            api.ack(d.id)
+            try {
+                api.ack(d.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // left for the next drain's ack-only pass
+            }
         }
         handled
     }

@@ -61,7 +61,8 @@ class FileClientTest {
         val (pc, phone) = pairedDevices(); val bytes = Random(2).nextBytes(3_000_000)
         val f = LocalUpload("mem", "video.mp4", "video/mp4", bytes.size.toLong())
         var state = f
-        assertKind(RelayErrorKind.NETWORK) {
+        // A source read failure is local, so it is INVALID (R14); the relay session survives and resumes either way.
+        assertKind(RelayErrorKind.INVALID) {
             uploadResumable(phone.api, f, { off -> FailingStream(bytes, off, 1_500_000) }, { state = it }, chunkBytes = 1_048_576)
         }
         assertNotNull(state.uploadId)
