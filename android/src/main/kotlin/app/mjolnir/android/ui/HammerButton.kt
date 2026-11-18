@@ -27,7 +27,11 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.foundation.layout.offset
+import kotlin.math.roundToInt
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -122,17 +126,20 @@ fun rememberHammerFlight(phase: ThrowPhase): HammerFlight {
 
 /**
  * The flying hammer, drawn at the root of the throw screen (outside the button's clipped surface): 400 ms from the
- * button up past the top edge, 0 to 720 degrees. Takes no pointer input.
+ * button up past the top edge, 0 to 720 degrees. [start] is the resting hammer's centre (the button's centre) in this
+ * overlay's coordinates, measured from the button's layout; null until the button has been laid out. Takes no
+ * pointer input.
  */
 @Composable
-fun FlyingHammer(flight: HammerFlight, phase: ThrowPhase, modifier: Modifier = Modifier) {
-    val screenHeightPx = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
-    if (phase != ThrowPhase.Throwing || flight.progress.value >= 1f) return
+fun FlyingHammer(flight: HammerFlight, phase: ThrowPhase, start: Offset?, modifier: Modifier = Modifier) {
+    val density = LocalDensity.current
+    val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    if (phase != ThrowPhase.Throwing || flight.progress.value >= 1f || start == null) return
+    val halfPx = with(density) { 48.dp.roundToPx() }
     Box(modifier.fillMaxSize()) {
         Box(
             Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 108.dp) // roughly the button's centre
+                .offset { IntOffset(start.x.roundToInt() - halfPx, start.y.roundToInt() - halfPx) }
                 .size(96.dp)
                 .graphicsLayer {
                     clip = false

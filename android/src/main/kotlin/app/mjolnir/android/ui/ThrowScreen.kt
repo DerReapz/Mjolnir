@@ -47,14 +47,26 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.work.WorkManager
 import app.mjolnir.android.data.TrayItem
+import app.mjolnir.android.send.outgoingStatus
+import app.mjolnir.android.send.rowTitle
+import app.mjolnir.android.send.sendNow
+import app.mjolnir.android.send.throwWorkFinished
+import app.mjolnir.android.send.uniqueThrowWork
+import app.mjolnir.client.OutgoingFiles
 import app.mjolnir.android.share.UriImporter
 import app.mjolnir.android.throwing.FlickSensor
 import app.mjolnir.android.throwing.ThrowDetector
 import app.mjolnir.client.Messages
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -91,7 +103,7 @@ fun ThrowScreen(
     DisposableEffect(lifecycleOwner, sensor) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> { sensor.prepare(); currentVm.refreshSensitivity() }
+                Lifecycle.Event.ON_RESUME -> { sensor.prepare(); currentVm.refreshSensitivity(); currentVm.refreshOutgoing() }
                 Lifecycle.Event.ON_PAUSE -> { sensor.release(); currentVm.onHoldEnd() }
                 else -> Unit
             }
@@ -110,12 +122,8 @@ fun ThrowScreen(
         vm.clearNotice()
     }
 
-    fun add(block: () -> app.mjolnir.android.share.Imported) {
-        scope.launch {
-            val r = withContext(Dispatchers.IO) { block() }
-            vm.addShared(r.items, r.notices)
-        }
-    }
+    // Through the view model, which runs the copy off the main thread and turns any failure into a notice.
+    fun add(block: () -> app.mjolnir.android.share.Imported) = vm.importShared(emptyList(), block)
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
         if (uris.isNotEmpty()) add { importer.importUris(uris) }
     }
@@ -131,7 +139,9 @@ fun ThrowScreen(
     }
 
     val flight = rememberHammerFlight(state.phase)
-    Box(modifier.fillMaxSize()) {
+    var overlayOrigin by remember { mutableStateOf(Offset.Zero) }
+    var hammerCentre by remember { mutableStateOf<Offset?>(null) } // in window coordinates
+    Box(modifier.fillMaxSize().onGloballyPositioned { overlayOrigin = it.positionInWindow() }) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) { PcPicker(state, vm, onPairPc) }
@@ -144,16 +154,49 @@ fun ThrowScreen(
             }
             val throwing = state.phase == ThrowPhase.Throwing
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (state.outgoing.isNotEmpty()) {
+                    item(key = "on-the-way") {
+                        Text("On the way", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleSmall)
+                    }
+                    items(state.outgoing, key = { "out-" + it.id }) { item ->
+                        OutgoingRow(item, onFinished = { vm.refreshOutgoing() }, onSendNow = {
+                            scope.launch(Dispatchers.IO) { sendNow(context, item.id) }
+                        })
+                    }
+                    item(key = "tray-gap") { Spacer(Modifier.height(8.dp)) }
+                }
                 items(state.tray, key = { it.id }) { item ->
                     TrayRow(item, checked = item.id in state.selected, removable = !throwing,
                         onToggle = { vm.toggle(item.id) }, onRemove = { vm.remove(item.id) })
                 }
             }
-            HammerButton(vm, sensor, state.phase, hasTarget = state.targetPcId != null, flight = flight, modifier = Modifier.padding(vertical = 16.dp))
+            HammerButton(
+                vm, sensor, state.phase, hasTarget = state.targetPcId != null, flight = flight,
+                modifier = Modifier.padding(vertical = 16.dp).onGloballyPositioned { hammerCentre = it.boundsInWindow().center },
+            )
         }
-        FlyingHammer(flight, state.phase) // above everything, unclipped, so it can leave the top of the screen
+        FlyingHammer(flight, state.phase, start = hammerCentre?.let { it - overlayOrigin }) // above everything, unclipped, so it can leave the top of the screen
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 232.dp))
     }
+}
+
+/** One pending background throw: `{items} to {pc}` and its status; a row waiting for Wi-Fi offers `Send now`. */
+@Composable
+private fun OutgoingRow(item: OutgoingFiles, onFinished: () -> Unit, onSendNow: () -> Unit) {
+    val context = LocalContext.current
+    val infos by remember(item.id) {
+        WorkManager.getInstance(context.applicationContext).getWorkInfosForUniqueWorkFlow(uniqueThrowWork(item.id))
+    }.collectAsStateWithLifecycle(initialValue = null)
+    val status = outgoingStatus(infos.orEmpty())
+    val finished = infos?.let { it.isNotEmpty() && throwWorkFinished(it) } == true
+    val currentOnFinished by rememberUpdatedState(onFinished)
+    LaunchedEffect(finished) { if (finished) currentOnFinished() } // sent or given back: re-read outbox and tray
+    ListItem(
+        leadingContent = { Text("📤") },
+        headlineContent = { Text(rowTitle(item), maxLines = 1) },
+        supportingContent = { Text(status.label, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+        trailingContent = if (status.waitingForWifi && !status.running) ({ TextButton(onClick = onSendNow) { Text("Send now") } }) else null,
+    )
 }
 
 @Composable

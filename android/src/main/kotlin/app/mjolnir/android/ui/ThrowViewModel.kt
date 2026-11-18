@@ -21,6 +21,7 @@ import app.mjolnir.protocol.Peer
 import java.io.File
 import java.io.IOException
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,6 +72,9 @@ class ThrowViewModel(
     private var trayLoaded = false
     private var trayChangedBeforeLoad = false
 
+    /** Every tray id this view model has loaded or written; other ids in the stored tray came from the background. */
+    private val everWritten = HashSet<String>()
+
     init {
         viewModelScope.launch {
             val stored = try {
@@ -79,6 +83,7 @@ class ThrowViewModel(
                 return@launch // keep the file untouched; this session's changes stay in memory only
             }
             val storedIds = stored.mapTo(HashSet()) { it.id }
+            everWritten += storedIds
             _state.update { s ->
                 s.copy(tray = stored + s.tray.filter { it.id !in storedIds }, selected = s.selected + storedIds)
             }
@@ -114,8 +119,10 @@ class ThrowViewModel(
             val files = if (importFiles == null) Imported(emptyList(), emptyList())
             else try {
                 withContext(io) { importFiles() }
-            } catch (e: IOException) {
-                Imported(emptyList(), emptyList())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) { // e.g. a SecurityException when the sharing app's grant was revoked
+                Imported(emptyList(), listOf(Messages.unreadable("what you shared")))
             }
             val items = tabs.map { TrayItem.Link(it) } + files.items
             addShared(items, files.notices)
@@ -184,6 +191,10 @@ class ThrowViewModel(
         }
     }
 
+    /**
+     * Re-reads the outbox, and takes in tray items the background worker gave back (files of a failed throw). Call
+     * when a background throw finishes.
+     */
     fun refreshOutgoing() {
         viewModelScope.launch {
             val pending = try {
@@ -192,6 +203,21 @@ class ThrowViewModel(
                 return@launch
             }
             _state.update { it.copy(outgoing = pending) }
+        }
+        if (!trayLoaded) return // the initial load picks them up
+        viewModelScope.launch {
+            val stored = try {
+                withContext(writes) { tray.read() } // after this view model's own pending writes
+            } catch (e: IOException) {
+                return@launch
+            }
+            val returned = stored.filter { it.id !in everWritten }
+            if (returned.isEmpty()) return@launch
+            _state.update { s ->
+                val known = s.tray.mapTo(HashSet()) { it.id }
+                val fresh = returned.filter { it.id !in known }
+                s.copy(tray = s.tray + fresh, selected = s.selected + fresh.map { it.id })
+            }
         }
     }
 
@@ -287,9 +313,12 @@ class ThrowViewModel(
             return
         }
         val snapshot = _state.value.tray
+        snapshot.mapTo(everWritten) { it.id }
+        val written = everWritten.toSet()
         viewModelScope.launch(writes) {
             try {
-                tray.write(snapshot)
+                // Items this view model never had were added by the background worker: keep them.
+                tray.update { stored -> snapshot + stored.filter { it.id !in written } }
             } catch (e: IOException) {
                 // The tray stays correct in memory; the next change writes it again.
             }

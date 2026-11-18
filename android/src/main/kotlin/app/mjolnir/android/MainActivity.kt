@@ -24,6 +24,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import app.mjolnir.android.send.scheduleOutgoing
 import app.mjolnir.android.share.UriImporter
 import app.mjolnir.android.share.tabsFromShare
 import app.mjolnir.android.ui.CaughtPlaceholder
@@ -49,9 +50,10 @@ class MainActivity : ComponentActivity() {
             val c = container
             val session = c.session
             return when (modelClass) {
-                ThrowViewModel::class.java ->
-                    // Task 19 wires the background worker here; until then queued files are only stored in the outbox.
-                    ThrowViewModel(c.api, c.tray, c.config, c.outbox, scheduleOutgoing = { }, io = Dispatchers.IO)
+                ThrowViewModel::class.java -> {
+                    val appContext = applicationContext
+                    ThrowViewModel(c.api, c.tray, c.config, c.outbox, scheduleOutgoing = { id -> scheduleOutgoing(appContext, id) }, io = Dispatchers.IO)
+                }
                 DevicesViewModel::class.java -> DevicesViewModel(c.api, session)
                 PairingViewModel::class.java -> PairingViewModel(c.api, c.config, onUnauthorized = { session.reset() })
                 SettingsViewModel::class.java -> SettingsViewModel(c.api, c.config, session, onRelayUrlChanged = c::invalidateRelayClient)

@@ -229,6 +229,37 @@ class ThrowViewModelTest {
         assertEquals("No links found in what you shared", vm.state.value.notice)
     }
 
+    @Test fun importSharedSurvivesARevokedGrant() = runTest {
+        vm.importShared(listOf(Tab("https://a.com")), { throw SecurityException("grant revoked") })
+        advanceUntilIdle()
+        assertEquals(listOf<TrayItem>(a), vm.state.value.tray)
+        assertEquals("Couldn't read what you shared", vm.state.value.notice)
+    }
+
+    @Test fun importSharedSurvivesAnyImporterFailure() = runTest {
+        vm.importShared(emptyList(), { throw IllegalStateException("provider crashed") })
+        advanceUntilIdle()
+        assertTrue(vm.state.value.tray.isEmpty())
+        assertEquals("Couldn't read what you shared", vm.state.value.notice)
+    }
+
+    @Test fun filesReturnedInTheBackgroundShowUpAndSurviveTrayWrites() = runTest {
+        vm.addShared(listOf(a)); advanceUntilIdle()
+        trayStore.update { it + photos } // the background worker gave a failed throw back
+        vm.addShared(listOf(b)); advanceUntilIdle() // the view model writes its tray
+        assertEquals(listOf(a, photos, b).map { it.id }.toSet(), trayStore.read().map { it.id }.toSet())
+        vm.refreshOutgoing(); advanceUntilIdle()
+        assertEquals(listOf(a, b, photos), vm.state.value.tray)
+    }
+
+    @Test fun removedItemsAreNotBroughtBackByARefresh() = runTest {
+        vm.addShared(listOf(a, b)); advanceUntilIdle()
+        vm.remove(a.id); advanceUntilIdle()
+        vm.refreshOutgoing(); advanceUntilIdle()
+        assertEquals(listOf(b), vm.state.value.tray)
+        assertEquals(listOf(b), trayStore.read())
+    }
+
     @Test fun refreshSensitivityReadsSettings() = runTest {
         configStore.write(configStore.read().copy(sensitivity = app.mjolnir.android.throwing.Sensitivity.HIGH))
         vm.refreshSensitivity(); advanceUntilIdle()

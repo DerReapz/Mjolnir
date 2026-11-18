@@ -5,8 +5,11 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import app.mjolnir.BuildConfig
+import androidx.work.ExistingWorkPolicy
 import app.mjolnir.android.data.PhoneConfig
 import app.mjolnir.android.data.TrayItem
+import app.mjolnir.android.send.createSendingChannels
+import app.mjolnir.android.send.scheduleOutgoing
 import app.mjolnir.android.session.PhoneSession
 import app.mjolnir.android.session.SwitchingRelayApi
 import app.mjolnir.client.FileSeenDeliveries
@@ -18,12 +21,27 @@ import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayClient
 import java.io.File
 import java.io.FileInputStream
+import java.io.IOException
 import java.io.InputStream
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.serializer
 
 class MjolnirApp : Application() {
     val container: AppContainer by lazy { AppContainer(this) }
+
+    override fun onCreate() {
+        super.onCreate()
+        createSendingChannels(this)
+        // Throws still in the outbox (e.g. after a force-stop or reboot) get their work back; KEEP leaves running
+        // or waiting work alone.
+        Thread {
+            try {
+                for (item in container.outbox.pending()) scheduleOutgoing(this, item.id, policy = ExistingWorkPolicy.KEEP)
+            } catch (e: IOException) {
+                // The outbox couldn't be read; the next start tries again.
+            }
+        }.start()
+    }
 }
 
 class AppContainer(context: Context) {
