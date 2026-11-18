@@ -48,6 +48,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.documentfile)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
     coreLibraryDesugaring(libs.desugar.jdk.libs)

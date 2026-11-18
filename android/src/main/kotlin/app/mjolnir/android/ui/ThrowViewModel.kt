@@ -209,6 +209,7 @@ class ThrowViewModel(
 
         if (fileItems.isNotEmpty()) {
             var queuedFiles = 0
+            var enqueueFailed = false
             for (group in groupForOutbox(fileItems)) {
                 val uploads = group.flatMap { it.toUploads() }
                 val item = OutgoingFiles(UUID.randomUUID().toString(), pc.deviceId, pc.name, uploads,
@@ -216,6 +217,7 @@ class ThrowViewModel(
                 try {
                     withContext(io) { outbox.enqueue(item) }
                 } catch (e: IOException) {
+                    enqueueFailed = true
                     continue // the group stays in the tray
                 }
                 scheduleOutgoing(item.id)
@@ -223,10 +225,11 @@ class ThrowViewModel(
                 queuedFiles += uploads.size
             }
             if (queuedFiles > 0) parts += Messages.queued(queuedFiles, pc.name)
+            if (enqueueFailed) parts += Messages.notThrown("this phone couldn't queue the files")
         }
 
         _state.update {
-            it.copy(tray = it.tray.filter { t -> t.id !in gone }, selected = it.selected - gone, notice = joinNotice(parts) ?: it.notice)
+            it.copy(tray = it.tray.filter { t -> t.id !in gone }, selected = it.selected - gone, notice = joinNotice(parts) ?: it.notice) // a failed enqueue always adds a part, replacing any stale notice
         }
         if (gone.isNotEmpty()) persistTray()
         refreshOutgoing()

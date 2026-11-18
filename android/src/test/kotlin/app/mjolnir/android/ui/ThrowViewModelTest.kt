@@ -201,6 +201,21 @@ class ThrowViewModelTest {
         assertEquals(ThrowPhase.Idle, vm.state.value.phase)
     }
 
+    @Test fun enqueueFailureShowsNoticeAndKeepsFilesInTray() = runTest {
+        val blocker = temp.newFile("not-a-dir")
+        val brokenOutbox = Outbox(
+            JsonFileStore(File(blocker, "outbox.json"), ListSerializer(OutgoingFiles.serializer())) { emptyList() },
+            api = { api },
+            open = { u, offset -> File(u.path).inputStream().also { it.skip(offset) } },
+        )
+        val broken = ThrowViewModel(api, trayStore, configStore, brokenOutbox, { scheduled += it }, main.dispatcher)
+        broken.refreshPcs(); broken.addShared(listOf(f), listOf("stale notice")); advanceUntilIdle()
+        broken.onHoldStart(); broken.onFlick(); advanceUntilIdle()
+        assertEquals("Not thrown: this phone couldn't queue the files. Your tabs are still here.", broken.state.value.notice)
+        assertEquals(listOf<TrayItem>(f), broken.state.value.tray)
+        assertTrue(scheduled.isEmpty())
+    }
+
     @Test fun secondFlickWhileThrowingIsIgnored() = runTest {
         val gate = CompletableDeferred<Unit>()
         api.onSend = { gate.await(); SendResponse("d1") }
