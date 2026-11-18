@@ -15,7 +15,8 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
-        buildConfigField("String", "RELAY_URL", "\"${findProperty("mjolnir.relayUrl") ?: ""}\"")
+        val relayUrl = (findProperty("mjolnir.relayUrl") ?: "").toString().replace("\\", "\\\\").replace("\"", "\\\"")
+        buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
     }
 
     buildFeatures {
