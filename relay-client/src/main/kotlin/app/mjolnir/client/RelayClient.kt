@@ -44,7 +44,7 @@ import io.ktor.websocket.readText
 import app.mjolnir.protocol.RelayEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -55,7 +55,7 @@ import kotlin.math.min
 
 fun HttpClientConfig<*>.installMjolnirDefaults() {
     install(ContentNegotiation) { json(MjolnirJson) }
-    install(WebSockets)
+    install(WebSockets) { pingIntervalMillis = 20_000 }
     install(HttpTimeout) {
         connectTimeoutMillis = 10_000
         requestTimeoutMillis = 20_000
@@ -68,6 +68,8 @@ class RelayClient(
     private val http: HttpClient,
     baseUrl: String,
     private val reconnectDelayMs: (Int) -> Long = ::backoffMs,
+    private val idleTimeoutMs: Long = 75_000,
+    private val stableAfterMs: Long = 30_000,
     private val token: () -> String?,
 ) : RelayApi, AutoCloseable {
     private val base = baseUrl.trimEnd('/')
@@ -183,15 +185,19 @@ class RelayClient(
         var attempt = 0
         while (true) {
             var connected = false
+            var connectedAt = 0L
             try {
                 http.webSocket(wsUrl, request = {
                     auth()
                     timeout { requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS }
                 }) {
                     connected = true
-                    attempt = 0
+                    connectedAt = System.nanoTime()
                     emit(RelayEvent.Connected)
-                    incoming.consumeEach { frame ->
+                    while (true) {
+                        // Read-idle watchdog: a half-open socket never ends `incoming`, so give up and reconnect.
+                        val result = withTimeoutOrNull(idleTimeoutMs) { incoming.receiveCatching() } ?: break
+                        val frame = result.getOrNull() ?: break
                         if (frame is Frame.Text) {
                             val event = try {
                                 MjolnirJson.decodeFromString(RelayEvent.serializer(), frame.readText())
@@ -215,6 +221,7 @@ class RelayClient(
                     }
                 }
             }
+            if (connected && (System.nanoTime() - connectedAt) / 1_000_000 >= stableAfterMs) attempt = 0
             delay(reconnectDelayMs(attempt))
             attempt++
         }

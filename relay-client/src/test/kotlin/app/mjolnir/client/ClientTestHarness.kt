@@ -15,6 +15,7 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlin.test.assertEquals
@@ -52,6 +53,20 @@ fun fakeWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
     }
     val http = createClient { installMjolnirDefaults() }
     RelayClient(http, "http://localhost", reconnectDelayMs = { 10L }) { "t" }.use { block(it) }
+}
+
+fun silentWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
+    application {
+        install(WebSockets)
+        routing {
+            webSocket("/v1/ws") {
+                send(Frame.Text("""{"type":"unpaired","deviceId":"x"}"""))
+                awaitCancellation()
+            }
+        }
+    }
+    val http = createClient { installMjolnirDefaults() }
+    RelayClient(http, "http://localhost", reconnectDelayMs = { 10L }, idleTimeoutMs = 200) { "t" }.use { block(it) }
 }
 
 fun clientTest(block: suspend ClientTestScope.() -> Unit) = testApplication {

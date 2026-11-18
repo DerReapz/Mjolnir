@@ -37,6 +37,13 @@ class RelayEventsTest {
         )
     }
 
+    @Test fun silentServerTriggersIdleReconnect() = silentWsTest { client ->
+        assertEquals(
+            listOf(RelayEvent.Connected, RelayEvent.Unpaired("x"), RelayEvent.Connected),
+            withTimeout(10_000) { client.events().take(3).toList() },
+        )
+    }
+
     @Test fun unauthorizedStopsWithoutRetry() = clientTest {
         assertKind(RelayErrorKind.UNAUTHORIZED) { apiWithToken("bogus").events().collect { } }
     }
