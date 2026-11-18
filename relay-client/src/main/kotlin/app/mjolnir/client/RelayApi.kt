@@ -8,7 +8,9 @@ import app.mjolnir.protocol.PairingStatus
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.RegisterResponse
 import app.mjolnir.protocol.SendResponse
+import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.Tab
+import kotlinx.coroutines.flow.Flow
 
 enum class RelayErrorKind { UNAUTHORIZED, NOT_PAIRED, INVALID, NOT_FOUND, RATE_LIMITED, TOO_LARGE, STORAGE_FULL, ALREADY_SENT, SERVER, NETWORK }
 
@@ -29,4 +31,7 @@ interface RelayApi {
     suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String> = emptyList()): SendResponse
     suspend fun inbox(): List<Delivery>
     suspend fun ack(deliveryId: String)
+
+    /** Cold flow of live events; reconnects with backoff, throws RelayException(UNAUTHORIZED) and stops if the token is rejected. */
+    fun events(): Flow<RelayEvent>
 }

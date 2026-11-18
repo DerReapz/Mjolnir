@@ -9,6 +9,7 @@ object RelayUrls {
     fun normalize(input: String): String? {
         val s = input.trim().trimEnd('/')
         val uri = try { URI(s) } catch (_: Exception) { return null }
+        if (uri.rawQuery != null || uri.rawFragment != null || uri.rawUserInfo != null) return null
         val host = uri.host?.takeIf { it.isNotEmpty() } ?: return null
         return when (uri.scheme?.lowercase()) {
             "https" -> s

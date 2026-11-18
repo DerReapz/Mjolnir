@@ -36,8 +36,22 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.client.plugins.HttpTimeoutConfig
+import io.ktor.client.plugins.timeout
+import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
+import app.mjolnir.protocol.RelayEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.launch
 import java.io.IOException
+import kotlin.math.min
 
 fun HttpClientConfig<*>.installMjolnirDefaults() {
     install(ContentNegotiation) { json(MjolnirJson) }
@@ -48,16 +62,26 @@ fun HttpClientConfig<*>.installMjolnirDefaults() {
     }
 }
 
+internal fun backoffMs(attempt: Int): Long = min(30_000L, 1_000L shl attempt.coerceIn(0, 20))
+
 class RelayClient(
     private val http: HttpClient,
     baseUrl: String,
+    private val reconnectDelayMs: (Int) -> Long = ::backoffMs,
     private val token: () -> String?,
-) : RelayApi {
+) : RelayApi, AutoCloseable {
     private val base = baseUrl.trimEnd('/')
+    private val closed = Job()
+
+    /** Closes the HTTP client and ends any active [events] flow cleanly. */
+    override fun close() {
+        closed.complete()
+        http.close()
+    }
 
     companion object {
         fun create(baseUrl: String, token: () -> String?): RelayClient =
-            RelayClient(HttpClient(OkHttp) { installMjolnirDefaults() }, baseUrl, token)
+            RelayClient(HttpClient(OkHttp) { installMjolnirDefaults() }, baseUrl, token = token)
     }
 
     private fun HttpRequestBuilder.auth() { token()?.let { bearerAuth(it) } }
@@ -77,6 +101,8 @@ class RelayClient(
         if (code in 200..299) return response
         val message = try {
             MjolnirJson.decodeFromString(ErrorResponse.serializer(), response.bodyAsText()).error
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             "HTTP $code"
         }
@@ -144,4 +170,53 @@ class RelayClient(
     override suspend fun inbox(): List<Delivery> = callBody { http.get("$base/v1/inbox") { auth() } }
 
     override suspend fun ack(deliveryId: String) { call { http.delete("$base/v1/inbox/$deliveryId") { auth() } } }
+
+    override fun events(): Flow<RelayEvent> = channelFlow {
+        val inner = launch { connectLoop().collect { send(it) } }
+        val watcher = launch { closed.join(); inner.cancel() }
+        inner.join()
+        watcher.cancel()
+    }
+
+    private fun connectLoop(): Flow<RelayEvent> = flow {
+        val wsUrl = (if (base.startsWith("https", ignoreCase = true)) "wss" else "ws") + "://" + base.substringAfter("://") + "/v1/ws"
+        var attempt = 0
+        while (true) {
+            var connected = false
+            try {
+                http.webSocket(wsUrl, request = {
+                    auth()
+                    timeout { requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS }
+                }) {
+                    connected = true
+                    attempt = 0
+                    emit(RelayEvent.Connected)
+                    incoming.consumeEach { frame ->
+                        if (frame is Frame.Text) {
+                            val event = try {
+                                MjolnirJson.decodeFromString(RelayEvent.serializer(), frame.readText())
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Exception) {
+                                null
+                            }
+                            if (event != null) emit(event)
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (!connected) {
+                    try {
+                        me()
+                    } catch (e: RelayException) {
+                        if (e.kind == RelayErrorKind.UNAUTHORIZED) throw e
+                    }
+                }
+            }
+            delay(reconnectDelayMs(attempt))
+            attempt++
+        }
+    }
 }
