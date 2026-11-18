@@ -5,7 +5,8 @@ private val RESERVED = Regex("(?i)^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$")
 fun safeFileName(name: String): String {
     var s = name.substringAfterLast('/').substringAfterLast('\\')
     s = buildString {
-        for (c in s) append(if (c in "<>:\"/\\|?*" || c.isISOControl()) '_' else c)
+        for (c in s) append(if (c in "<>:\"/\\|?*" || c.isISOControl() ||
+                c in '\u202A'..'\u202E' || c in '\u2066'..'\u2069') '_' else c)
     }
     s = s.trimStart(' ').trimEnd('.', ' ')
     if (RESERVED.matches(s.substringBefore('.'))) s = "_$s"

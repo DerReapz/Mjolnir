@@ -21,4 +21,8 @@ class FilesTest {
         assertEquals(16, safeRelativePath((1..20).joinToString("/") { "d$it" }).split("/").size)
     }
     @Test fun topFolderIsFirstSegment() { assertEquals("Photos", topFolder("Photos/a.jpg")); assertNull(topFolder("a.jpg")) }
+    @Test fun replacesBidiOverrides() {
+        assertEquals("evil_gnp.exe", safeFileName("evil\u202Egnp.exe"))
+        assertEquals("a_b_c", safeFileName("a\u2066b\u2069c"))
+    }
 }
