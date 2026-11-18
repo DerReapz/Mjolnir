@@ -1,0 +1,8 @@
+build/
+.gradle/
+local.properties
+*.db
+.idea/
+android/google-services.json
+fake-phone.json
+.superpowers/
