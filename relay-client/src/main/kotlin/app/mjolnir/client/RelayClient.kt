@@ -16,6 +16,22 @@ import app.mjolnir.protocol.RenameRequest
 import app.mjolnir.protocol.SendRequest
 import app.mjolnir.protocol.SendResponse
 import app.mjolnir.protocol.Tab
+import app.mjolnir.protocol.CreateUploadRequest
+import app.mjolnir.protocol.FileRef
+import app.mjolnir.protocol.UploadStatus
+import io.ktor.client.request.header
+import io.ktor.client.request.prepareGet
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.http.HttpHeaders
+import io.ktor.http.content.OutgoingContent
+import io.ktor.utils.io.ByteWriteChannel
+import io.ktor.utils.io.readAvailable
+import io.ktor.utils.io.writeFully
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
 import io.ktor.client.HttpClient
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.call.body
@@ -72,6 +88,23 @@ private fun isHeartbeat(text: String): Boolean = try {
     false
 }
 
+private const val TRANSFER_SOCKET_TIMEOUT_MS = 60_000L
+private const val BUFFER_BYTES = 64 * 1024
+
+/** Lower-case hex SHA-256 of [file], streamed. */
+internal fun sha256HexOf(file: File): String {
+    val md = MessageDigest.getInstance("SHA-256")
+    val buf = ByteArray(BUFFER_BYTES)
+    file.inputStream().use { input ->
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            md.update(buf, 0, n)
+        }
+    }
+    return md.digest().joinToString("") { "%02x".format(it) }
+}
+
 internal fun backoffMs(attempt: Int): Long = min(30_000L, 1_000L shl attempt.coerceIn(0, 20))
 
 class RelayClient(
@@ -80,6 +113,8 @@ class RelayClient(
     private val reconnectDelayMs: (Int) -> Long = ::backoffMs,
     private val idleTimeoutMs: Long = 75_000,
     private val stableAfterMs: Long = 30_000,
+    /** Socket (idle read/write) timeout for chunk uploads and downloads, which have no overall deadline; null = none. */
+    private val transferSocketTimeoutMs: Long? = TRANSFER_SOCKET_TIMEOUT_MS,
     private val token: () -> String?,
 ) : RelayApi, AutoCloseable {
     private val base = baseUrl.trimEnd('/')
@@ -105,19 +140,19 @@ class RelayClient(
 
     private fun HttpRequestBuilder.auth() { token()?.let { bearerAuth(it) } }
 
-    private suspend fun call(block: suspend () -> HttpResponse): HttpResponse {
-        val response = try {
-            block()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: IOException) {
-            throw RelayException(RelayErrorKind.NETWORK, e.message ?: "network error", e)
-        } catch (e: Exception) {
-            // Ktor timeout exceptions and engine failures that are not IOExceptions.
-            throw RelayException(RelayErrorKind.NETWORK, e.message ?: "network error", e)
+    /** Requests for whole files or 8 MiB chunks: no overall deadline (slow links), but a stalled socket still fails. */
+    private fun HttpRequestBuilder.transferTimeout() {
+        timeout {
+            requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+            transferSocketTimeoutMs?.let { socketTimeoutMillis = it }
         }
+    }
+
+    private fun networkError(e: Exception) = RelayException(RelayErrorKind.NETWORK, e.message ?: "network error", e)
+
+    /** Maps a non-2xx response to its [RelayException]. */
+    private suspend fun errorFor(response: HttpResponse): RelayException {
         val code = response.status.value
-        if (code in 200..299) return response
         val message = try {
             MjolnirJson.decodeFromString(ErrorResponse.serializer(), response.bodyAsText()).error
         } catch (e: CancellationException) {
@@ -136,11 +171,29 @@ class RelayClient(
             507 -> RelayErrorKind.STORAGE_FULL
             else -> if (code >= 500) RelayErrorKind.SERVER else RelayErrorKind.INVALID
         }
-        throw RelayException(kind, message)
+        return RelayException(kind, message)
     }
 
-    private suspend inline fun <reified T> callBody(noinline block: suspend () -> HttpResponse): T {
-        val response = call(block)
+    /** Runs [block]; 2xx and any status in [okCodes] are returned, everything else becomes a [RelayException]. */
+    private suspend fun call(okCodes: Set<Int> = emptySet(), block: suspend () -> HttpResponse): HttpResponse {
+        val response = try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // IOExceptions, Ktor timeout exceptions and engine failures that are not IOExceptions.
+            throw networkError(e)
+        }
+        val code = response.status.value
+        if (code in 200..299 || code in okCodes) return response
+        throw errorFor(response)
+    }
+
+    private suspend inline fun <reified T> callBody(
+        okCodes: Set<Int> = emptySet(),
+        noinline block: suspend () -> HttpResponse,
+    ): T {
+        val response = call(okCodes, block)
         return try {
             response.body<T>()
         } catch (e: CancellationException) {
@@ -189,6 +242,77 @@ class RelayClient(
     override suspend fun inbox(): List<Delivery> = callBody { http.get("$base/v1/inbox") { auth() } }
 
     override suspend fun ack(deliveryId: String) { call { http.delete("$base/v1/inbox/$deliveryId") { auth() } } }
+
+    override suspend fun createUpload(relativePath: String, mimeType: String, sizeBytes: Long): UploadStatus = callBody {
+        http.post("$base/v1/uploads") {
+            auth(); contentType(ContentType.Application.Json); setBody(CreateUploadRequest(relativePath, mimeType, sizeBytes))
+        }
+    }
+
+    override suspend fun uploadStatus(uploadId: String): UploadStatus = callBody { http.get("$base/v1/uploads/$uploadId") { auth() } }
+
+    override suspend fun uploadChunk(uploadId: String, start: Long, total: Long, bytes: ByteArray, length: Int): UploadStatus {
+        require(length in 1..bytes.size) { "bad chunk length $length" }
+        val body = object : OutgoingContent.WriteChannelContent() {
+            override val contentType = ContentType.Application.OctetStream
+            override val contentLength = length.toLong()
+            override suspend fun writeTo(channel: ByteWriteChannel) { channel.writeFully(bytes, 0, length) }
+        }
+        // 409: the relay holds a different offset (or the upload already finished); its body is the current status.
+        return callBody(okCodes = setOf(409)) {
+            http.put("$base/v1/uploads/$uploadId") {
+                auth()
+                transferTimeout()
+                header(HttpHeaders.ContentRange, "bytes $start-${start + length - 1}/$total")
+                setBody(body)
+            }
+        }
+    }
+
+    override suspend fun downloadFile(ref: FileRef, target: File, onProgress: (Long) -> Unit) = withContext(Dispatchers.IO) {
+        target.absoluteFile.parentFile?.mkdirs()
+        var have = if (target.isFile && target.length() <= ref.sizeBytes) target.length() else 0L
+        if (have == 0L) target.delete()
+        onProgress(have)
+        if (have < ref.sizeBytes) {
+            try {
+                http.prepareGet("$base/v1/files/${ref.id}") {
+                    auth()
+                    transferTimeout()
+                    if (have > 0) header(HttpHeaders.Range, "bytes=$have-")
+                }.execute { response ->
+                    when (response.status.value) {
+                        206 -> {}
+                        200 -> have = 0L // the relay sent the whole file: start over
+                        else -> throw errorFor(response)
+                    }
+                    val channel = response.bodyAsChannel()
+                    FileOutputStream(target, have > 0).use { out ->
+                        val buf = ByteArray(BUFFER_BYTES)
+                        while (have <= ref.sizeBytes) {
+                            val n = channel.readAvailable(buf, 0, buf.size)
+                            if (n < 0) break
+                            if (n == 0) continue
+                            out.write(buf, 0, n)
+                            have += n
+                            onProgress(have)
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: RelayException) {
+                throw e
+            } catch (e: Exception) {
+                throw networkError(e) // the partial target stays for the next resume
+            }
+        }
+        val actualSize = target.length()
+        if (actualSize != ref.sizeBytes || !sha256HexOf(target).equals(ref.sha256, ignoreCase = true)) {
+            target.delete()
+            throw RelayException(RelayErrorKind.INVALID, "file ${ref.id} failed its size or SHA-256 check")
+        }
+    }
 
     override fun events(): Flow<RelayEvent> = channelFlow {
         val inner = launch { connectLoop().collect { send(it) } }

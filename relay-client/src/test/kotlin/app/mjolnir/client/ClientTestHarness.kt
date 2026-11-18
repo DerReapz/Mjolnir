@@ -26,14 +26,27 @@ class TestDevice(val id: String, val api: RelayClient)
 class ClientTestScope(private val builder: ApplicationTestBuilder, val deps: RelayDeps, scope: CoroutineScope) : CoroutineScope by scope {
     private fun http(): HttpClient = builder.createClient { installMjolnirDefaults() }
 
-    val anonymousApi: RelayClient = RelayClient(http(), "http://localhost") { null }
+    // No transfer socket timeout here: Ktor 3.3.0's test host races on it (its socket-timeout watchdog reads a
+    // closed response channel and fails the test with ClosedWriteChannelException). Production keeps the timeout.
+    private fun client(token: () -> String?) = RelayClient(http(), "http://localhost", transferSocketTimeoutMs = null, token = token)
 
-    fun apiWithToken(token: String): RelayClient = RelayClient(http(), "http://localhost") { token }
+    val anonymousApi: RelayClient = client { null }
+
+    fun apiWithToken(token: String): RelayClient = client { token }
 
     suspend fun newDevice(name: String, kind: DeviceKind): TestDevice {
         val reg = anonymousApi.register(name, kind)
-        return TestDevice(reg.deviceId, RelayClient(http(), "http://localhost") { reg.token })
+        return TestDevice(reg.deviceId, client { reg.token })
     }
+}
+
+/** A registered PC and phone that are already paired: (pc, phone). */
+suspend fun ClientTestScope.pairedDevices(): Pair<TestDevice, TestDevice> {
+    val pc = newDevice("DESKTOP-4F2K", DeviceKind.PC)
+    val phone = newDevice("Pixel 8", DeviceKind.PHONE)
+    val claim = phone.api.claimPairingCode(pc.api.createPairingCode().code)
+    pc.api.acceptPairing(claim.pairingId)
+    return pc to phone
 }
 
 suspend fun ClientTestScope.awaitHubConnected(deviceId: String) {
@@ -82,8 +95,10 @@ fun silentWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
     RelayClient(http, "http://localhost", reconnectDelayMs = { 10L }, idleTimeoutMs = 200) { "t" }.use { block(it) }
 }
 
-fun clientTest(block: suspend ClientTestScope.() -> Unit) = testApplication {
-    val deps = RelayDeps(store = Store("jdbc:sqlite::memory:"))
+fun clientTest(
+    deps: RelayDeps = RelayDeps(store = Store("jdbc:sqlite::memory:")),
+    block: suspend ClientTestScope.() -> Unit,
+) = testApplication {
     application { relayModule(deps) }
     coroutineScope { ClientTestScope(this@testApplication, deps, this).block() }
 }

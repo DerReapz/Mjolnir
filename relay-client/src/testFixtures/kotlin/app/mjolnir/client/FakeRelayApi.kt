@@ -12,6 +12,13 @@ import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.SendRequest
 import app.mjolnir.protocol.SendResponse
 import app.mjolnir.protocol.Tab
+import app.mjolnir.protocol.FileRef
+import app.mjolnir.protocol.UploadStatus
+import app.mjolnir.protocol.safeFileName
+import app.mjolnir.protocol.safeRelativePath
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.security.MessageDigest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 
@@ -33,6 +40,35 @@ class FakeRelayApi : RelayApi {
     val pushTokens = mutableListOf<String>()
     val events = MutableSharedFlow<RelayEvent>(extraBufferCapacity = 64)
     var failAllWith: RelayException? = null
+
+    /** Finished files by id; [downloadFile] serves from here. */
+    val blobs: MutableMap<String, ByteArray> = mutableMapOf()
+    /** Open upload sessions by upload id. */
+    val sessions: MutableMap<String, ByteArrayOutputStream> = mutableMapOf()
+    /** Completed uploads, in order. */
+    val uploads: MutableList<FileRef> = mutableListOf()
+    /** Thrown by every [uploadChunk] while set. */
+    var failUploadsWith: RelayException? = null
+    private val sessionMeta = mutableMapOf<String, Triple<String, String, Long>>()
+    private var nextUpload = 0
+
+    /** Stores [bytes] as a finished file and returns its ref with the correct size and SHA-256. */
+    fun putBlob(id: String, relativePath: String, bytes: ByteArray): FileRef {
+        val path = safeRelativePath(relativePath)
+        blobs[id] = bytes
+        return FileRef(id, safeFileName(path), bytes.size.toLong(), "application/octet-stream", sha256(bytes), path)
+    }
+
+    private fun sha256(bytes: ByteArray) =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
+    private fun complete(id: String): FileRef {
+        val (path, mime, _) = sessionMeta.getValue(id)
+        val bytes = sessions.remove(id)!!.toByteArray()
+        val ref = putBlob(id, path, bytes).copy(mimeType = mime)
+        uploads += ref
+        return ref
+    }
 
     private fun check() { failAllWith?.let { throw it } }
 
@@ -62,6 +98,46 @@ class FakeRelayApi : RelayApi {
     override suspend fun inbox(): List<Delivery> { check(); return inbox.toList() }
     override suspend fun ack(deliveryId: String) { check(); acked += deliveryId; inbox.removeAll { it.id == deliveryId } }
     override fun events(): Flow<RelayEvent> = events
+
+    override suspend fun createUpload(relativePath: String, mimeType: String, sizeBytes: Long): UploadStatus {
+        check()
+        val id = "up-${++nextUpload}"
+        sessions[id] = ByteArrayOutputStream()
+        sessionMeta[id] = Triple(relativePath, mimeType, sizeBytes)
+        return UploadStatus(id, 0, if (sizeBytes == 0L) complete(id) else null)
+    }
+
+    override suspend fun uploadStatus(uploadId: String): UploadStatus {
+        check()
+        sessions[uploadId]?.let { return UploadStatus(uploadId, it.size().toLong()) }
+        val ref = uploads.find { it.id == uploadId } ?: throw RelayException(RelayErrorKind.NOT_FOUND, "not_found")
+        return UploadStatus(uploadId, ref.sizeBytes, ref)
+    }
+
+    override suspend fun uploadChunk(uploadId: String, start: Long, total: Long, bytes: ByteArray, length: Int): UploadStatus {
+        check()
+        failUploadsWith?.let { throw it }
+        val session = sessions[uploadId] ?: return uploadStatus(uploadId)
+        if (start != session.size().toLong()) return UploadStatus(uploadId, session.size().toLong())
+        session.write(bytes, 0, length)
+        val offset = session.size().toLong()
+        return UploadStatus(uploadId, offset, if (offset >= sessionMeta.getValue(uploadId).third) complete(uploadId) else null)
+    }
+
+    override suspend fun downloadFile(ref: FileRef, target: File, onProgress: (Long) -> Unit) {
+        check()
+        val bytes = blobs[ref.id] ?: throw RelayException(RelayErrorKind.NOT_FOUND, "not_found")
+        target.absoluteFile.parentFile?.mkdirs()
+        val have = if (target.isFile && target.length() <= ref.sizeBytes) target.length().toInt() else 0
+        onProgress(have.toLong())
+        if (have == 0) target.writeBytes(ByteArray(0))
+        if (have < bytes.size) target.appendBytes(bytes.copyOfRange(minOf(have, bytes.size), bytes.size))
+        onProgress(target.length())
+        if (target.length() != ref.sizeBytes || sha256(target.readBytes()) != ref.sha256) {
+            target.delete()
+            throw RelayException(RelayErrorKind.INVALID, "hash mismatch")
+        }
+    }
 }
 
 fun delivery(

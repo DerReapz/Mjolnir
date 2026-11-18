@@ -10,7 +10,10 @@ import app.mjolnir.protocol.RegisterResponse
 import app.mjolnir.protocol.SendResponse
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.Tab
+import app.mjolnir.protocol.FileRef
+import app.mjolnir.protocol.UploadStatus
 import kotlinx.coroutines.flow.Flow
+import java.io.File
 
 enum class RelayErrorKind { UNAUTHORIZED, NOT_PAIRED, INVALID, NOT_FOUND, RATE_LIMITED, TOO_LARGE, STORAGE_FULL, ALREADY_SENT, SERVER, NETWORK }
 
@@ -31,6 +34,19 @@ interface RelayApi {
     suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String> = emptyList()): SendResponse
     suspend fun inbox(): List<Delivery>
     suspend fun ack(deliveryId: String)
+
+    /** Starts a resumable upload session (TOO_LARGE / STORAGE_FULL when the relay refuses it). */
+    suspend fun createUpload(relativePath: String, mimeType: String, sizeBytes: Long): UploadStatus
+    /** Current offset of an upload session, or the finished [UploadStatus.file]; NOT_FOUND once the session is gone. */
+    suspend fun uploadStatus(uploadId: String): UploadStatus
+    /** Sends `bytes[0 until length]` at [start]. A 409 (offset mismatch) returns the server's status instead of throwing. */
+    suspend fun uploadChunk(uploadId: String, start: Long, total: Long, bytes: ByteArray, length: Int): UploadStatus
+    /**
+     * Downloads [ref] into [target], resuming from its length when it exists and is ≤ ref.sizeBytes (else starting over).
+     * Checks size and SHA-256 at the end; a mismatch deletes [target] and throws RelayException(INVALID).
+     * [onProgress] receives the number of bytes of [target] present so far.
+     */
+    suspend fun downloadFile(ref: FileRef, target: File, onProgress: (Long) -> Unit = {})
 
     /** Cold flow of live events; reconnects with backoff, throws RelayException(UNAUTHORIZED) and stops if the token is rejected. */
     fun events(): Flow<RelayEvent>
