@@ -23,6 +23,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -47,12 +48,18 @@ import app.mjolnir.client.LocalUpload
 import app.mjolnir.client.Messages
 import app.mjolnir.desktop.AppController
 import app.mjolnir.desktop.SendState
+import app.mjolnir.desktop.scanFiles
+import app.mjolnir.desktop.uploadUnitKey
 import app.mjolnir.protocol.topFolder
 import java.awt.FileDialog
 import java.awt.Frame
 import java.io.File
 import java.net.URI
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import javax.swing.JFileChooser
+import javax.swing.SwingUtilities
 import kotlinx.coroutines.launch
 
 /** Files shown together: a top folder (all its files) or one loose file. */
@@ -60,9 +67,11 @@ data class FileGroup(val name: String, val files: List<LocalUpload>) {
     val totalBytes: Long get() = files.sumOf { it.sizeBytes }
 }
 
+/** Groups by the folder each file was added from (absolute path), so two "Photos" folders stay separate. */
 fun fileGroups(files: List<LocalUpload>): List<FileGroup> =
-    files.groupBy { topFolder(it.relativePath)?.let { top -> "dir:$top" } ?: "file:${it.path}" }
-        .map { (key, list) -> FileGroup(if (key.startsWith("dir:")) key.removePrefix("dir:") else list.single().relativePath, list) }
+    files.groupBy(::uploadUnitKey).values.map { list ->
+        FileGroup(topFolder(list.first().relativePath) ?: list.first().relativePath, list)
+    }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
@@ -72,16 +81,35 @@ fun SendWindow(c: AppController, icon: Painter, onPair: () -> Unit, onClose: () 
     var state by remember { mutableStateOf(SendState().withPhones(peers, config.lastPhoneId)) }
     var sending by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val open = remember { AtomicBoolean(true) }
+    DisposableEffect(Unit) { onDispose { open.set(false) } }
+    // Walking folders and probing types reads the disk: never on the UI thread.
+    fun addFiles(files: List<File>) {
+        if (files.isEmpty()) return
+        scope.launch {
+            val scan = withContext(Dispatchers.IO) { scanFiles(files) }
+            state = state.withScanned(scan)
+        }
+    }
 
     LaunchedEffect(Unit) { c.refreshPeers() }
     LaunchedEffect(peers) { state = state.withPhones(peers, config.lastPhoneId) }
+
+    fun applySendResult(r: app.mjolnir.desktop.SendResult, tabs: List<app.mjolnir.protocol.Tab>, files: List<LocalUpload>) {
+        val sentUrls = r.sentTabs.map { it.url }.toSet()
+        var next = state
+        if (r.filesQueued) next = next.copy(files = next.files - files.toSet())
+        next = if (sentUrls.isNotEmpty() && sentUrls.size == tabs.size) next.withText("") else next.copy(selected = next.selected - sentUrls)
+        state = next.copy(notice = r.message)
+        sending = false
+    }
 
     val dropTarget = remember {
         object : DragAndDropTarget {
             override fun onDrop(event: DragAndDropEvent): Boolean = when (val data = event.dragData()) {
                 is DragData.FilesList -> {
                     val files = data.readFiles().mapNotNull { runCatching { File(URI(it)) }.getOrNull() }
-                    state = state.withFiles(files); true
+                    addFiles(files); true
                 }
                 is DragData.Text -> {
                     state = state.withText(listOf(state.text, data.readText()).filter { it.isNotBlank() }.joinToString("\n")); true
@@ -109,12 +137,12 @@ fun SendWindow(c: AppController, icon: Painter, onPair: () -> Unit, onClose: () 
                         val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
                         dialog.isVisible = true
                         val chosen = dialog.files.toList()
-                        if (chosen.isNotEmpty()) state = state.withFiles(chosen)
+                        addFiles(chosen)
                     }) { Text("Add files…") }
                     OutlinedButton(onClick = {
                         val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
                         if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) {
-                            state = state.withFiles(listOf(chooser.selectedFile))
+                            addFiles(listOf(chooser.selectedFile))
                         }
                     }) { Text("Add folder…") }
                 }
@@ -150,21 +178,12 @@ fun SendWindow(c: AppController, icon: Painter, onPair: () -> Unit, onClose: () 
                             val target = state.target ?: return@Button
                             val tabs = state.tabs(); val files = state.files
                             sending = true
-                            scope.launch {
-                                try {
-                                    val r = c.send(target, tabs, files)
-                                    val sentUrls = r.sentTabs.map { it.url }.toSet()
-                                    var next = state
-                                    if (r.filesQueued) next = next.copy(files = emptyList())
-                                    next = if (sentUrls.isNotEmpty() && sentUrls.size == tabs.size) {
-                                        next.withText("")
-                                    } else {
-                                        next.copy(selected = next.selected - sentUrls)
-                                    }
-                                    state = next.copy(notice = r.message)
-                                } finally {
-                                    sending = false
-                                }
+                            // The send runs in the controller's scope, so closing this window cannot cancel it;
+                            // if the window is gone by then, the result becomes a tray notification.
+                            c.startSend(target, tabs, files) { r ->
+                                if (!open.get()) return@startSend false
+                                SwingUtilities.invokeLater { applySendResult(r, tabs, files) }
+                                true
                             }
                         },
                     ) { Text("Send") }

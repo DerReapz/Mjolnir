@@ -29,6 +29,7 @@ import app.mjolnir.client.Messages
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
 import app.mjolnir.desktop.AppController
+import app.mjolnir.desktop.couldntGetCode
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.PairingCode
 import kotlinx.coroutines.delay
@@ -51,7 +52,8 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
     LaunchedEffect(generation) {
         code = null; error = null
         val api = c.api()
-        if (api == null) { error = Messages.failureReason(RelayErrorKind.NETWORK, ""); return@LaunchedEffect }
+        val self = c.config.value.deviceName
+        if (api == null) { error = couldntGetCode(Messages.failureReason(RelayErrorKind.NETWORK, self)); return@LaunchedEffect }
         try {
             val r = api.createPairingCode()
             // Count down locally from the moment the code arrived, so a skewed PC clock cannot shorten it.
@@ -59,7 +61,7 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
             remaining = Limits.PAIRING_TTL_MS
             code = r.code
         } catch (e: RelayException) {
-            error = Messages.failureReason(e.kind, "")
+            error = couldntGetCode(Messages.failureReason(e.kind, self))
         }
     }
     LaunchedEffect(code) {

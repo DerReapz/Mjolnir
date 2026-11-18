@@ -8,6 +8,7 @@ import app.mjolnir.client.Messages
 import app.mjolnir.client.Outbox
 import app.mjolnir.client.OutboxResult
 import app.mjolnir.client.OutgoingFiles
+import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayClient
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
@@ -48,8 +49,12 @@ private const val RETRY_DELAY_MS = 30_000L
 const val TOOLTIP_IDLE = "Mjolnir"
 
 /** The tray app's long-lived logic: relay connection, catching, outbox, and the actions the windows call. */
-class AppController(private val dataDir: File = appDataDir()) {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+class AppController(
+    private val dataDir: File = appDataDir(),
+    /** Runs everything that must outlive a window: relay calls, sends, lifecycle changes. */
+    val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    private val apiFactory: (url: String, token: () -> String?) -> RelayApi = { url, token -> RelayClient.create(url, token) },
+) {
 
     private val store = JsonFileStore(File(dataDir, "config.json"), DesktopConfig.serializer(), ::defaultDesktopConfig)
     private val _config = MutableStateFlow(store.read())
@@ -72,7 +77,7 @@ class AppController(private val dataDir: File = appDataDir()) {
     val notifications: SharedFlow<String> = _notifications
 
     private val clientLock = Any()
-    private var client: RelayClient? = null
+    private var client: RelayApi? = null
     private var clientUrl: String? = null
     private var serviceJob: Job? = null
     private val serviceSwitch = Mutex()
@@ -92,11 +97,11 @@ class AppController(private val dataDir: File = appDataDir()) {
     }
 
     /** The relay client for the configured URL, or null while no relay is set. */
-    fun api(): RelayClient? = synchronized(clientLock) {
+    fun api(): RelayApi? = synchronized(clientLock) {
         val url = _config.value.relayUrl.takeIf { it.isNotBlank() } ?: return null
         if (client == null || clientUrl != url) {
-            client?.close()
-            client = RelayClient.create(url) { store.read().token }
+            (client as? AutoCloseable)?.close()
+            client = apiFactory(url) { store.read().token }
             clientUrl = url
         }
         client
@@ -129,7 +134,7 @@ class AppController(private val dataDir: File = appDataDir()) {
                 CatchService(
                     api,
                     InboxDrainer(api, seen, catcher(api)::handle),
-                    onPairRequest = { _pairRequest.value = it },
+                    onPairRequest = { onPairRequested(it) },
                     onPeersChanged = { refreshPeers() },
                     afterDrain = { cleanStagingFolder(api) },
                     onConnected = { kickOutbox() },
@@ -149,13 +154,13 @@ class AppController(private val dataDir: File = appDataDir()) {
         }
     }
 
-    private fun catcher(api: RelayClient) = DesktopCatcher(
+    private fun catcher(api: RelayApi) = DesktopCatcher(
         api, TabOpener(),
         saveDir = { _config.value.saveDirFile() },
         notify = { notify(it) },
     )
 
-    private suspend fun cleanStagingFolder(api: RelayClient) {
+    private suspend fun cleanStagingFolder(api: RelayApi) {
         try {
             val keep = api.inbox().flatMap { d -> d.files.map { it.id } }.toSet()
             cleanStaging(File(_config.value.saveDirFile(), ".mjolnir-partial"), keep)
@@ -268,6 +273,22 @@ class AppController(private val dataDir: File = appDataDir()) {
 
     // ---- actions ------------------------------------------------------------------------------------------------
 
+    /**
+     * Sends in [scope], so closing the window cannot cancel it. [deliver] gets the result and returns false when its
+     * window is gone; the result is then shown as a tray notification instead.
+     */
+    fun startSend(target: Peer, tabs: List<Tab>, files: List<LocalUpload>, deliver: (SendResult) -> Boolean): Job =
+        scope.launch {
+            val result = try {
+                send(target, tabs, files)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) { // a local failure, e.g. writing outbox.json
+                SendResult(Messages.notSent(Messages.failureReason(RelayErrorKind.SERVER, target.name)), emptyList(), false)
+            }
+            if (!deliver(result)) notify(result.message)
+        }
+
     /** Sends links now and queues files; returns the message to show. */
     suspend fun send(target: Peer, tabs: List<Tab>, files: List<LocalUpload>): SendResult {
         val api = api() ?: return SendResult(Messages.notSent(Messages.failureReason(RelayErrorKind.NETWORK, target.name)), emptyList(), false)
@@ -313,36 +334,60 @@ class AppController(private val dataDir: File = appDataDir()) {
         _peers.value.find { it.deviceId == _config.value.lastPhoneId }?.name ?: "phone"
 
     fun openReceivedFiles() {
-        val dir = _config.value.saveDirFile()
-        try {
-            if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) Desktop.getDesktop().open(dir)
-            else ProcessBuilder("explorer.exe", dir.absolutePath).start()
-        } catch (e: Exception) {
-            // nothing sensible to do
+        scope.launch {
+            try {
+                val dir = _config.value.saveDirFile()
+                if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) Desktop.getDesktop().open(dir)
+                else ProcessBuilder("explorer.exe", dir.absolutePath).start()
+            } catch (e: Exception) {
+                // nothing sensible to do
+            }
         }
     }
 
-    suspend fun accept(request: RelayEvent.PairRequested) = answer(request, accept = true)
-    suspend fun reject(request: RelayEvent.PairRequested) = answer(request, accept = false)
+    internal fun onPairRequested(request: RelayEvent.PairRequested) {
+        _pairRequest.value = request
+    }
+
+    private val answering = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+
+    /**
+     * Answers a pairing request in [scope] (never in a window's scope: the dialog disappears when the request clears).
+     * The request is cleared only after the relay call returns. Repeated clicks while answering are ignored.
+     */
+    fun answerPairRequest(request: RelayEvent.PairRequested, accept: Boolean): Job? {
+        if (!answering.add(request.pairingId)) return null
+        return scope.launch {
+            try {
+                answer(request, accept)
+            } finally {
+                _pairRequest.compareAndSet(request, null)
+                answering.remove(request.pairingId)
+            }
+        }
+    }
 
     private suspend fun answer(request: RelayEvent.PairRequested, accept: Boolean) {
-        _pairRequest.compareAndSet(request, null)
         val api = api() ?: return
         try {
             if (accept) {
                 api.acceptPairing(request.pairingId)
-                refreshPeers()
-                val name = request.from.name
-                if (_pairedWith.subscriptionCount.value > 0) _pairedWith.emit(name) else notify("Paired with $name")
             } else {
                 api.rejectPairing(request.pairingId)
+                return
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
-            notify(Messages.failureReason(e.kind, request.from.name))
+            notify(couldntAnswer(Messages.failureReason(e.kind, request.from.name)))
+            return
         }
+        refreshPeers()
+        val name = request.from.name
+        if (_pairedWith.subscriptionCount.value > 0) _pairedWith.emit(name) else notify("Paired with $name")
     }
+
+    fun startUnpair(peer: Peer): Job = scope.launch { unpair(peer) }
 
     suspend fun unpair(peer: Peer) {
         val api = api() ?: return
@@ -356,14 +401,21 @@ class AppController(private val dataDir: File = appDataDir()) {
         refreshPeers()
     }
 
-    /** Switches relay: forgets credentials and pairings, then registers on the new one. */
-    suspend fun changeRelay(url: String) {
-        if (url == _config.value.relayUrl) return
-        serviceSwitch.withLock { serviceJob?.cancelAndJoin(); serviceJob = null }
-        updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null) }
-        _peers.value = emptyList()
-        restartService()
+    /** Switches relay in [scope]: forgets credentials and pairings, then registers on the new one. */
+    fun changeRelay(url: String): Job = scope.launch {
+        relaySwitch.withLock {
+            if (url == _config.value.relayUrl) return@withLock
+            serviceSwitch.withLock { serviceJob?.cancelAndJoin(); serviceJob = null }
+            updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null) }
+            _peers.value = emptyList()
+            restartService()
+        }
     }
+
+    private val relaySwitch = Mutex()
+
+    /** Renames in [scope]; [onResult] gets an error message or null. */
+    fun startRename(name: String, onResult: (String?) -> Unit): Job = scope.launch { onResult(rename(name)) }
 
     /** Renames this device on the relay (when registered) and in the config; returns an error message or null. */
     suspend fun rename(name: String): String? {
@@ -384,20 +436,22 @@ class AppController(private val dataDir: File = appDataDir()) {
     }
 
     fun setSaveDir(dir: File) {
-        updateConfig { it.copy(saveDir = dir.absolutePath) }
+        scope.launch { updateConfig { it.copy(saveDir = dir.absolutePath) } }
     }
 
-    fun setLaunchAtLogin(enabled: Boolean): Boolean {
-        val ok = app.mjolnir.desktop.setLaunchAtLogin(enabled)
-        if (ok) updateConfig { it.copy(launchAtLogin = enabled) }
-        return ok
+    /** Runs `reg` in [scope]; the setting is stored only when it succeeded. */
+    fun setLaunchAtLogin(enabled: Boolean): Job = scope.launch {
+        if (app.mjolnir.desktop.setLaunchAtLogin(enabled)) updateConfig { it.copy(launchAtLogin = enabled) }
     }
 
     fun shutdown() {
-        synchronized(clientLock) { client?.close(); client = null }
+        synchronized(clientLock) { (client as? AutoCloseable)?.close(); client = null }
         scope.coroutineContext[Job]?.cancel()
     }
 }
+
+fun couldntGetCode(reason: String) = "Couldn't get a code: $reason."
+fun couldntAnswer(reason: String) = "Couldn't answer the request: $reason."
 
 data class SendResult(val message: String, val sentTabs: List<Tab>, val filesQueued: Boolean)
 

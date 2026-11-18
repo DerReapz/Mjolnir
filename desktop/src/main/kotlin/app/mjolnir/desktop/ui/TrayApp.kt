@@ -17,7 +17,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.painter.BitmapPainter
@@ -34,7 +33,6 @@ import androidx.compose.ui.window.rememberTrayState
 import app.mjolnir.desktop.AppController
 import app.mjolnir.protocol.RelayEvent
 import javax.imageio.ImageIO
-import kotlinx.coroutines.launch
 
 fun loadIcon(): Painter {
     val image = AppController::class.java.getResourceAsStream("/tray.png")!!.use { ImageIO.read(it) }
@@ -85,9 +83,9 @@ fun ApplicationScope.TrayApp(c: AppController, onQuit: () -> Unit) {
 /** `Pair with {name}?` — closing the dialog counts as Reject. */
 @Composable
 private fun PairRequestDialog(c: AppController, request: RelayEvent.PairRequested, icon: Painter) {
-    val scope = rememberCoroutineScope()
+    // Answers run in the controller's scope: this dialog leaves the composition as soon as the request clears.
     DialogWindow(
-        onCloseRequest = { scope.launch { c.reject(request) } },
+        onCloseRequest = { c.answerPairRequest(request, accept = false) },
         state = rememberDialogState(size = DpSize(360.dp, 170.dp)),
         title = "Mjolnir",
         icon = icon,
@@ -98,9 +96,9 @@ private fun PairRequestDialog(c: AppController, request: RelayEvent.PairRequeste
                 Text("Pair with ${request.from.name}?", style = MaterialTheme.typography.titleMedium)
                 Row {
                     Spacer(Modifier.weight(1f))
-                    OutlinedButton(onClick = { scope.launch { c.reject(request) } }) { Text("Reject") }
+                    OutlinedButton(onClick = { c.answerPairRequest(request, accept = false) }) { Text("Reject") }
                     Spacer(Modifier.width(12.dp))
-                    Button(onClick = { scope.launch { c.accept(request) } }) { Text("Accept") }
+                    Button(onClick = { c.answerPairRequest(request, accept = true) }) { Text("Accept") }
                 }
             }
         }

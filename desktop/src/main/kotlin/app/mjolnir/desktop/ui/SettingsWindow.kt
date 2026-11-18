@@ -16,7 +16,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,10 +27,9 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.rememberWindowState
 import app.mjolnir.client.RelayUrls
 import app.mjolnir.desktop.AppController
-import app.mjolnir.desktop.saveDirFile
+import app.mjolnir.desktop.saveDirPath
 import app.mjolnir.protocol.Limits
 import javax.swing.JFileChooser
-import kotlinx.coroutines.launch
 
 const val USE_HTTPS = "Use an https:// address"
 const val RELAY_CHANGE_WARNING = "Changing the relay unpairs all devices."
@@ -51,7 +49,6 @@ fun isValidDeviceName(name: String): Boolean = name.trim().length in 1..Limits.M
 @Composable
 fun SettingsWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
     val config by c.config.collectAsState()
-    val scope = rememberCoroutineScope()
     var relay by remember { mutableStateOf(config.relayUrl) }
     var relayAttempted by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf(config.deviceName) }
@@ -69,7 +66,7 @@ fun SettingsWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
                         relayAttempted = true
                         val url = RelayUrls.normalize(relay) ?: return@OutlinedButton
                         relay = url
-                        scope.launch { c.changeRelay(url) }
+                        c.changeRelay(url) // runs in the controller's scope: closing Settings cannot interrupt it
                     }) { Text("Save") }
                 }
                 relayFieldMessage(relay, config.relayUrl, relayAttempted)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -80,16 +77,16 @@ fun SettingsWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
                         modifier = Modifier.weight(1f), isError = !isValidDeviceName(name))
                     OutlinedButton(
                         enabled = isValidDeviceName(name) && name.trim() != config.deviceName,
-                        onClick = { scope.launch { nameError = c.rename(name); if (nameError == null) name = name.trim() } },
+                        onClick = { c.startRename(name) { err -> nameError = err; if (err == null) name = name.trim() } },
                     ) { Text("Save") }
                 }
                 nameError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
                 Text("Save received files to", style = MaterialTheme.typography.titleSmall)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(config.saveDirFile().absolutePath, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(config.saveDirPath().absolutePath, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
                     OutlinedButton(onClick = {
-                        val chooser = JFileChooser(config.saveDirFile()).apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+                        val chooser = JFileChooser(config.saveDirPath()).apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
                         if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) c.setSaveDir(chooser.selectedFile)
                     }) { Text("Change…") }
                 }

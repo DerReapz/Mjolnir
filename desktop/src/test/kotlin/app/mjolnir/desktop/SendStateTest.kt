@@ -76,3 +76,27 @@ class GroupForSendingTest {
         assertEquals(listOf(a, b + loose), groups)
     }
 }
+
+class SameNameFoldersTest {
+    private fun photos(parent: File, file: String) = File(parent, "Photos").apply { mkdirs(); File(this, file).writeText(file) }
+
+    // two different folders named Photos stay separate: separate sends, separate rows, Remove removes one
+    @Test fun sameNamedFoldersStaySeparate(@TempDir dir: File) {
+        val a = photos(File(dir, "one"), "a.jpg"); val b = photos(File(dir, "two"), "b.jpg")
+        val s = SendState().withFiles(listOf(a, b))
+        assertEquals(2, s.files.size)
+        assertEquals(listOf(listOf("Photos/a.jpg"), listOf("Photos/b.jpg")), groupForSending(s.files).map { g -> g.map { it.relativePath } })
+        val rows = app.mjolnir.desktop.ui.fileGroups(s.files)
+        assertEquals(listOf("Photos", "Photos"), rows.map { it.name })
+        val afterRemove = rows[0].files.fold(s) { st, f -> st.removeFile(f.path) }
+        assertEquals(listOf(File(b, "b.jpg").path), afterRemove.files.map { it.path })
+    }
+
+    // the walk stops past the limit instead of reading the whole tree
+    @Test fun walkStopsPastLimit(@TempDir dir: File) {
+        val f = File(dir, "F").apply { mkdirs() }; repeat(5) { File(f, "$it.txt").writeText("x") }
+        assertNull(walkFolderLimited(f, 3))
+        assertEquals(5, walkFolderLimited(f, 5)!!.size)
+        assertEquals("F has too many files (max 1000)", scanFiles(listOf(f), maxFiles = 3).single().refusal)
+    }
+}
