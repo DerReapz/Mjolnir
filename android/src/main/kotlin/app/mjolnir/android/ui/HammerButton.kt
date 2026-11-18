@@ -4,6 +4,7 @@ import android.view.HapticFeedbackConstants
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -46,26 +47,11 @@ fun hammerLabel(phase: ThrowPhase, hasTarget: Boolean): String = when {
  * whether a press arms (needs a target and a selection).
  */
 @Composable
-fun HammerButton(vm: ThrowViewModel, sensor: FlickSensor, phase: ThrowPhase, hasTarget: Boolean, modifier: Modifier = Modifier) {
+fun HammerButton(vm: ThrowViewModel, sensor: FlickSensor, phase: ThrowPhase, hasTarget: Boolean, flight: HammerFlight, modifier: Modifier = Modifier) {
     val view = LocalView.current
     val enabled = hasTarget
     val currentVm by rememberUpdatedState(vm)
     val currentSensor by rememberUpdatedState(sensor)
-
-    val screenHeightPx = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
-    val progress = remember { Animatable(0f) }
-    val alpha = remember { Animatable(1f) }
-    LaunchedEffect(phase == ThrowPhase.Throwing) {
-        if (phase == ThrowPhase.Throwing) {
-            alpha.snapTo(1f)
-            progress.snapTo(0f)
-            progress.animateTo(1f, tween(400))
-            alpha.snapTo(0f) // gone until the throw ends
-        } else {
-            progress.snapTo(0f)
-            alpha.animateTo(1f, tween(250)) // fades back in at rest
-        }
-    }
 
     Surface(
         modifier = modifier
@@ -81,10 +67,13 @@ fun HammerButton(vm: ThrowViewModel, sensor: FlickSensor, phase: ThrowPhase, has
                         currentSensor.start()
                         view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                     }
-                    waitForUpOrCancellation()
-                    if (armed) {
-                        currentSensor.stop()
-                        currentVm.onHoldEnd()
+                    try {
+                        waitForUpOrCancellation()
+                    } finally { // also runs when this coroutine is cancelled mid-hold (e.g. `enabled` flips)
+                        if (armed) {
+                            currentSensor.stop()
+                            currentVm.onHoldEnd()
+                        }
                     }
                 }
             },
@@ -94,16 +83,7 @@ fun HammerButton(vm: ThrowViewModel, sensor: FlickSensor, phase: ThrowPhase, has
         else MaterialTheme.colorScheme.primaryContainer,
     ) {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Box(
-                Modifier
-                    .size(96.dp)
-                    .graphicsLayer {
-                        translationY = -screenHeightPx * progress.value
-                        rotationZ = 720f * progress.value
-                    }
-                    .alpha(alpha.value),
-                contentAlignment = Alignment.Center,
-            ) { Text("🔨", fontSize = 64.sp) }
+            Box(Modifier.size(96.dp).alpha(flight.restAlpha.value), contentAlignment = Alignment.Center) { Text("🔨", fontSize = 64.sp) }
             Text(
                 hammerLabel(phase, hasTarget),
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 16.dp),
@@ -119,4 +99,47 @@ fun confirmHaptic(view: android.view.View) {
     view.performHapticFeedback(
         if (android.os.Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.LONG_PRESS,
     )
+}
+
+/** Animation state shared by the resting hammer in the button and the [FlyingHammer] overlay. */
+class HammerFlight(val progress: Animatable<Float, *>, val restAlpha: Animatable<Float, *>)
+
+@Composable
+fun rememberHammerFlight(phase: ThrowPhase): HammerFlight {
+    val flight = remember { HammerFlight(Animatable(0f), Animatable(1f)) }
+    LaunchedEffect(phase == ThrowPhase.Throwing) {
+        if (phase == ThrowPhase.Throwing) {
+            flight.restAlpha.snapTo(0f) // the resting hammer is the one that flies
+            flight.progress.snapTo(0f)
+            flight.progress.animateTo(1f, tween(400))
+        } else {
+            flight.progress.snapTo(0f)
+            flight.restAlpha.animateTo(1f, tween(250)) // fades back in at rest
+        }
+    }
+    return flight
+}
+
+/**
+ * The flying hammer, drawn at the root of the throw screen (outside the button's clipped surface): 400 ms from the
+ * button up past the top edge, 0 to 720 degrees. Takes no pointer input.
+ */
+@Composable
+fun FlyingHammer(flight: HammerFlight, phase: ThrowPhase, modifier: Modifier = Modifier) {
+    val screenHeightPx = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    if (phase != ThrowPhase.Throwing || flight.progress.value >= 1f) return
+    Box(modifier.fillMaxSize()) {
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 108.dp) // roughly the button's centre
+                .size(96.dp)
+                .graphicsLayer {
+                    clip = false
+                    translationY = -screenHeightPx * flight.progress.value
+                    rotationZ = 720f * flight.progress.value
+                },
+            contentAlignment = Alignment.Center,
+        ) { Text("🔨", fontSize = 64.sp) }
+    }
 }

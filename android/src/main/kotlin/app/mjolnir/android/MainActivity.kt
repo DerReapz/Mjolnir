@@ -24,11 +24,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import app.mjolnir.android.share.Imported
 import app.mjolnir.android.share.UriImporter
 import app.mjolnir.android.share.tabsFromShare
-import app.mjolnir.android.data.TrayItem
-import app.mjolnir.android.throwing.Sensitivity
 import app.mjolnir.android.ui.CaughtPlaceholder
 import app.mjolnir.android.ui.DevicesScreen
 import app.mjolnir.android.ui.DevicesViewModel
@@ -64,10 +61,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private val throwVm: ThrowViewModel by viewModels { factory }
-    private val importer by lazy { UriImporter(this, container.outboxDir) }
+    private val importer by lazy { UriImporter(applicationContext, container.outboxDir) } // never captures the Activity
 
     private var requestedScreen by mutableStateOf<Screen?>(null)
-    private var sensitivity by mutableStateOf(Sensitivity.MEDIUM)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,7 +78,7 @@ class MainActivity : ComponentActivity() {
                 Scaffold(bottomBar = { MjolnirNav(screen, onSelect = { screen = it }) }) { padding ->
                     Box(Modifier.fillMaxSize().padding(padding)) {
                         when (screen) {
-                            Screen.THROW -> ThrowScreen(throwVm, importer, sensitivity, onPairPc = { screen = Screen.DEVICES })
+                            Screen.THROW -> ThrowScreen(throwVm, importer, onPairPc = { screen = Screen.DEVICES })
                             Screen.CAUGHT -> CaughtPlaceholder() // replaced when the receive task lands
                             Screen.DEVICES -> DevicesScreen(viewModel(factory = factory), viewModel(factory = factory))
                             Screen.SETTINGS -> SettingsScreen(viewModel(factory = factory))
@@ -107,13 +103,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        lifecycleScope.launch {
-            sensitivity = try { withContext(Dispatchers.IO) { container.config.read().sensitivity } } catch (_: Exception) { sensitivity }
-        }
-    }
-
     private fun askForNotifications() {
         if (Build.VERSION.SDK_INT < 33) return
         val prefs = getSharedPreferences("ui", MODE_PRIVATE)
@@ -128,6 +117,8 @@ class MainActivity : ComponentActivity() {
     private fun handleShare(intent: Intent) {
         val action = intent.action
         if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+        // Reopening from Recents re-delivers the original share; it was already imported.
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
         val texts = if (action == Intent.ACTION_SEND) {
             listOfNotNull(intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString())
         } else {
@@ -137,16 +128,10 @@ class MainActivity : ComponentActivity() {
         val uris = streamUris(intent, action)
         intent.action = null // handled; a re-delivery of this intent must not import again
 
-        lifecycleScope.launch {
-            val tabs = tabsFromShare(texts, subject)
-            val files: Imported = if (uris.isEmpty()) Imported(emptyList(), emptyList())
-            else withContext(Dispatchers.IO) { importer.importUris(uris) }
-            val items: List<TrayItem> = tabs.map { TrayItem.Link(it) } + files.items
-            // A share of only files that all failed already carries notices; "no links" is only for text-only shares.
-            val notices = files.notices
-            throwVm.addShared(items, if (items.isEmpty() && uris.isEmpty()) emptyList() else notices)
-            requestedScreen = Screen.THROW
-        }
+        // The view model owns the import, so rotating mid-copy neither loses the share nor orphans the copies.
+        val importer = importer
+        throwVm.importShared(tabsFromShare(texts, subject), if (uris.isEmpty()) null else ({ importer.importUris(uris) }))
+        requestedScreen = Screen.THROW
     }
 
     @Suppress("DEPRECATION")

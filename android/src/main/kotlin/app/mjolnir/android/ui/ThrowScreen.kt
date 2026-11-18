@@ -50,7 +50,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.mjolnir.android.data.TrayItem
 import app.mjolnir.android.share.UriImporter
 import app.mjolnir.android.throwing.FlickSensor
-import app.mjolnir.android.throwing.Sensitivity
 import app.mjolnir.android.throwing.ThrowDetector
 import app.mjolnir.client.Messages
 import kotlinx.coroutines.Dispatchers
@@ -62,7 +61,6 @@ import kotlinx.coroutines.withContext
 fun ThrowScreen(
     vm: ThrowViewModel,
     importer: UriImporter,
-    sensitivity: Sensitivity,
     onPairPc: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -74,8 +72,9 @@ fun ThrowScreen(
 
     // Sensor: the detector and sensor live as long as the screen; listening follows the lifecycle (warm-up for the
     // accelerometer fallback starts when the screen is visible).
-    val detector = remember { ThrowDetector(sensitivity) }
-    detector.sensitivity = sensitivity
+    val detector = remember { ThrowDetector(state.sensitivity) }
+    LaunchedEffect(state.sensitivity) { detector.sensitivity = state.sensitivity }
+    LaunchedEffect(Unit) { vm.refreshSensitivity() } // entering the screen: Settings may have changed it
     val currentVm by rememberUpdatedState(vm)
     val sensor = remember {
         lateinit var s: FlickSensor
@@ -92,7 +91,7 @@ fun ThrowScreen(
     DisposableEffect(lifecycleOwner, sensor) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> sensor.prepare()
+                Lifecycle.Event.ON_RESUME -> { sensor.prepare(); currentVm.refreshSensitivity() }
                 Lifecycle.Event.ON_PAUSE -> { sensor.release(); currentVm.onHoldEnd() }
                 else -> Unit
             }
@@ -131,6 +130,7 @@ fun ThrowScreen(
         }
     }
 
+    val flight = rememberHammerFlight(state.phase)
     Box(modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -149,8 +149,9 @@ fun ThrowScreen(
                         onToggle = { vm.toggle(item.id) }, onRemove = { vm.remove(item.id) })
                 }
             }
-            HammerButton(vm, sensor, state.phase, hasTarget = state.targetPcId != null, modifier = Modifier.padding(vertical = 16.dp))
+            HammerButton(vm, sensor, state.phase, hasTarget = state.targetPcId != null, flight = flight, modifier = Modifier.padding(vertical = 16.dp))
         }
+        FlyingHammer(flight, state.phase) // above everything, unclipped, so it can leave the top of the screen
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 232.dp))
     }
 }
@@ -208,6 +209,6 @@ private fun describe(item: TrayItem): RowText = when (item) {
     is TrayItem.LocalFile -> RowText(item.name, Messages.size(item.sizeBytes), "📄")
     is TrayItem.Folder -> {
         val n = item.files.size
-        RowText(item.name, "${if (n == 1) "1 file" else "$n files"}, ${Messages.size(item.files.sumOf { it.sizeBytes })}", "📁")
+        RowText(item.name, "${Messages.items(0, n)}, ${Messages.size(item.files.sumOf { it.sizeBytes })}", "📁")
     }
 }

@@ -216,6 +216,25 @@ class ThrowViewModelTest {
         assertTrue(scheduled.isEmpty())
     }
 
+    @Test fun importSharedAddsLinksAndImportedFilesAndNotices() = runTest {
+        vm.importShared(listOf(Tab("https://a.com")), { app.mjolnir.android.share.Imported(listOf(f), listOf("big.mp4 is too big (max 100 MB)")) })
+        advanceUntilIdle()
+        assertEquals(listOf<TrayItem>(a, f), vm.state.value.tray)
+        assertEquals(setOf(a.id, f.id), vm.state.value.selected)
+        assertEquals("big.mp4 is too big (max 100 MB)", vm.state.value.notice)
+    }
+
+    @Test fun importSharedWithNothingUsableSaysSo() = runTest {
+        vm.importShared(emptyList(), null); advanceUntilIdle()
+        assertEquals("No links found in what you shared", vm.state.value.notice)
+    }
+
+    @Test fun refreshSensitivityReadsSettings() = runTest {
+        configStore.write(configStore.read().copy(sensitivity = app.mjolnir.android.throwing.Sensitivity.HIGH))
+        vm.refreshSensitivity(); advanceUntilIdle()
+        assertEquals(app.mjolnir.android.throwing.Sensitivity.HIGH, vm.state.value.sensitivity)
+    }
+
     @Test fun secondFlickWhileThrowingIsIgnored() = runTest {
         val gate = CompletableDeferred<Unit>()
         api.onSend = { gate.await(); SendResponse("d1") }

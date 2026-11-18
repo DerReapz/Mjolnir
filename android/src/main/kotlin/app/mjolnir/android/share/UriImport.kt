@@ -44,7 +44,7 @@ class UriImporter(private val context: Context, private val outboxDir: File) {
     /** Walks a picked folder tree (never deeper than [MAX_DEPTH], never more than one send's worth of files + 1). */
     fun importTree(treeUri: Uri): Imported {
         val root = DocumentFile.fromTreeUri(context, treeUri)
-        val name = root?.name ?: return Imported(emptyList(), listOf("Couldn't read that folder"))
+        val name = root?.name ?: return Imported(emptyList(), listOf(app.mjolnir.client.Messages.unreadable("that folder")))
         val entries = mutableListOf<FolderEntry>()
         walk(root, name, 0, entries)
         return when (val r = importFolder(name, entries)) {

@@ -5,6 +5,9 @@ import androidx.lifecycle.viewModelScope
 import app.mjolnir.android.data.PhoneConfig
 import app.mjolnir.android.data.TrayItem
 import app.mjolnir.android.data.toUploads
+import app.mjolnir.android.share.Imported
+import app.mjolnir.android.throwing.Sensitivity
+import app.mjolnir.protocol.Tab
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.Messages
 import app.mjolnir.client.OutgoingFiles
@@ -41,6 +44,7 @@ data class ThrowUiState(
     val phase: ThrowPhase = ThrowPhase.Idle,
     val notice: String? = null,
     val outgoing: List<OutgoingFiles> = emptyList(),
+    val sensitivity: Sensitivity = Sensitivity.MEDIUM,
 ) {
     val canThrow: Boolean get() = targetPcId != null && selected.isNotEmpty() && phase == ThrowPhase.Idle
 }
@@ -99,6 +103,31 @@ class ThrowViewModel(
             )
         }
         if (fresh.isNotEmpty()) persistTray()
+    }
+
+    /**
+     * Imports a share in [viewModelScope], so it survives the activity being recreated mid-copy. [importFiles] does
+     * the blocking copying (run on [io]) and must not capture an Activity.
+     */
+    fun importShared(tabs: List<Tab>, importFiles: (() -> Imported)?) {
+        viewModelScope.launch {
+            val files = if (importFiles == null) Imported(emptyList(), emptyList())
+            else try {
+                withContext(io) { importFiles() }
+            } catch (e: IOException) {
+                Imported(emptyList(), emptyList())
+            }
+            val items = tabs.map { TrayItem.Link(it) } + files.items
+            addShared(items, files.notices)
+        }
+    }
+
+    /** Re-reads the throw sensitivity from settings; call when the throw screen is entered. */
+    fun refreshSensitivity() {
+        viewModelScope.launch {
+            val value = try { withContext(io) { config.read().sensitivity } } catch (e: IOException) { return@launch }
+            _state.update { it.copy(sensitivity = value) }
+        }
     }
 
     fun toggle(id: String) {
