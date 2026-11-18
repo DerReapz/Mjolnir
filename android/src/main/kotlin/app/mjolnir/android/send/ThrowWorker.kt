@@ -1,16 +1,13 @@
 package app.mjolnir.android.send
 
-import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
-import android.os.Build
 import android.os.SystemClock
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -24,6 +21,9 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import app.mjolnir.android.MjolnirApp
+import app.mjolnir.android.notificationId
+import app.mjolnir.android.postNotification
+import app.mjolnir.android.shouldReportProgress
 import app.mjolnir.android.data.returnToTray
 import app.mjolnir.client.Messages
 import app.mjolnir.client.OutboxResult
@@ -49,22 +49,6 @@ fun uniqueThrowWork(outboxId: String) = "throw-$outboxId"
 /** The id of the per-throw notification (waiting for Wi-Fi, then the result); the progress one is separate. */
 fun throwNotificationId(outboxId: String) = notificationId("throw:$outboxId")
 private fun progressNotificationId(outboxId: String) = notificationId("throw-progress:$outboxId")
-
-/** A notification id for [key]; never 0, which startForeground refuses. */
-internal fun notificationId(key: String): Int = key.hashCode().takeIf { it != 0 } ?: 1
-
-/** Minimum time between two progress updates (setProgress and the notification). */
-private const val PROGRESS_INTERVAL_MS = 500L
-
-/**
- * Whether a progress update for [pct] should go out now: only for a new whole percent, at most every
- * [PROGRESS_INTERVAL_MS], except that 100% always goes out.
- */
-fun shouldReportProgress(pct: Int, lastPct: Int, nowMs: Long, lastMs: Long?): Boolean = when {
-    pct == lastPct -> false
-    pct >= 100 || lastMs == null -> true
-    else -> nowMs - lastMs >= PROGRESS_INTERVAL_MS
-}
 
 /**
  * Schedules the background throw of outbox item [outboxId] as unique work `throw-$outboxId`: it runs on any
@@ -111,17 +95,6 @@ fun createSendingChannels(context: Context) {
     val manager = context.getSystemService(NotificationManager::class.java)
     manager.createNotificationChannel(NotificationChannel(CHANNEL_SENDING, "Throwing files", NotificationManager.IMPORTANCE_DEFAULT))
     manager.createNotificationChannel(NotificationChannel(CHANNEL_SENDING_PROGRESS, "Throw progress", NotificationManager.IMPORTANCE_LOW))
-}
-
-/** Posts [notification] when the app may; without the permission nothing is shown. */
-internal fun postNotification(context: Context, id: Int, notification: Notification) {
-    if (Build.VERSION.SDK_INT >= 33 &&
-        context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-    ) return
-    try {
-        context.getSystemService(NotificationManager::class.java).notify(id, notification)
-    } catch (_: SecurityException) {
-    }
 }
 
 /** Throws one outbox item in the background (input [KEY_OUTBOX_ID]), resuming where an earlier attempt stopped. */

@@ -48,5 +48,27 @@
         <receiver
             android:name="app.mjolnir.android.send.SendNowReceiver"
             android:exported="false" />
+
+        <receiver
+            android:name="app.mjolnir.android.receive.DownloadNowReceiver"
+            android:exported="false" />
+
+        <!-- A Caught notification's "Open all links": invisible, gone as soon as the links are opened. -->
+        <activity
+            android:name="app.mjolnir.android.OpenAllActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- The relay's push "doorbell" ({"type":"inbox"}); idle without google-services.json. -->
+        <service
+            android:name="app.mjolnir.android.receive.MjolnirMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

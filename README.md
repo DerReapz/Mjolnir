@@ -62,6 +62,16 @@ Without this the relay still works; the phone simply is not woken immediately.
 2. Download `google-services.json` and place it in `android/` (it is git-ignored; do not commit it), then rebuild the APK. The Google services plugin is only applied when that file exists.
 3. In Project settings, Service accounts, generate a new private key. This is the service-account JSON the relay uses (see the Fly.io step above, or set `GOOGLE_APPLICATION_CREDENTIALS` when running locally).
 4. Restart the relay. The log should say `FCM enabled`. The phone registers its token with `PUT /v1/devices/me/push-token`, and each send then rings it with a data message `{"type":"inbox"}`.
+5. Open the app once after installing the new APK: it fetches its FCM token and gives it to the relay (again whenever Firebase rotates it, and after the device re-registers).
+
+What the phone does with what it receives:
+
+- A push (or opening the app, or a check every 15 minutes when there is no push) drains the inbox in the background, even with the phone locked.
+- Links appear on the *Caught* screen and in a `Caught … from {pc}` notification; its *Open all links* action opens them in the browser. Nothing is opened automatically.
+- Files and folders are downloaded to private staging first (an interrupted download resumes), hash-checked, and only then saved to `Download/Mjolnir` (folders keep their structure; a name that is taken gets ` (1)`). Tap a file on the *Caught* screen to open it.
+- On mobile data, deliveries over the large-file threshold (Settings, default 25 MB) wait for Wi-Fi with a `Waiting for Wi-Fi: …` notification; *Download now* fetches that one delivery over mobile data. Choose *Use mobile data* in Settings to never wait.
+
+Without `google-services.json` the build still works; items then arrive when the app is opened or on the 15-minute check.
 
 ## Install the Windows app
 

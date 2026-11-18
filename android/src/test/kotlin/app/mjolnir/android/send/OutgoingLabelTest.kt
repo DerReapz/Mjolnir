@@ -1,5 +1,7 @@
 package app.mjolnir.android.send
 
+import app.mjolnir.android.notificationId
+import app.mjolnir.android.shouldReportProgress
 import kotlin.test.assertEquals
 import org.junit.Test
 

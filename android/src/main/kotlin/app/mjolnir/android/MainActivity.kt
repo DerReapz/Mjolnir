@@ -27,7 +27,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import app.mjolnir.android.send.scheduleOutgoing
 import app.mjolnir.android.share.UriImporter
 import app.mjolnir.android.share.tabsFromShare
-import app.mjolnir.android.ui.CaughtPlaceholder
+import app.mjolnir.android.receive.EXTRA_SCREEN
+import app.mjolnir.android.receive.SCREEN_CAUGHT
+import app.mjolnir.android.receive.enqueueInboxDrain
+import app.mjolnir.android.receive.syncPushToken
+import app.mjolnir.android.ui.CaughtScreen
+import app.mjolnir.android.ui.CaughtViewModel
 import app.mjolnir.android.ui.DevicesScreen
 import app.mjolnir.android.ui.DevicesViewModel
 import app.mjolnir.android.ui.MjolnirNav
@@ -56,6 +61,7 @@ class MainActivity : ComponentActivity() {
                 }
                 DevicesViewModel::class.java -> DevicesViewModel(c.api, session)
                 PairingViewModel::class.java -> PairingViewModel(c.api, c.config, onUnauthorized = { session.reset() })
+                CaughtViewModel::class.java -> CaughtViewModel(c.caught, c.caughtChanged, Dispatchers.IO)
                 SettingsViewModel::class.java -> SettingsViewModel(c.api, c.config, session, onRelayUrlChanged = c::invalidateRelayClient)
                 else -> error("Unknown ViewModel $modelClass")
             } as T
@@ -70,7 +76,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         askForNotifications()
-        if (savedInstanceState == null) handleShare(intent) // a recreated activity must not import the same share twice
+        if (savedInstanceState == null) {
+            handleShare(intent) // a recreated activity must not import the same share twice
+            handleScreen(intent)
+        }
         setContent {
             MaterialTheme {
                 var screen by rememberSaveable { mutableStateOf(Screen.THROW) }
@@ -81,7 +90,7 @@ class MainActivity : ComponentActivity() {
                     Box(Modifier.fillMaxSize().padding(padding)) {
                         when (screen) {
                             Screen.THROW -> ThrowScreen(throwVm, importer, onPairPc = { screen = Screen.DEVICES })
-                            Screen.CAUGHT -> CaughtPlaceholder() // replaced when the receive task lands
+                            Screen.CAUGHT -> CaughtScreen(viewModel(factory = factory))
                             Screen.DEVICES -> DevicesScreen(viewModel(factory = factory), viewModel(factory = factory))
                             Screen.SETTINGS -> SettingsScreen(viewModel(factory = factory))
                         }
@@ -95,12 +104,25 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleShare(intent)
+        handleScreen(intent)
+    }
+
+    /** A Caught notification opens the Caught screen. */
+    private fun handleScreen(intent: Intent) {
+        if (intent.getStringExtra(EXTRA_SCREEN) != SCREEN_CAUGHT) return
+        intent.removeExtra(EXTRA_SCREEN)
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        requestedScreen = Screen.CAUGHT
     }
 
     override fun onStart() {
         super.onStart()
         lifecycleScope.launch {
-            try { container.session.ensureRegistered() } catch (_: Exception) { }
+            try {
+                container.session.ensureRegistered()
+                syncPushToken(applicationContext)
+            } catch (_: Exception) { }
+            enqueueInboxDrain(applicationContext) // pick up anything the push didn't announce (or no Firebase)
             throwVm.refreshPcs()
         }
     }

@@ -8,6 +8,10 @@ import app.mjolnir.BuildConfig
 import androidx.work.ExistingWorkPolicy
 import app.mjolnir.android.data.PhoneConfig
 import app.mjolnir.android.data.TrayItem
+import app.mjolnir.android.data.CaughtItem
+import app.mjolnir.android.receive.createReceivingChannels
+import app.mjolnir.android.receive.schedulePeriodicInboxDrain
+import app.mjolnir.android.receive.syncPushToken
 import app.mjolnir.android.send.createSendingChannels
 import app.mjolnir.android.send.scheduleOutgoing
 import app.mjolnir.android.session.PhoneSession
@@ -23,15 +27,28 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
 import java.io.InputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.SetSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.serializer
 
 class MjolnirApp : Application() {
     val container: AppContainer by lazy { AppContainer(this) }
 
+    /** For short app-wide jobs that must outlive a screen or service (e.g. giving the relay a new push token). */
+    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun onCreate() {
         super.onCreate()
         createSendingChannels(this)
+        createReceivingChannels(this)
+        schedulePeriodicInboxDrain(this)
+        syncPushToken(this)
         // Throws still in the outbox (e.g. after a force-stop or reboot) get their work back; KEEP leaves running
         // or waiting work alone.
         Thread {
@@ -55,7 +72,20 @@ class AppContainer(context: Context) {
     val outboxDir = File(filesDir, "outbox")
     val seen = FileSeenDeliveries(File(filesDir, "seen.json"))
 
-    // `caught` (received-items history) is added by the receive task.
+    /** What was received, newest first (at most [app.mjolnir.android.receive.MAX_CAUGHT_ITEMS]). */
+    val caught = JsonFileStore(File(filesDir, "caught.json"), ListSerializer(serializer<CaughtItem>())) { emptyList() }
+
+    /** Bumped after each inbox drain so an open Caught screen reloads [caught]. */
+    val caughtChanged = MutableStateFlow(0L)
+
+    /** Downloads in progress (`<file id>.part`); kept across restarts so they resume. */
+    val stagingDir = File(filesDir, "incoming")
+
+    /** Delivery ids the user chose to download on mobile data (`Download now`). */
+    val allowedOnce = JsonFileStore(File(filesDir, "allowed-metered.json"), SetSerializer(String.serializer())) { emptySet() }
+
+    /** Held by every inbox drain, so two workers never receive the same delivery at once. */
+    val inboxLock = Mutex()
 
     /** Talks to the relay at the current `relayUrl`; the client is rebuilt when the URL changes and reads the token live. */
     val api: RelayApi = SwitchingRelayApi(::currentClient)
