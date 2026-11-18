@@ -12,6 +12,7 @@ import io.ktor.server.auth.bearer
 import io.ktor.server.auth.principal
 import io.ktor.server.plugins.BadRequestException
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.bodylimit.RequestBodyLimit
 import io.ktor.server.plugins.forwardedheaders.XForwardedHeaders
 import io.ktor.server.plugins.origin
 import io.ktor.server.plugins.ratelimit.RateLimit
@@ -23,6 +24,17 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.pingPeriod
+import app.mjolnir.protocol.Limits
+import io.ktor.server.application.ApplicationStopping
+import io.ktor.server.application.log
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import io.ktor.server.plugins.PayloadTooLargeException
 import kotlinx.serialization.SerializationException
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
@@ -49,12 +61,17 @@ data class DevicePrincipal(val deviceId: String, val name: String, val kind: Dev
 
 val RegisterLimit = RateLimitName("register")
 val ClaimLimit = RateLimitName("claim")
+val SendLimit = RateLimitName("send")
 
 fun Application.relayModule(deps: RelayDeps) {
     install(ContentNegotiation) { json(MjolnirJson) }
     install(XForwardedHeaders)
+    install(RequestBodyLimit) { bodyLimit { Limits.MAX_BODY_BYTES } }
     install(WebSockets) { pingPeriod = 30.seconds }
     install(StatusPages) {
+        exception<PayloadTooLargeException> { call, _ ->
+            call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
+        }
         exception<BadRequestException> { call, _ ->
             call.respond(HttpStatusCode.BadRequest, ErrorResponse("bad_request"))
         }
@@ -82,10 +99,29 @@ fun Application.relayModule(deps: RelayDeps) {
             rateLimiter(limit = deps.limits.claimsPerMinute, refillPeriod = 1.minutes)
             requestKey { call -> call.principal<DevicePrincipal>()?.deviceId ?: call.request.origin.remoteHost }
         }
+        register(SendLimit) {
+            rateLimiter(limit = deps.limits.sendsPerMinute, refillPeriod = 1.minutes)
+            requestKey { call -> call.principal<DevicePrincipal>()?.deviceId ?: call.request.origin.remoteHost }
+        }
     }
+    val purgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    purgeScope.launch {
+        while (true) {
+            delay(10.minutes)
+            try {
+                deps.store.purgeExpired(deps.clock.nowMs())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("purge failed", e)
+            }
+        }
+    }
+    monitor.subscribe(ApplicationStopping) { purgeScope.cancel() }
     routing {
         get("/health") { call.respondText("ok") }
         deviceRoutes(deps)
         pairingRoutes(deps)
+        sendRoutes(deps)
     }
 }

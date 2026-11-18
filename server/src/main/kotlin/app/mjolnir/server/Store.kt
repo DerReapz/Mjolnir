@@ -2,8 +2,11 @@ package app.mjolnir.server
 
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
+import app.mjolnir.protocol.MjolnirJson
 import app.mjolnir.protocol.PairingState
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.Tab
+import kotlinx.serialization.builtins.ListSerializer
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.ResultSet
@@ -18,6 +21,8 @@ data class PairingRow(
     val state: PairingState,
     val expiresAtMs: Long,
 )
+
+data class DeliveryRow(val id: String, val fromId: String, val toId: String, val tabs: List<Tab>, val sentAtMs: Long)
 
 fun DeviceRow.toPeer(): Peer = Peer(id, name, kind)
 
@@ -49,6 +54,14 @@ class Store(jdbcUrl: String) {
                     a TEXT NOT NULL,
                     b TEXT NOT NULL,
                     PRIMARY KEY(a, b))"""
+            )
+            it.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS deliveries(
+                    id TEXT PRIMARY KEY,
+                    from_id TEXT NOT NULL,
+                    to_id TEXT NOT NULL,
+                    tabs_json TEXT NOT NULL,
+                    sent_at INTEGER NOT NULL)"""
             )
         }
     }
@@ -191,5 +204,50 @@ class Store(jdbcUrl: String) {
         if (accept) link(row.ownerId, claimerId)
         setPairingState(id, if (accept) PairingState.ACCEPTED else PairingState.REJECTED)
         return Resolved.WON
+    }
+
+    private val tabsSerializer = ListSerializer(Tab.serializer())
+
+    @Synchronized
+    fun createDelivery(fromId: String, toId: String, tabs: List<Tab>, nowMs: Long): String {
+        val id = newId()
+        conn.prepareStatement("INSERT INTO deliveries(id,from_id,to_id,tabs_json,sent_at) VALUES(?,?,?,?,?)").use {
+            it.setString(1, id); it.setString(2, fromId); it.setString(3, toId)
+            it.setString(4, MjolnirJson.encodeToString(tabsSerializer, tabs)); it.setLong(5, nowMs)
+            it.executeUpdate()
+        }
+        return id
+    }
+
+    /** Unexpired deliveries for [toId], oldest first. */
+    @Synchronized
+    fun inbox(toId: String, nowMs: Long): List<DeliveryRow> =
+        conn.prepareStatement("SELECT * FROM deliveries WHERE to_id=? AND sent_at>? ORDER BY sent_at, rowid").use {
+            it.setString(1, toId); it.setLong(2, nowMs - Limits.DELIVERY_TTL_MS)
+            it.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) add(
+                        DeliveryRow(
+                            rs.getString("id"), rs.getString("from_id"), rs.getString("to_id"),
+                            MjolnirJson.decodeFromString(tabsSerializer, rs.getString("tabs_json")), rs.getLong("sent_at"),
+                        )
+                    )
+                }
+            }
+        }
+
+    /** Idempotent; only the recipient's own delivery is removed. */
+    @Synchronized
+    fun deleteDelivery(toId: String, id: String) {
+        conn.prepareStatement("DELETE FROM deliveries WHERE id=? AND to_id=?").use {
+            it.setString(1, id); it.setString(2, toId); it.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    fun purgeExpired(nowMs: Long) {
+        conn.prepareStatement("DELETE FROM deliveries WHERE sent_at<=?").use {
+            it.setLong(1, nowMs - Limits.DELIVERY_TTL_MS); it.executeUpdate()
+        }
     }
 }

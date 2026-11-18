@@ -17,6 +17,10 @@ import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
+import app.mjolnir.protocol.Delivery
+import app.mjolnir.protocol.SendRequest
+import app.mjolnir.protocol.SendResponse
+import app.mjolnir.protocol.Tab
 import io.ktor.client.request.post
 import io.ktor.http.HttpStatusCode
 import io.ktor.websocket.Frame
@@ -73,6 +77,25 @@ class RelayTestScope(
         val c = claim(claimer, code)
         check(client.post("/v1/pairings/${c.pairingId}/accept") { bearerAuth(owner.token) }.status == HttpStatusCode.NoContent)
     }
+
+    suspend fun pairedPcAndPhone(): Pair<RegisterResponse, RegisterResponse> {
+        val pc = register("PC", DeviceKind.PC)
+        val phone = register("Pixel 8")
+        pair(pc, phone)
+        return pc to phone
+    }
+
+    suspend fun sendStatus(from: RegisterResponse, to: String, tabs: List<Tab>): HttpStatusCode =
+        client.post("/v1/send") { bearerAuth(from.token); contentType(ContentType.Application.Json); setBody(SendRequest(to, tabs)) }.status
+
+    suspend fun send(from: RegisterResponse, to: String, tabs: List<Tab>): SendResponse {
+        val r = client.post("/v1/send") { bearerAuth(from.token); contentType(ContentType.Application.Json); setBody(SendRequest(to, tabs)) }
+        check(r.status == HttpStatusCode.Accepted) { "send failed: ${r.status}" }
+        return r.body()
+    }
+
+    suspend fun inbox(device: RegisterResponse): List<Delivery> =
+        client.get("/v1/inbox") { bearerAuth(device.token) }.body()
 
     suspend fun <T> withEvents(device: RegisterResponse, block: suspend EventReader.() -> T): T =
         run {
