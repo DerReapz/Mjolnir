@@ -1,6 +1,12 @@
 package app.mjolnir.server
 
+import app.mjolnir.protocol.ClaimRequest
+import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.DeviceKind
+import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.PairingCodeResponse
+import app.mjolnir.protocol.PairingStatus
+import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.MjolnirJson
 import app.mjolnir.protocol.RegisterRequest
 import app.mjolnir.protocol.RegisterResponse
@@ -8,7 +14,15 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.get
 import io.ktor.client.request.post
+import io.ktor.http.HttpStatusCode
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
@@ -17,6 +31,13 @@ import io.ktor.server.testing.testApplication
 
 class FakeClock(var now: Long = 1_700_000_000_000L) : Clock {
     override fun nowMs(): Long = now
+}
+
+class EventReader(private val incoming: kotlinx.coroutines.channels.ReceiveChannel<Frame>) {
+    suspend fun next(): RelayEvent = withTimeout(5_000) {
+        val frame = incoming.receive() as Frame.Text
+        MjolnirJson.decodeFromString(RelayEvent.serializer(), frame.readText())
+    }
 }
 
 class RelayTestScope(
@@ -31,6 +52,37 @@ class RelayTestScope(
             contentType(ContentType.Application.Json)
             setBody(RegisterRequest(name, kind))
         }.body()
+
+    suspend fun createCode(owner: RegisterResponse): String =
+        client.post("/v1/pairings") { bearerAuth(owner.token) }.body<PairingCodeResponse>().code
+
+    suspend fun claimStatus(device: RegisterResponse, code: String): HttpStatusCode =
+        client.post("/v1/pairings/claim") { bearerAuth(device.token); contentType(ContentType.Application.Json); setBody(ClaimRequest(code)) }.status
+
+    suspend fun claim(device: RegisterResponse, code: String): ClaimResponse =
+        client.post("/v1/pairings/claim") { bearerAuth(device.token); contentType(ContentType.Application.Json); setBody(ClaimRequest(code)) }.body()
+
+    suspend fun status(device: RegisterResponse, pairingId: String): PairingStatus =
+        client.get("/v1/pairings/$pairingId") { bearerAuth(device.token) }.body()
+
+    suspend fun peers(device: RegisterResponse): List<Peer> =
+        client.get("/v1/peers") { bearerAuth(device.token) }.body()
+
+    suspend fun pair(owner: RegisterResponse, claimer: RegisterResponse) {
+        val code = createCode(owner)
+        val c = claim(claimer, code)
+        check(client.post("/v1/pairings/${c.pairingId}/accept") { bearerAuth(owner.token) }.status == HttpStatusCode.NoContent)
+    }
+
+    suspend fun <T> withEvents(device: RegisterResponse, block: suspend EventReader.() -> T): T =
+        run {
+            var result: Result<T>? = null
+            client.webSocket("/v1/ws", request = { bearerAuth(device.token) }) {
+                withTimeout(5_000) { while (!deps.hub.isConnected(device.deviceId)) delay(10) }
+                result = runCatching { EventReader(incoming).block() }
+            }
+            result!!.getOrThrow()
+        }
 }
 
 fun relayTest(
