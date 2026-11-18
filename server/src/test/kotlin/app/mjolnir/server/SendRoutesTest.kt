@@ -70,12 +70,16 @@ class SendRoutesTest {
 
     @Test fun deliveriesExpireAfterSevenDays() = relayTest {
         val (pc, phone) = pairedPcAndPhone()
-        send(phone, pc.deviceId, listOf(Tab("https://a.com")))
-        assertEquals(1, inbox(pc).size)
-        clock.now += 604_800_001
-        assertTrue(inbox(pc).isEmpty())
-        store.purgeExpired(clock.now)
-        assertTrue(inbox(pc).isEmpty())
+        send(phone, pc.deviceId, listOf(Tab("https://old.com")))
+        clock.now += 604_799_999
+        send(phone, pc.deviceId, listOf(Tab("https://fresh.com")))
+        purge(deps)
+        assertEquals(2, store.rowCount("deliveries"))
+        clock.now += 2
+        assertEquals(listOf(Tab("https://fresh.com")), inbox(pc).single().tabs)
+        purge(deps)
+        assertEquals(1, store.rowCount("deliveries"))
+        assertEquals(listOf(Tab("https://fresh.com")), inbox(pc).single().tabs)
     }
 
     @Test fun sendsAreRateLimited() = relayTest {

@@ -32,6 +32,18 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.testing.testApplication
+import app.mjolnir.protocol.CreateUploadRequest
+import app.mjolnir.protocol.FileRef
+import app.mjolnir.protocol.UploadStatus
+import io.ktor.client.request.header
+import io.ktor.client.request.put
+import io.ktor.client.statement.HttpResponse
+import io.ktor.http.HttpHeaders
+import java.security.MessageDigest
+import kotlin.io.path.createTempDirectory
+
+fun sha256Hex(bytes: ByteArray): String =
+    MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
 class FakeClock(var now: Long = 1_700_000_000_000L) : Clock {
     override fun nowMs(): Long = now
@@ -97,6 +109,49 @@ class RelayTestScope(
     suspend fun inbox(device: RegisterResponse): List<Delivery> =
         client.get("/v1/inbox") { bearerAuth(device.token) }.body()
 
+    suspend fun createUploadResponse(device: RegisterResponse, relativePath: String, mime: String, size: Long): HttpResponse =
+        client.post("/v1/uploads") {
+            bearerAuth(device.token); contentType(ContentType.Application.Json)
+            setBody(CreateUploadRequest(relativePath, mime, size))
+        }
+
+    suspend fun createUpload(device: RegisterResponse, relativePath: String, mime: String, size: Long): UploadStatus {
+        val r = createUploadResponse(device, relativePath, mime, size)
+        check(r.status == HttpStatusCode.Created) { "create upload failed: ${r.status}" }
+        return r.body()
+    }
+
+    /** PUTs bytes[from, to) with `Content-Range: bytes from-(to-1)/total`. */
+    suspend fun putChunkResponse(
+        device: RegisterResponse, uploadId: String, bytes: ByteArray, from: Int, to: Int, total: Long = bytes.size.toLong(),
+    ): HttpResponse =
+        client.put("/v1/uploads/$uploadId") {
+            bearerAuth(device.token)
+            header(HttpHeaders.ContentRange, "bytes $from-${to - 1}/$total")
+            contentType(ContentType.Application.OctetStream)
+            setBody(bytes.copyOfRange(from, to))
+        }
+
+    suspend fun putChunk(device: RegisterResponse, uploadId: String, bytes: ByteArray, from: Int, to: Int): UploadStatus {
+        val r = putChunkResponse(device, uploadId, bytes, from, to)
+        check(r.status == HttpStatusCode.OK) { "put chunk failed: ${r.status}" }
+        return r.body()
+    }
+
+    suspend fun upload(
+        device: RegisterResponse, relativePath: String, bytes: ByteArray, mime: String = "application/octet-stream",
+    ): FileRef {
+        val s = createUpload(device, relativePath, mime, bytes.size.toLong())
+        if (bytes.isEmpty()) return s.file!!
+        return putChunk(device, s.uploadId, bytes, 0, bytes.size).file!!
+    }
+
+    suspend fun sendFiles(from: RegisterResponse, to: String, fileIds: List<String>): HttpResponse =
+        client.post("/v1/send") {
+            bearerAuth(from.token); contentType(ContentType.Application.Json)
+            setBody(SendRequest(to, fileIds = fileIds))
+        }
+
     suspend fun <T> withEvents(device: RegisterResponse, block: suspend EventReader.() -> T): T =
         run {
             var result: Result<T>? = null
@@ -111,9 +166,10 @@ class RelayTestScope(
 fun relayTest(
     clock: FakeClock = FakeClock(),
     limits: RelayLimits = RelayLimits(),
+    files: FileStorage = FileStorage(createTempDirectory("mjolnir-files").toFile()),
     block: suspend RelayTestScope.() -> Unit,
 ) = testApplication {
-    val deps = RelayDeps(store = Store("jdbc:sqlite::memory:"), clock = clock, limits = limits)
+    val deps = RelayDeps(store = Store("jdbc:sqlite::memory:"), clock = clock, limits = limits, files = files)
     application { relayModule(deps) }
     val client = createClient {
         install(ContentNegotiation) { json(MjolnirJson) }

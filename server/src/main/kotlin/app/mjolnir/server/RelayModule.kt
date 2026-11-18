@@ -36,6 +36,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import io.ktor.server.plugins.PayloadTooLargeException
 import kotlinx.serialization.SerializationException
+import kotlin.io.path.createTempDirectory
+import io.ktor.server.request.httpMethod
+import io.ktor.server.request.path
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -55,6 +58,7 @@ data class RelayDeps(
     val clock: Clock = SystemClock,
     val limits: RelayLimits = RelayLimits(),
     val hub: SessionHub = SessionHub(),
+    val files: FileStorage = FileStorage(createTempDirectory("mjolnir-files").toFile()),
 )
 
 data class DevicePrincipal(val deviceId: String, val name: String, val kind: DeviceKind)
@@ -66,7 +70,14 @@ val SendLimit = RateLimitName("send")
 fun Application.relayModule(deps: RelayDeps) {
     install(ContentNegotiation) { json(MjolnirJson) }
     install(XForwardedHeaders)
-    install(RequestBodyLimit) { bodyLimit { Limits.MAX_BODY_BYTES } }
+    install(RequestBodyLimit) {
+        // JSON bodies are capped at 1 MiB. Upload chunks are exempt: the PUT handler itself reads at most the
+        // Content-Range length (≤ UPLOAD_CHUNK_BYTES, else 400) and rejects any extra byte.
+        bodyLimit { call ->
+            if (isChunkUpload(call.request.httpMethod.value, call.request.path())) Long.MAX_VALUE
+            else Limits.MAX_BODY_BYTES
+        }
+    }
     install(WebSockets) { pingPeriod = 30.seconds }
     install(StatusPages) {
         exception<PayloadTooLargeException> { call, _ ->
@@ -109,7 +120,7 @@ fun Application.relayModule(deps: RelayDeps) {
         while (true) {
             delay(10.minutes)
             try {
-                deps.store.purgeExpired(deps.clock.nowMs())
+                purge(deps)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -123,5 +134,6 @@ fun Application.relayModule(deps: RelayDeps) {
         deviceRoutes(deps)
         pairingRoutes(deps)
         sendRoutes(deps)
+        fileRoutes(deps)
     }
 }
