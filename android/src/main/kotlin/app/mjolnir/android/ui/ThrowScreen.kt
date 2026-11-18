@@ -53,7 +53,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
+import androidx.work.ExistingWorkPolicy
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import app.mjolnir.android.send.scheduleOutgoing
 import app.mjolnir.android.data.TrayItem
 import app.mjolnir.android.send.outgoingStatus
 import app.mjolnir.android.send.rowTitle
@@ -190,7 +193,18 @@ private fun OutgoingRow(item: OutgoingFiles, onFinished: () -> Unit, onSendNow: 
     val status = outgoingStatus(infos.orEmpty())
     val finished = infos?.let { it.isNotEmpty() && throwWorkFinished(it) } == true
     val currentOnFinished by rememberUpdatedState(onFinished)
-    LaunchedEffect(finished) { if (finished) currentOnFinished() } // sent or given back: re-read outbox and tray
+    var rescheduled by remember(item.id) { mutableStateOf(false) }
+    LaunchedEffect(finished) {
+        if (!finished) return@LaunchedEffect
+        currentOnFinished() // sent or given back: re-read outbox and tray
+        // Work that failed or was cancelled while the item is still queued would leave the row waiting forever;
+        // start it again (once per row, so a worker that keeps failing doesn't loop).
+        val stuck = infos.orEmpty().any { it.state == WorkInfo.State.FAILED || it.state == WorkInfo.State.CANCELLED }
+        if (stuck && !rescheduled) {
+            rescheduled = true
+            scheduleOutgoing(context.applicationContext, item.id, policy = ExistingWorkPolicy.KEEP)
+        }
+    }
     ListItem(
         leadingContent = { Text("📤") },
         headlineContent = { Text(rowTitle(item), maxLines = 1) },

@@ -218,6 +218,8 @@ class ThrowViewModel(
                 val fresh = returned.filter { it.id !in known }
                 s.copy(tray = s.tray + fresh, selected = s.selected + fresh.map { it.id })
             }
+            // Now this view model's own: removing or throwing one must also drop it from the store.
+            returned.mapTo(everWritten) { it.id }
         }
     }
 

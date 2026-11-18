@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.os.Build
+import android.os.SystemClock
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -46,8 +47,24 @@ const val CHANNEL_SENDING_PROGRESS = "sending_progress"
 fun uniqueThrowWork(outboxId: String) = "throw-$outboxId"
 
 /** The id of the per-throw notification (waiting for Wi-Fi, then the result); the progress one is separate. */
-fun throwNotificationId(outboxId: String) = "throw:$outboxId".hashCode()
-private fun progressNotificationId(outboxId: String) = "throw-progress:$outboxId".hashCode()
+fun throwNotificationId(outboxId: String) = notificationId("throw:$outboxId")
+private fun progressNotificationId(outboxId: String) = notificationId("throw-progress:$outboxId")
+
+/** A notification id for [key]; never 0, which startForeground refuses. */
+internal fun notificationId(key: String): Int = key.hashCode().takeIf { it != 0 } ?: 1
+
+/** Minimum time between two progress updates (setProgress and the notification). */
+private const val PROGRESS_INTERVAL_MS = 500L
+
+/**
+ * Whether a progress update for [pct] should go out now: only for a new whole percent, at most every
+ * [PROGRESS_INTERVAL_MS], except that 100% always goes out.
+ */
+fun shouldReportProgress(pct: Int, lastPct: Int, nowMs: Long, lastMs: Long?): Boolean = when {
+    pct == lastPct -> false
+    pct >= 100 || lastMs == null -> true
+    else -> nowMs - lastMs >= PROGRESS_INTERVAL_MS
+}
 
 /**
  * Schedules the background throw of outbox item [outboxId] as unique work `throw-$outboxId`: it runs on any
@@ -138,6 +155,8 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
     }
 
     private suspend fun send(item: OutgoingFiles): Result {
+        // Its Send now would REPLACE (cancel) this running upload.
+        applicationContext.getSystemService(NotificationManager::class.java).cancel(throwNotificationId(item.id))
         try {
             setForeground(foregroundInfo(item, null, null))
         } catch (e: IllegalStateException) {
@@ -146,11 +165,14 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
         val files = item.files.map { it.relativePath to it.sizeBytes }
         var lastPct = -1
+        var lastMs: Long? = null
         val result = try {
             container.outbox.process(item.id) { done, total ->
                 val pct = progressPercent(done, total)
-                if (pct != lastPct) {
+                val now = SystemClock.elapsedRealtime()
+                if (shouldReportProgress(pct, lastPct, now, lastMs)) {
                     lastPct = pct
+                    lastMs = now
                     val name = currentFileName(files, done)
                     setProgressAsync(workDataOf(KEY_PCT to pct, KEY_NAME to name))
                     postNotification(applicationContext, progressNotificationId(item.id), progressNotification(item, pct, name))

@@ -252,6 +252,31 @@ class ThrowViewModelTest {
         assertEquals(listOf(a, b, photos), vm.state.value.tray)
     }
 
+    @Test fun aReturnedItemThatIsRemovedStaysGone() = runTest {
+        vm.addShared(listOf(a)); advanceUntilIdle()
+        trayStore.update { it + photos }
+        vm.refreshOutgoing(); advanceUntilIdle()
+        assertEquals(listOf(a, photos), vm.state.value.tray)
+        vm.remove(photos.id); advanceUntilIdle()
+        vm.refreshOutgoing(); advanceUntilIdle()
+        assertEquals(listOf(a), vm.state.value.tray)
+        assertEquals(listOf(a), trayStore.read())
+    }
+
+    @Test fun aReturnedItemThatIsThrownIsNotThrownTwice() = runTest {
+        vm.addShared(listOf(a)); vm.refreshPcs(); advanceUntilIdle()
+        trayStore.update { it + photos } // the background worker gave a failed throw back
+        vm.refreshOutgoing(); advanceUntilIdle()
+        vm.toggle(a.id) // throw only the returned folder
+        throwNow(); advanceUntilIdle()
+        assertEquals(1, outbox.pending().size)
+        vm.refreshOutgoing(); advanceUntilIdle()
+        assertEquals(listOf(a), vm.state.value.tray)
+        assertEquals(listOf(a), trayStore.read())
+        vm.toggle(a.id); throwNow(); advanceUntilIdle()
+        assertEquals(1, outbox.pending().size) // the folder was not queued again
+    }
+
     @Test fun removedItemsAreNotBroughtBackByARefresh() = runTest {
         vm.addShared(listOf(a, b)); advanceUntilIdle()
         vm.remove(a.id); advanceUntilIdle()

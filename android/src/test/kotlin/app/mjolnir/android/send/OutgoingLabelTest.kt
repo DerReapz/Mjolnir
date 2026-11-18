@@ -28,3 +28,16 @@ class OutgoingLabelTest {
         assertEquals("c.txt", currentFileName(sizes, 25))
     }
 }
+
+class ProgressThrottleTest {
+    @Test fun firstUpdateGoesOut() = kotlin.test.assertTrue(shouldReportProgress(0, -1, 1_000, null))
+    @Test fun samePercentIsSkipped() = kotlin.test.assertFalse(shouldReportProgress(5, 5, 10_000, 1_000))
+    @Test fun newPercentWithin500msIsSkipped() = kotlin.test.assertFalse(shouldReportProgress(6, 5, 1_499, 1_000))
+    @Test fun newPercentAfter500msGoesOut() = kotlin.test.assertTrue(shouldReportProgress(6, 5, 1_500, 1_000))
+    @Test fun hundredPercentAlwaysGoesOut() = kotlin.test.assertTrue(shouldReportProgress(100, 99, 1_001, 1_000))
+    @Test fun notificationIdsAreNeverZero() {
+        assertEquals(0, "".hashCode())
+        assertEquals(1, notificationId(""))
+        assertEquals("x".hashCode(), notificationId("x"))
+    }
+}
