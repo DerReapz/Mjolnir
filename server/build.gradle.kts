@@ -22,6 +22,7 @@ dependencies {
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.sqlite.jdbc)
     implementation(libs.logback.classic)
+    implementation(libs.firebase.admin)
 
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.ktor.client.content.negotiation)

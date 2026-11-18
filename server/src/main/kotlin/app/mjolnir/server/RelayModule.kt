@@ -59,6 +59,9 @@ data class RelayDeps(
     val limits: RelayLimits = RelayLimits(),
     val hub: SessionHub = SessionHub(),
     val files: FileStorage = FileStorage(createTempDirectory("mjolnir-files").toFile()),
+    val push: PushSender = NoopPushSender,
+    /** Scope for fire-and-forget work such as push pings; cancelled when the application stops. */
+    val asyncScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 )
 
 data class DevicePrincipal(val deviceId: String, val name: String, val kind: DeviceKind)
@@ -128,7 +131,7 @@ fun Application.relayModule(deps: RelayDeps) {
             }
         }
     }
-    monitor.subscribe(ApplicationStopping) { purgeScope.cancel() }
+    monitor.subscribe(ApplicationStopping) { purgeScope.cancel(); deps.asyncScope.cancel() }
     routing {
         get("/health") { call.respondText("ok") }
         deviceRoutes(deps)

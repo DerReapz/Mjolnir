@@ -18,11 +18,30 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import org.slf4j.LoggerFactory
 import kotlinx.coroutines.withContext
+
+private val log = LoggerFactory.getLogger("app.mjolnir.server.Push")
 
 fun Route.sendRoutes(deps: RelayDeps) {
     val store = deps.store
+
+    /** Rings the recipient's phone doorbell, if it has a push token. Never fails the send. */
+    fun ping(to: String) {
+        val token = store.device(to)?.pushToken ?: return
+        deps.asyncScope.launch {
+            try {
+                deps.push.ping(token)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("push ping failed: {}", e.toString())
+            }
+        }
+    }
 
     authenticate("device") {
         rateLimit(SendLimit) {
@@ -49,6 +68,7 @@ fun Route.sendRoutes(deps: RelayDeps) {
                         AttachResult.OK -> {
                             row!!
                             deps.hub.emit(req.to, RelayEvent.DeliveryArrived(Delivery(row.id, from, emptyList(), now, row.files)))
+                            ping(req.to)
                             call.respond(HttpStatusCode.Accepted, SendResponse(row.id))
                         }
                     }
@@ -59,6 +79,7 @@ fun Route.sendRoutes(deps: RelayDeps) {
                 val tabs = cleanTabs(req.tabs)
                 val id = store.createDelivery(me.deviceId, req.to, tabs, now)
                 deps.hub.emit(req.to, RelayEvent.DeliveryArrived(Delivery(id, from, tabs, now)))
+                ping(req.to)
                 call.respond(HttpStatusCode.Accepted, SendResponse(id))
             }
         }

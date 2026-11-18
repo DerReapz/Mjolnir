@@ -4,6 +4,7 @@ import app.mjolnir.protocol.ErrorResponse
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.RegisterRequest
 import app.mjolnir.protocol.RegisterResponse
+import app.mjolnir.protocol.PushTokenRequest
 import app.mjolnir.protocol.RenameRequest
 import app.mjolnir.protocol.Peer
 import io.ktor.http.HttpStatusCode
@@ -15,6 +16,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
+import io.ktor.server.routing.put
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 
@@ -45,6 +47,15 @@ fun Route.deviceRoutes(deps: RelayDeps) {
                     ?: return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_name"))
                 deps.store.rename(p.deviceId, name)
                 call.respond(Peer(p.deviceId, name, p.kind))
+            }
+            put("/me/push-token") {
+                val p = call.principal<DevicePrincipal>()!!
+                val token = call.receive<PushTokenRequest>().token.trim()
+                if (token.isEmpty() || token.length > 4096) {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_token"))
+                }
+                deps.store.setPushToken(p.deviceId, token)
+                call.respond(HttpStatusCode.NoContent)
             }
         }
     }

@@ -4,6 +4,7 @@ import app.mjolnir.protocol.ClaimRequest
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.PushTokenRequest
 import app.mjolnir.protocol.PairingCodeResponse
 import app.mjolnir.protocol.PairingStatus
 import app.mjolnir.protocol.RelayEvent
@@ -152,6 +153,11 @@ class RelayTestScope(
             setBody(SendRequest(to, fileIds = fileIds))
         }
 
+    suspend fun setPushToken(device: RegisterResponse, token: String): HttpStatusCode =
+        client.put("/v1/devices/me/push-token") {
+            bearerAuth(device.token); contentType(ContentType.Application.Json); setBody(PushTokenRequest(token))
+        }.status
+
     suspend fun <T> withEvents(device: RegisterResponse, block: suspend EventReader.() -> T): T =
         run {
             var result: Result<T>? = null
@@ -167,9 +173,10 @@ fun relayTest(
     clock: FakeClock = FakeClock(),
     limits: RelayLimits = RelayLimits(),
     files: FileStorage = FileStorage(createTempDirectory("mjolnir-files").toFile()),
+    push: PushSender = NoopPushSender,
     block: suspend RelayTestScope.() -> Unit,
 ) = testApplication {
-    val deps = RelayDeps(store = Store("jdbc:sqlite::memory:"), clock = clock, limits = limits, files = files)
+    val deps = RelayDeps(store = Store("jdbc:sqlite::memory:"), clock = clock, limits = limits, files = files, push = push)
     application { relayModule(deps) }
     val client = createClient {
         install(ContentNegotiation) { json(MjolnirJson) }

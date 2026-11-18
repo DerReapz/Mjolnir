@@ -3,6 +3,9 @@ package app.mjolnir.server
 import app.mjolnir.protocol.Limits
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
+import com.google.firebase.FirebaseApp
+import com.google.firebase.messaging.FirebaseMessaging
+import org.slf4j.LoggerFactory
 import java.io.File
 
 private const val MIB = 1_048_576L
@@ -19,6 +22,15 @@ fun main() {
         maxFileBytes = (maxFileMb * MIB).coerceIn(0L, Limits.MAX_FILE_BYTES),
         maxTotalBytes = maxStorageMb * MIB,
     )
-    val deps = RelayDeps(store = Store("jdbc:sqlite:$db"), files = files)
+    val log = LoggerFactory.getLogger("app.mjolnir.server.Main")
+    val push: PushSender = if (!System.getenv("GOOGLE_APPLICATION_CREDENTIALS").isNullOrBlank()) {
+        FirebaseApp.initializeApp()
+        log.info("FCM enabled")
+        FcmPushSender(FirebaseMessaging.getInstance())
+    } else {
+        log.info("FCM disabled (GOOGLE_APPLICATION_CREDENTIALS not set)")
+        NoopPushSender
+    }
+    val deps = RelayDeps(store = Store("jdbc:sqlite:$db"), files = files, push = push)
     embeddedServer(Netty, port = port, host = "0.0.0.0") { relayModule(deps) }.start(wait = true)
 }

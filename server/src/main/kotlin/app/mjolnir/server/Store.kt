@@ -144,6 +144,13 @@ class Store(jdbcUrl: String) {
         }
 
     @Synchronized
+    fun setPushToken(deviceId: String, token: String) {
+        conn.prepareStatement("UPDATE devices SET push_token=? WHERE id=?").use {
+            it.setString(1, token); it.setString(2, deviceId); it.executeUpdate()
+        }
+    }
+
+    @Synchronized
     fun rename(id: String, name: String) {
         conn.prepareStatement("UPDATE devices SET name=? WHERE id=?").use {
             it.setString(1, name); it.setString(2, id); it.executeUpdate()
