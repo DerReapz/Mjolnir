@@ -6,7 +6,13 @@ import java.io.File
 fun sendToShortcutFile(appData: File = File(System.getenv("APPDATA") ?: "")): File =
     File(File(File(File(appData, "Microsoft"), "Windows"), "SendTo"), "Mjolnir.lnk")
 
-private fun psQuote(s: String) = s.replace("'", "''")
+/** PowerShell ends a single-quoted string at ' and at the typographic quotes U+2018..U+201B; each is doubled. */
+private fun psQuote(s: String) = buildString {
+    for (ch in s) {
+        append(ch)
+        if (ch == '\'' || ch in '\u2018'..'\u201B') append(ch)
+    }
+}
 
 /** PowerShell that creates (or overwrites) the shortcut through the WScript.Shell COM object. */
 fun createSendToShortcutCommand(lnk: File, exe: String): List<String> {

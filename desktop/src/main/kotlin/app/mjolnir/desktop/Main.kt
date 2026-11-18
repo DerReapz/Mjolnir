@@ -24,12 +24,15 @@ fun main(args: Array<String>) {
         }
     }
     instanceLock = primary.lock
+    // application(exitProcessOnExit = true) ends the process itself: release the lock and delete ipc.json on the way out.
+    Runtime.getRuntime().addShutdownHook(Thread { instanceLock?.close() })
     val controller = AppController()
     controller.start()
     controller.ensureSendToShortcut()
     application(exitProcessOnExit = true) {
         TrayApp(controller, primary.incoming, onQuit = {
             controller.shutdown()
+            instanceLock?.close() // idempotent; the shutdown hook covers other exits
             exitApplication()
         })
     }

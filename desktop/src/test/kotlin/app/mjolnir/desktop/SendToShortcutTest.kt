@@ -11,6 +11,13 @@ class SendToShortcutTest {
         assertTrue(cmd.last().contains("TargetPath='C:\\Users\\O''Neil\\Mjolnir.exe'"))
     }
 
+    // typographic quotes (U+2018..U+201B) also end a PowerShell single-quoted string: doubled too
+    @Test fun shortcutCommandQuotesTypographicQuotes() {
+        val cmd = createSendToShortcutCommand(File("C:\\Users\\O\u2019Neil\\Mjolnir.lnk"), "C:\\Users\\O\u2019Neil\u2018\u201A\u201B.exe")
+        assertTrue(cmd.last().contains("TargetPath='C:\\Users\\O\u2019\u2019Neil\u2018\u2018\u201A\u201A\u201B\u201B.exe'"))
+        assertTrue(cmd.last().contains("CreateShortcut('C:\\Users\\O\u2019\u2019Neil\\Mjolnir.lnk')"))
+    }
+
     // the exact PowerShell argument list
     @Test fun shortcutCommandShape() {
         val lnk = File("C:\\a\\Mjolnir.lnk"); val exe = "C:\\b\\Mjolnir.exe"

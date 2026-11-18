@@ -56,20 +56,33 @@ object InstanceChannel {
     internal const val MAX_PATHS = 10_000
     private const val TIMEOUT_MS = 2_000
     private const val MAX_CONNECTIONS = 8
+    private const val RETRY_FOR_MS = 2_000L
+    private const val RETRY_EVERY_MS = 100L
     private val json = Json { ignoreUnknownKeys = true }
 
+    /**
+     * While another process holds the lock, keeps trying for up to [RETRY_FOR_MS]: the holder may still be writing
+     * ipc.json (it has just started) or may be exiting (a stale ipc.json). Each attempt first tries the lock again
+     * (the old holder is gone: become Primary with these args), then reads ipc.json and hands the args over.
+     */
     fun start(dir: File, args: List<String>): Startup {
-        val lock = SingleInstanceLock.tryAcquire(dir) ?: return forward(dir, args)
-        return startPrimary(dir, lock, args)
+        val deadline = System.nanoTime() + RETRY_FOR_MS * 1_000_000L
+        while (true) {
+            SingleInstanceLock.tryAcquire(dir)?.let { return startPrimary(dir, it, args) }
+            if (forward(dir, args)) return Startup.Forwarded
+            if (System.nanoTime() - deadline >= 0) return Startup.Failed
+            Thread.sleep(RETRY_EVERY_MS)
+        }
     }
 
-    private fun startPrimary(dir: File, lock: AutoCloseable, args: List<String>): Startup.Primary {
+    internal fun startPrimary(dir: File, lock: AutoCloseable, args: List<String>): Startup.Primary {
         val channel = Channel<List<String>>(Channel.UNLIMITED)
         if (args.isNotEmpty()) channel.trySend(args)
         val ipcFile = File(dir, FILE_NAME)
         val server = try {
             ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
         } catch (e: Exception) {
+            System.err.println("Mjolnir: cannot open the instance channel; later launches cannot hand over paths: $e")
             null
         }
         if (server != null) {
@@ -78,11 +91,14 @@ object InstanceChannel {
             if (written.isSuccess) {
                 Thread({ acceptLoop(server, token.toByteArray(), channel) }, "mjolnir-instance-channel").apply { isDaemon = true }.start()
             } else {
+                System.err.println("Mjolnir: cannot write ${ipcFile.path}; later launches cannot hand over paths: ${written.exceptionOrNull()}")
                 runCatching { server.close() }
             }
         }
         val address = server?.takeUnless { it.isClosed }?.inetAddress
+        val closed = java.util.concurrent.atomic.AtomicBoolean(false)
         val closeable = AutoCloseable {
+            if (!closed.compareAndSet(false, true)) return@AutoCloseable
             runCatching { server?.close() }
             runCatching { ipcFile.delete() }
             channel.close()
@@ -94,7 +110,13 @@ object InstanceChannel {
     private fun acceptLoop(server: ServerSocket, token: ByteArray, channel: Channel<List<String>>) {
         val slots = Semaphore(MAX_CONNECTIONS)
         while (!server.isClosed) {
-            val socket = try { server.accept() } catch (e: Exception) { if (server.isClosed) return else continue }
+            val socket = try {
+                server.accept()
+            } catch (e: Exception) {
+                if (server.isClosed) return
+                Thread.sleep(100) // a persistent accept failure must not spin
+                continue
+            }
             if (!slots.tryAcquire()) { runCatching { socket.close() }; continue }
             Thread({
                 try { socket.use { handle(it, token, channel) } } finally { slots.release() }
@@ -119,18 +141,18 @@ object InstanceChannel {
         }
     }
 
-    /** Asks the running instance to take [args]. */
-    private fun forward(dir: File, args: List<String>): Startup = try {
+    /** Asks the running instance to take [args]; true when it answered "ok". */
+    private fun forward(dir: File, args: List<String>): Boolean = try {
         val info = json.decodeFromString(IpcInfo.serializer(), File(dir, FILE_NAME).readText())
         Socket().use { s ->
             s.connect(InetSocketAddress(InetAddress.getByName("127.0.0.1"), info.port), TIMEOUT_MS)
             s.soTimeout = TIMEOUT_MS
             val line = json.encodeToString(IpcRequest.serializer(), IpcRequest(info.token, args)) + "\n"
             s.getOutputStream().apply { write(line.toByteArray()); flush() }
-            if (readLine(s.getInputStream(), 64) == "ok") Startup.Forwarded else Startup.Failed
+            readLine(s.getInputStream(), 64) == "ok"
         }
     } catch (e: Exception) {
-        Startup.Failed
+        false
     }
 
     /**

@@ -94,4 +94,44 @@ class InstanceChannelTest {
         assertIs<Startup.Primary>(InstanceChannel.start(dir, emptyList())).lock.close()
         assertIs<Startup.Primary>(InstanceChannel.start(dir, emptyList())).lock.close()
     }
+
+    // the running instance writes ipc.json ~300 ms after taking the lock: the new launch waits and still hands over
+    @Test fun launchDuringPrimaryStartupIsForwarded(@TempDir dir: File) = runTest {
+        val lock = assertNotNull(SingleInstanceLock.tryAcquire(dir))
+        val primary = java.util.concurrent.CompletableFuture<Startup.Primary>()
+        Thread {
+            Thread.sleep(300)
+            primary.complete(InstanceChannel.startPrimary(dir, lock, emptyList()))
+        }.start()
+        try {
+            assertEquals(Startup.Forwarded, InstanceChannel.start(dir, listOf("C:\\a.txt")))
+            assertEquals(listOf("C:\\a.txt"), realTime { primary.get(10, java.util.concurrent.TimeUnit.SECONDS).incoming.first() })
+        } finally {
+            primary.get(10, java.util.concurrent.TimeUnit.SECONDS).lock.close()
+        }
+    }
+
+    // stale ipc.json at a dead port and the old holder exits ~300 ms later: the new launch becomes Primary with its args
+    @Test fun staleChannelFileAfterHolderExitsBecomesPrimary(@TempDir dir: File) = runTest {
+        val lock = assertNotNull(SingleInstanceLock.tryAcquire(dir))
+        val closedPort = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { it.localPort }
+        File(dir, "ipc.json").writeText("{\"port\":$closedPort,\"token\":\"abc\"}")
+        val releaser = Thread { Thread.sleep(300); lock.close() }.apply { start() }
+        val primary = assertIs<Startup.Primary>(InstanceChannel.start(dir, listOf("C:\\b.txt")))
+        try {
+            releaser.join(10_000)
+            assertEquals(listOf("C:\\b.txt"), realTime { primary.incoming.first() })
+            assertNotEquals(closedPort, Json.parseToJsonElement(File(dir, "ipc.json").readText()).jsonObject["port"]!!.jsonPrimitive.int)
+        } finally {
+            primary.lock.close()
+        }
+    }
+
+    // closing the primary deletes ipc.json, and closing twice is harmless
+    @Test fun closingPrimaryDeletesChannelFile(@TempDir dir: File) {
+        val primary = assertIs<Startup.Primary>(InstanceChannel.start(dir, emptyList()))
+        assertTrue(File(dir, "ipc.json").exists())
+        primary.lock.close(); primary.lock.close()
+        assertFalse(File(dir, "ipc.json").exists())
+    }
 }
