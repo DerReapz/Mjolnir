@@ -51,7 +51,7 @@ fun Route.pairingRoutes(deps: RelayDeps) {
                 val row = store.claimPairing(code, me.deviceId, now) ?: return@post call.notFound()
                 val owner = store.device(row.ownerId) ?: return@post call.notFound()
                 hub.emit(row.ownerId, RelayEvent.PairRequested(row.id, DeviceRow(me.deviceId, me.name, me.kind, null).toPeer()))
-                call.respond(ClaimResponse(row.id, owner.toPeer()))
+                call.respond(HttpStatusCode.Accepted, ClaimResponse(row.id, owner.toPeer()))
             }
         }
 
@@ -67,33 +67,29 @@ fun Route.pairingRoutes(deps: RelayDeps) {
 
         post("/v1/pairings/{id}/accept") {
             val me = call.me()
-            val row = store.pairing(call.parameters["id"]!!)
-            if (row == null || (row.ownerId != me.deviceId && row.claimerId != me.deviceId)) return@post call.notFound()
-            if (row.ownerId != me.deviceId) return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("forbidden"))
-            val claimerId = row.claimerId
-            val state = effectiveState(row, deps.clock.nowMs())
-            if (state == PairingState.ACCEPTED && claimerId != null && store.areLinked(row.ownerId, claimerId)) {
-                return@post call.respond(HttpStatusCode.NoContent)
+            val id = call.parameters["id"]!!
+            when (store.resolvePairing(id, me.deviceId, accept = true, nowMs = deps.clock.nowMs())) {
+                Store.Resolved.NOT_FOUND -> call.notFound()
+                Store.Resolved.FORBIDDEN -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("forbidden"))
+                Store.Resolved.ALREADY_ACCEPTED -> call.respond(HttpStatusCode.NoContent)
+                Store.Resolved.WON -> {
+                    val row = store.pairing(id)!!
+                    val owner = store.device(row.ownerId)!!
+                    val claimer = store.device(row.claimerId!!)!!
+                    hub.emit(owner.id, RelayEvent.Paired(claimer.toPeer()))
+                    hub.emit(claimer.id, RelayEvent.Paired(owner.toPeer()))
+                    call.respond(HttpStatusCode.NoContent)
+                }
             }
-            if (state != PairingState.CLAIMED || claimerId == null) return@post call.notFound()
-            val owner = store.device(row.ownerId)
-            val claimer = store.device(claimerId)
-            if (owner == null || claimer == null) return@post call.notFound()
-            store.link(owner.id, claimer.id)
-            store.setPairingState(row.id, PairingState.ACCEPTED)
-            hub.emit(owner.id, RelayEvent.Paired(claimer.toPeer()))
-            hub.emit(claimer.id, RelayEvent.Paired(owner.toPeer()))
-            call.respond(HttpStatusCode.NoContent)
         }
 
         post("/v1/pairings/{id}/reject") {
             val me = call.me()
-            val row = store.pairing(call.parameters["id"]!!)
-            if (row == null || (row.ownerId != me.deviceId && row.claimerId != me.deviceId)) return@post call.notFound()
-            if (row.ownerId != me.deviceId) return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("forbidden"))
-            if (effectiveState(row, deps.clock.nowMs()) != PairingState.CLAIMED) return@post call.notFound()
-            store.setPairingState(row.id, PairingState.REJECTED)
-            call.respond(HttpStatusCode.NoContent)
+            when (store.resolvePairing(call.parameters["id"]!!, me.deviceId, accept = false, nowMs = deps.clock.nowMs())) {
+                Store.Resolved.NOT_FOUND, Store.Resolved.ALREADY_ACCEPTED -> call.notFound()
+                Store.Resolved.FORBIDDEN -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("forbidden"))
+                Store.Resolved.WON -> call.respond(HttpStatusCode.NoContent)
+            }
         }
 
         get("/v1/peers") {

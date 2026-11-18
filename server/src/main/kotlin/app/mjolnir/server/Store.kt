@@ -174,4 +174,22 @@ class Store(jdbcUrl: String) {
             it.setString(1, x); it.setString(2, y); it.executeUpdate()
         }
     }
+
+    enum class Resolved { NOT_FOUND, FORBIDDEN, WON, ALREADY_ACCEPTED }
+
+    /** One atomic CLAIMED -> ACCEPTED/REJECTED transition by the owner; links on accept. */
+    @Synchronized
+    fun resolvePairing(id: String, deviceId: String, accept: Boolean, nowMs: Long): Resolved {
+        val row = pairing(id)
+        if (row == null || (row.ownerId != deviceId && row.claimerId != deviceId)) return Resolved.NOT_FOUND
+        if (row.ownerId != deviceId) return Resolved.FORBIDDEN
+        val claimerId = row.claimerId
+        if (accept && row.state == PairingState.ACCEPTED && claimerId != null && areLinked(row.ownerId, claimerId)) {
+            return Resolved.ALREADY_ACCEPTED
+        }
+        if (row.state != PairingState.CLAIMED || nowMs > row.expiresAtMs || claimerId == null) return Resolved.NOT_FOUND
+        if (accept) link(row.ownerId, claimerId)
+        setPairingState(id, if (accept) PairingState.ACCEPTED else PairingState.REJECTED)
+        return Resolved.WON
+    }
 }

@@ -58,7 +58,7 @@ class PairingRoutesTest {
     @Test fun codeIsSingleUse() = relayTest {
         val pc = register("PC", DeviceKind.PC); val a = register("A"); val b = register("B")
         val code = createCode(pc)
-        assertEquals(HttpStatusCode.OK, claimStatus(a, code))
+        assertEquals(HttpStatusCode.Accepted, claimStatus(a, code))
         assertEquals(HttpStatusCode.NotFound, claimStatus(b, code))
     }
     @Test fun onlyOwnerCanAcceptOrReject() = relayTest {
@@ -84,5 +84,25 @@ class PairingRoutesTest {
             assertEquals(RelayEvent.Unpaired(phone.deviceId), next())
         }
         assertTrue(peers(pc).isEmpty()); assertTrue(peers(phone).isEmpty())
+    }
+    @Test fun secondAcceptEmitsNoSecondPaired() = relayTest {
+        val pc = register("PC", DeviceKind.PC); val phone = register()
+        val claim = claim(phone, createCode(pc))
+        withEvents(pc) {
+            repeat(2) {
+                assertEquals(HttpStatusCode.NoContent, client.post("/v1/pairings/${claim.pairingId}/accept") { bearerAuth(pc.token) }.status)
+            }
+            assertTrue(next() is RelayEvent.Paired)
+            assertFailsWith<kotlinx.coroutines.TimeoutCancellationException> {
+                kotlinx.coroutines.withTimeout(300) { next() }
+            }
+        }
+    }
+    @Test fun rejectAfterAcceptKeepsAccepted() = relayTest {
+        val pc = register("PC", DeviceKind.PC); val phone = register()
+        val claim = claim(phone, createCode(pc))
+        client.post("/v1/pairings/${claim.pairingId}/accept") { bearerAuth(pc.token) }
+        assertEquals(HttpStatusCode.NotFound, client.post("/v1/pairings/${claim.pairingId}/reject") { bearerAuth(pc.token) }.status)
+        assertEquals(PairingState.ACCEPTED, status(phone, claim.pairingId).state)
     }
 }
