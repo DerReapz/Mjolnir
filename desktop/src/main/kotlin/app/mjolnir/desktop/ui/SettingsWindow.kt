@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -57,50 +56,53 @@ fun SettingsWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
     Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(520.dp, 520.dp)), title = "Settings", icon = icon) {
         val awtWindow = window
         MjolnirTheme {
+          Column(Modifier.fillMaxSize()) {
+            ForgeHeader("Settings")
             Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text("Relay", style = MaterialTheme.typography.titleSmall)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = relay, onValueChange = { relay = it; relayAttempted = false }, singleLine = true,
-                        modifier = Modifier.weight(1f), placeholder = { Text("https://") })
-                    OutlinedButton(onClick = {
+                        modifier = Modifier.weight(1f), placeholder = { Text("https://") }, shape = Forge.inputShape, colors = forgeFieldColors())
+                    ForgeSecondaryButton("Save", onClick = {
                         relayAttempted = true
-                        val url = RelayUrls.normalize(relay) ?: return@OutlinedButton
+                        val url = RelayUrls.normalize(relay) ?: return@ForgeSecondaryButton
                         relay = url
                         c.changeRelay(url) // runs in the controller's scope: closing Settings cannot interrupt it
-                    }) { Text("Save") }
+                    })
                 }
                 relayFieldMessage(relay, config.relayUrl, relayAttempted)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
                 Text("Device name", style = MaterialTheme.typography.titleSmall)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = name, onValueChange = { name = it; nameError = null }, singleLine = true,
-                        modifier = Modifier.weight(1f), isError = !isValidDeviceName(name))
-                    OutlinedButton(
-                        enabled = isValidDeviceName(name) && name.trim() != config.deviceName,
+                        modifier = Modifier.weight(1f), isError = !isValidDeviceName(name), shape = Forge.inputShape, colors = forgeFieldColors())
+                    ForgeSecondaryButton(
+                        "Save", enabled = isValidDeviceName(name) && name.trim() != config.deviceName,
                         onClick = { c.startRename(name) { err -> nameError = err; if (err == null) name = name.trim() } },
-                    ) { Text("Save") }
+                    )
                 }
                 nameError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
                 Text("Save received files to", style = MaterialTheme.typography.titleSmall)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(config.saveDirPath().absolutePath, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    OutlinedButton(onClick = {
+                    ForgeSecondaryButton("Change…", onClick = {
                         val chooser = JFileChooser(config.saveDirPath()).apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
                         if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) c.setSaveDir(chooser.selectedFile)
-                    }) { Text("Change…") }
+                    })
                 }
 
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = config.launchAtLogin, onCheckedChange = { c.setLaunchAtLogin(it) })
+                    Checkbox(checked = config.launchAtLogin, onCheckedChange = { c.setLaunchAtLogin(it) }, colors = forgeCheckboxColors())
                     Text("Start Mjolnir when I sign in to Windows")
                 }
 
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = config.sendToMenu, onCheckedChange = { c.setSendToMenu(it) })
+                    Checkbox(checked = config.sendToMenu, onCheckedChange = { c.setSendToMenu(it) }, colors = forgeCheckboxColors())
                     Text("Show Mjolnir in Explorer's Send to menu")
                 }
             }
+          }
         }
     }
 }

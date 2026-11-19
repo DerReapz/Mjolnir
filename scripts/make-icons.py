@@ -48,6 +48,11 @@ def main() -> None:
 
     tile(hammer, 64, 12, 52).save(DESKTOP_RES / "tray.png", optimize=True)
 
+    # White hammer on transparent, for the dark Forge window headers.
+    white = Image.new("RGBA", hammer.size, (255, 255, 255, 0))
+    white.putalpha(hammer.getchannel("A"))
+    fit(white, 64).save(DESKTOP_RES / "hammer-white.png", optimize=True)
+
     sizes = [16, 24, 32, 48, 64, 128, 256]
     frames = [tile(hammer, s, s * 0.19, round(s * 0.8)) for s in sizes]
     frames[-1].save(DESKTOP_RES / "mjolnir.ico", format="ICO",

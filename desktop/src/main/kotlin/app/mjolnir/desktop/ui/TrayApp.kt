@@ -114,18 +114,11 @@ private fun PairRequestDialog(c: AppController, request: RelayEvent.PairRequeste
                 Text("Pair with ${request.from.name}?", style = MaterialTheme.typography.titleMedium)
                 Row {
                     Spacer(Modifier.weight(1f))
-                    OutlinedButton(onClick = { c.answerPairRequest(request, accept = false) }) { Text("Reject") }
+                    ForgeSecondaryButton("Reject", onClick = { c.answerPairRequest(request, accept = false) })
                     Spacer(Modifier.width(12.dp))
-                    Button(onClick = { c.answerPairRequest(request, accept = true) }) { Text("Accept") }
+                    ForgePrimaryButton("Accept", onClick = { c.answerPairRequest(request, accept = true) })
                 }
             }
         }
-    }
-}
-
-@Composable
-fun MjolnirTheme(content: @Composable () -> Unit) {
-    MaterialTheme {
-        Surface(color = MaterialTheme.colorScheme.background) { content() }
     }
 }

@@ -7,21 +7,31 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -121,7 +131,7 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
         }
     }
 
-    Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(560.dp, 640.dp)), title = "Send to device", icon = icon) {
+    Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(760.dp, 560.dp)), title = "Send to device", icon = icon) {
         val awtWindow = window
         // Explorer's *Send to*: add the paths (scanned off the UI thread), aim at the last phone, and come to the front.
         LaunchedEffect(Unit) {
@@ -132,94 +142,140 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
             }
         }
         MjolnirTheme {
-            Column(
-                Modifier.fillMaxSize().padding(16.dp).dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                OutlinedTextField(
-                    value = state.text,
-                    onValueChange = { state = state.withText(it) },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3, maxLines = 6,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
-                        dialog.isVisible = true
-                        val chosen = dialog.files.toList()
-                        addFiles(chosen)
-                    }) { Text("Add files…") }
-                    OutlinedButton(onClick = {
-                        val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
-                        if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) {
-                            addFiles(listOf(chooser.selectedFile))
-                        }
-                    }) { Text("Add folder…") }
+            SendContent(
+                state = state,
+                lastTargetId = config.lastPhoneId,
+                sending = sending,
+                modifier = Modifier.dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget),
+                onState = { state = it },
+                onAddFiles = {
+                    val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
+                    dialog.isVisible = true
+                    val chosen = dialog.files.toList()
+                    addFiles(chosen)
+                },
+                onAddFolder = {
+                    val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+                    if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) {
+                        addFiles(listOf(chooser.selectedFile))
+                    }
+                },
+                onPair = onPair,
+                onSend = {
+                    val target = state.target ?: return@SendContent
+                    val tabs = state.tabs(); val files = state.files
+                    sending = true
+                    // The send runs in the controller's scope, so closing this window cannot cancel it;
+                    // if the window is gone by then, the result becomes a tray notification.
+                    c.startSend(target, tabs, files) { r ->
+                        if (!open.get()) return@startSend false
+                        SwingUtilities.invokeLater { applySendResult(r, tabs, files) }
+                        true
+                    }
+                },
+            )
+        }
+    }
+}
+
+/** The Send window's content (stateless, so it can be rendered headless). Layout per the Forge mockup. */
+@Composable
+internal fun SendContent(
+    state: SendState,
+    lastTargetId: String?,
+    sending: Boolean,
+    modifier: Modifier = Modifier,
+    onState: (SendState) -> Unit,
+    onAddFiles: () -> Unit,
+    onAddFolder: () -> Unit,
+    onPair: () -> Unit,
+    onSend: () -> Unit,
+) {
+    Column(modifier.fillMaxSize()) {
+        ForgeHeader("Send to device")
+        Row(Modifier.weight(1f).fillMaxWidth()) {
+            Column(Modifier.weight(1f).fillMaxHeight().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Paste or drop links, files and folders", style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted))
+                    BasicTextField(
+                        value = state.text,
+                        onValueChange = { onState(state.withText(it)) },
+                        modifier = Modifier.fillMaxWidth().dashedBorder(Forge.dashed, 10.dp).background(Forge.surface, Forge.inputShape).padding(10.dp),
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                        cursorBrush = SolidColor(Forge.accent),
+                        minLines = 3, maxLines = 6,
+                    )
                 }
-                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(state.links, key = { "link:$it" }) { link ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = link in state.selected, onCheckedChange = { state = state.toggle(link) })
-                            Text(link, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 40.dp).forgeRow().padding(horizontal = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Checkbox(checked = link in state.selected, onCheckedChange = { onState(state.toggle(link)) }, colors = forgeCheckboxColors())
+                            ForgeBodyText(link, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                     items(fileGroups(state.files), key = { "file:" + it.files.first().path }) { group ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(group.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 40.dp).forgeRow().padding(start = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+                                ForgeBodyText(group.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(
                                     "${Messages.items(0, group.files.size)} · ${Messages.size(group.totalBytes)}",
-                                    style = MaterialTheme.typography.bodySmall,
+                                    style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted),
                                 )
                             }
-                            TextButton(onClick = {
-                                state = group.files.fold(state) { s, f -> s.removeFile(f.path) }.copy(notice = null)
-                            }) { Text("Remove") }
+                            ForgeTextButton("Remove", muted = true, onClick = {
+                                onState(group.files.fold(state) { s, f -> s.removeFile(f.path) }.copy(notice = null))
+                            })
                         }
                     }
                 }
                 state.notice?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TargetPicker(state, onPick = { state = state.selectTarget(it) }, onPair = onPair)
-                    Spacer(Modifier.weight(1f))
-                    Button(
-                        enabled = state.canSend && !sending,
-                        onClick = {
-                            val target = state.target ?: return@Button
-                            val tabs = state.tabs(); val files = state.files
-                            sending = true
-                            // The send runs in the controller's scope, so closing this window cannot cancel it;
-                            // if the window is gone by then, the result becomes a tray notification.
-                            c.startSend(target, tabs, files) { r ->
-                                if (!open.get()) return@startSend false
-                                SwingUtilities.invokeLater { applySendResult(r, tabs, files) }
-                                true
-                            }
-                        },
-                    ) { Text("Send") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ForgeSecondaryButton("Add files…", onClick = onAddFiles)
+                    ForgeSecondaryButton("Add folder…", onClick = onAddFolder)
                 }
+            }
+            Column(
+                Modifier.width(240.dp).fillMaxHeight().background(Forge.panel).drawBehind {
+                    drawLine(Forge.border, Offset(0f, 0f), Offset(0f, size.height), 1.dp.toPx())
+                }.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                ForgeSectionLabel("Send to")
+                if (state.targets.isEmpty()) {
+                    ForgeTextButton("Pair a device…", onClick = onPair)
+                }
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(state.targets, key = { it.deviceId }) { peer ->
+                        val selected = peer.deviceId == state.targetId
+                        val kind = if (peer.kind == DeviceKind.PHONE) "Phone" else "PC"
+                        Column(
+                            Modifier.fillMaxWidth().heightIn(min = 52.dp).clip(Forge.inputShape).forgeCard(selected)
+                                .clickable { onState(state.selectTarget(peer.deviceId)) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Text(peer.name, style = TextStyle(fontFamily = ForgeFonts.inter600, fontSize = 14.sp, color = Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                if (peer.deviceId == lastTargetId) "$kind · last used" else kind,
+                                style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted),
+                            )
+                        }
+                    }
+                }
+                ForgePrimaryButton("Send", onClick = onSend, enabled = state.canSend && !sending, big = true, modifier = Modifier.fillMaxWidth())
             }
         }
     }
 }
 
-@Composable
-private fun TargetPicker(state: SendState, onPick: (String) -> Unit, onPair: () -> Unit) {
-    if (state.targets.isEmpty()) {
-        TextButton(onClick = onPair) { Text("Pair a device…") }
-        return
-    }
-    var open by remember { mutableStateOf(false) }
-    Box {
-        OutlinedButton(onClick = { open = true }) { Text((state.target?.name ?: "") + "  ▾") }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            for (peer in state.targets) {
-                val label = if (peer.kind == DeviceKind.PHONE) "Phone" else "PC"
-                DropdownMenuItem(text = { Text("${peer.name} · $label") }, onClick = { onPick(peer.deviceId); open = false })
-            }
-        }
-    }
-    Spacer(Modifier.width(8.dp))
+private fun Modifier.dashedBorder(color: Color, radius: Dp): Modifier = drawBehind {
+    val stroke = Stroke(1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(5.dp.toPx(), 4.dp.toPx())))
+    drawRoundRect(color, cornerRadius = CornerRadius(radius.toPx()), style = stroke)
 }
 
 /** Restores [w] if minimized and raises it above other windows (the alwaysOnTop toggle gets past focus rules). */

@@ -3,6 +3,7 @@ package app.mjolnir.desktop.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
@@ -97,10 +98,12 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
         }
     }
 
-    Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(380.dp, 360.dp)), title = "Pair a device", icon = icon, resizable = false) {
+    Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(400.dp, 420.dp)), title = "Pair a device", icon = icon, resizable = false) {
         MjolnirTheme {
+          Column(Modifier.fillMaxSize()) {
+            ForgeHeader("Pair a device")
             Column(
-                Modifier.fillMaxSize().padding(24.dp),
+                Modifier.fillMaxWidth().weight(1f).padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
             ) {
@@ -116,9 +119,10 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
                                 OutlinedTextField(
                                     value = input, onValueChange = { input = it }, singleLine = true,
                                     label = { Text("Code from the other device") },
+                                    shape = Forge.inputShape, colors = forgeFieldColors(),
                                 )
                                 (entered as? EntryStatus.Failed)?.let { Text(it.message) }
-                                Button(enabled = input.isNotBlank(), onClick = {
+                                ForgePrimaryButton("Pair", enabled = input.isNotBlank(), onClick = {
                                     entry = EntryStatus.Idle
                                     // The claim runs in the controller's scope; this scope only waits for its outcome.
                                     windowScope.launch {
@@ -136,27 +140,27 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
                                             javax.swing.SwingUtilities.invokeLater { if (windowOpen.get()) entry = EntryStatus.Waiting(peer.name) }
                                         }
                                     }
-                                }) { Text("Pair") }
+                                })
                             }
                         }
                     }
                     paired != null -> Text("Paired with $paired", style = MaterialTheme.typography.titleLarge)
                     current != null && remaining > 0 -> {
-                        Text(PairingCode.display(current), fontSize = 48.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-                        Text("Expires in ${formatRemaining(remaining)}")
+                        ForgeCode(PairingCode.display(current))
+                        ForgeBodyText("Expires in ${formatRemaining(remaining)}", muted = true)
                     }
                     current != null || error != null -> {
                         error?.let { Text(it) }
-                        Button(onClick = { generation++ }) { Text("Get a new code") }
+                        ForgePrimaryButton("Get a new code", onClick = { generation++ })
                     }
                     else -> Text("…")
                 }
                 if (paired == null && entered !is EntryStatus.Waiting && entered !is EntryStatus.Paired) {
-                    TextButton(onClick = { entering = !entering; entry = EntryStatus.Idle }) {
-                        Text(if (entering) "Show a code instead" else "Enter a code instead")
-                    }
+                    ForgeTextButton(if (entering) "Show a code instead" else "Enter a code instead",
+                        onClick = { entering = !entering; entry = EntryStatus.Idle })
                 }
             }
+          }
         }
     }
 }
