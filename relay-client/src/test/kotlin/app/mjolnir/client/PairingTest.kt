@@ -94,7 +94,7 @@ class PairingTest {
     }
 
     @Test fun unauthorizedWhilePolling() = runTest {
-        val api = fake().apply { failAllWith = null }
+        val api = fake()
         val bad = object : RelayApi by api {
             override suspend fun pairingStatus(pairingId: String): PairingStatus = throw RelayException(RelayErrorKind.UNAUTHORIZED, "x")
         }
@@ -106,5 +106,18 @@ class PairingTest {
         runCurrent()
         r.cancel()
         assertFailsWith<CancellationException> { r.await() }
+    }
+
+    @Test fun networkOnClaimFailsFast() = runTest {
+        assertEquals(ClaimOutcome.Failed("Can't reach the relay. Check your connection."), claimAndAwait(failing(RelayErrorKind.NETWORK), "ABC234", {}))
+        assertEquals(0L, testScheduler.currentTime)
+    }
+
+    @Test fun notFoundWhilePollingIsExpired() = runTest {
+        val api = fake()
+        val gone = object : RelayApi by api {
+            override suspend fun pairingStatus(pairingId: String): PairingStatus = throw RelayException(RelayErrorKind.NOT_FOUND, "x")
+        }
+        assertEquals(ClaimOutcome.Failed("The code expired. Get a new code on the other device."), claimAndAwait(gone, "ABC234", {}))
     }
 }

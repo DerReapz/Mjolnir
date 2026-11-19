@@ -341,7 +341,12 @@ class AppController(
      * Claims a code typed on this device and waits for the other device to accept. Runs in [scope], so closing the
      * window does not stop it; the caller only waits for the outcome. Refreshes the device list on success.
      */
-    suspend fun pairWithCode(input: String, onWaiting: (Peer) -> Unit): ClaimOutcome {
+    suspend fun pairWithCode(
+        input: String,
+        /** Shows the outcome in the pair window; returns false if that window is gone (then it becomes a tray notification). */
+        deliver: (ClaimOutcome) -> Boolean = { false },
+        onWaiting: (Peer) -> Unit,
+    ): ClaimOutcome {
         val api = api() ?: return ClaimOutcome.Failed("Can't reach the relay. Check your connection.")
         val token = store.read().token
         return scope.async {
@@ -350,8 +355,12 @@ class AppController(
                 is ClaimOutcome.Paired -> {
                     if (_config.value.lastPhoneId == null) updateConfig { it.copy(lastPhoneId = outcome.peer.deviceId) }
                     refreshPeers()
+                    _pairedWith.tryEmit(outcome.peer.name)
                 }
                 is ClaimOutcome.Failed -> if (outcome.kind == RelayErrorKind.UNAUTHORIZED) recoverUnauthorized(token)
+            }
+            if (!deliver(outcome)) {
+                notify(when (outcome) { is ClaimOutcome.Paired -> "Paired with ${outcome.peer.name}"; is ClaimOutcome.Failed -> outcome.message })
             }
             outcome
         }.await()

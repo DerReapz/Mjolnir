@@ -64,6 +64,8 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
     var input by remember { mutableStateOf("") }
     var entry by remember { mutableStateOf<EntryStatus>(EntryStatus.Idle) }
     val windowScope = rememberCoroutineScope()
+    val windowOpen = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { windowOpen.set(false) } }
 
     LaunchedEffect(generation) {
         code = null; error = null
@@ -120,10 +122,14 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
                                     entry = EntryStatus.Idle
                                     // The claim runs in the controller's scope; this scope only waits for its outcome.
                                     windowScope.launch {
-                                        entry = when (val r = c.pairWithCode(input) { entry = EntryStatus.Waiting(it.name) }) {
-                                            is ClaimOutcome.Paired -> EntryStatus.Paired(r.peer.name)
-                                            is ClaimOutcome.Failed -> EntryStatus.Failed(r.message)
-                                        }
+                                        c.pairWithCode(input, deliver = { r ->
+                                            if (!windowOpen.get()) return@pairWithCode false
+                                            entry = when (r) {
+                                                is ClaimOutcome.Paired -> EntryStatus.Paired(r.peer.name)
+                                                is ClaimOutcome.Failed -> EntryStatus.Failed(r.message)
+                                            }
+                                            true
+                                        }) { if (windowOpen.get()) entry = EntryStatus.Waiting(it.name) }
                                     }
                                 }) { Text("Pair") }
                             }

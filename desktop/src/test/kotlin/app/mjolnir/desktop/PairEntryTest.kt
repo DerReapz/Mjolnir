@@ -32,12 +32,21 @@ class PairEntryTest {
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         val c = AppController(dir, scope) { _, _ -> fake }
         val waiting = mutableListOf<Peer>()
+        val notes = mutableListOf<String>()
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) { c.notifications.collect { notes += it } }
+        val paired = mutableListOf<String>()
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) { c.pairedWith.collect { paired += it } }
+        var outcome: ClaimOutcome? = null
         val window = CoroutineScope(Job() + StandardTestDispatcher(testScheduler))
-        window.launch { c.pairWithCode("abc-234") { waiting += it } }; runCurrent()
+        window.launch { outcome = c.pairWithCode("abc-234") { waiting += it } }; runCurrent()
         assertEquals(listOf(other), waiting)
         window.cancel()
         advanceTimeBy(2_001); runCurrent()
         assertEquals(listOf(other), c.peers.value)
+        assertEquals("pc2", c.config.value.lastPhoneId)
+        assertNull(outcome) // the window's own await was cancelled; the claim itself finished
+        assertEquals(listOf("Paired with Laptop"), notes) // window gone: tray notification
+        assertEquals(listOf("Laptop"), paired)
         scope.cancel()
     }
 }
