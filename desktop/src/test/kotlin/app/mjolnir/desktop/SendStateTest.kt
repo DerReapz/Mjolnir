@@ -16,21 +16,30 @@ class SendStateTest {
     @Test fun togglingDeselects() = assertEquals(listOf(Tab("https://b.com")),
         SendState().withText("https://a.com https://b.com").toggle("https://a.com").tabs())
 
+    @Test fun pcsAndPhonesAreBothTargetsAndLastTargetIsRemembered() {
+        val pc = Peer("pc1", "Desk", DeviceKind.PC); val ph = Peer("p1", "Pixel", DeviceKind.PHONE)
+        val s = SendState().withTargets(listOf(ph, pc), "pc1")
+        assertEquals(listOf(ph, pc), s.targets)
+        assertEquals("pc1", s.targetId)
+        assertEquals(pc, s.target)
+        assertEquals("p1", s.selectTarget("p1").targetId)
+    }
+
     @Test fun targetDefaultsToLastPhoneIfStillPaired() {
         val p1 = Peer("p1", "Pixel", DeviceKind.PHONE); val p2 = Peer("p2", "Galaxy", DeviceKind.PHONE)
-        assertEquals("p2", SendState().withPhones(listOf(p1, p2), "p2").targetId)
-        assertEquals("p1", SendState().withPhones(listOf(p1, p2), "gone").targetId)
-        assertNull(SendState().withPhones(emptyList(), "p2").targetId)
+        assertEquals("p2", SendState().withTargets(listOf(p1, p2), "p2").targetId)
+        assertEquals("p1", SendState().withTargets(listOf(p1, p2), "gone").targetId)
+        assertNull(SendState().withTargets(emptyList(), "p2").targetId)
     }
 
     @Test fun cannotSendWithoutTargetOrSelection() {
         assertFalse(SendState().withText("https://a.com").canSend)
-        assertFalse(SendState().withPhones(listOf(Peer("p", "P", DeviceKind.PHONE)), null).canSend)
+        assertFalse(SendState().withTargets(listOf(Peer("p", "P", DeviceKind.PHONE)), null).canSend)
     }
 
     @Test fun filesAloneCanBeSent(@TempDir dir: File) {
         val f = File(dir, "a.pdf").apply { writeText("x") }
-        val s = SendState().withPhones(listOf(Peer("p", "P", DeviceKind.PHONE)), null).withFiles(listOf(f, f))
+        val s = SendState().withTargets(listOf(Peer("p", "P", DeviceKind.PHONE)), null).withFiles(listOf(f, f))
         assertTrue(s.canSend); assertEquals(listOf(f.path), s.files.map { it.path })
     }
 
@@ -61,7 +70,7 @@ class SendStateTest {
     @Test fun removeFileAndSelectTarget(@TempDir dir: File) {
         val a = File(dir, "a.txt").apply { writeText("a") }; val b = File(dir, "b.txt").apply { writeText("b") }
         val p1 = Peer("p1", "Pixel", DeviceKind.PHONE); val p2 = Peer("p2", "Galaxy", DeviceKind.PHONE)
-        val s = SendState().withFiles(listOf(a, b)).removeFile(a.path).withPhones(listOf(p1, p2), null).selectTarget("p2")
+        val s = SendState().withFiles(listOf(a, b)).removeFile(a.path).withTargets(listOf(p1, p2), null).selectTarget("p2")
         assertEquals(listOf(b.path), s.files.map { it.path }); assertEquals("p2", s.targetId)
     }
 }

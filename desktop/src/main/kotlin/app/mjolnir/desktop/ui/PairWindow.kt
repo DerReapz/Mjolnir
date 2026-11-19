@@ -5,6 +5,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.rememberCoroutineScope
+import app.mjolnir.client.ClaimOutcome
+import kotlinx.coroutines.launch
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,6 +39,13 @@ import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.PairingCode
 import kotlinx.coroutines.delay
 
+private sealed interface EntryStatus {
+    data object Idle : EntryStatus
+    data class Waiting(val name: String) : EntryStatus
+    data class Paired(val name: String) : EntryStatus
+    data class Failed(val message: String) : EntryStatus
+}
+
 /** `m:ss` for a remaining time in milliseconds (rounded up to whole seconds). */
 fun formatRemaining(ms: Long): String {
     val s = (ms.coerceAtLeast(0) + 999) / 1000
@@ -48,6 +60,10 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
     var remaining by remember { mutableLongStateOf(0L) }
     var error by remember { mutableStateOf<String?>(null) }
     var pairedWith by remember { mutableStateOf<String?>(null) }
+    var entering by remember { mutableStateOf(false) }
+    var input by remember { mutableStateOf("") }
+    var entry by remember { mutableStateOf<EntryStatus>(EntryStatus.Idle) }
+    val windowScope = rememberCoroutineScope()
 
     LaunchedEffect(generation) {
         code = null; error = null
@@ -79,7 +95,7 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
         }
     }
 
-    Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(380.dp, 300.dp)), title = "Pair a phone", icon = icon, resizable = false) {
+    Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(380.dp, 360.dp)), title = "Pair a device", icon = icon, resizable = false) {
         MjolnirTheme {
             Column(
                 Modifier.fillMaxSize().padding(24.dp),
@@ -88,7 +104,31 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
             ) {
                 val paired = pairedWith
                 val current = code
+                val entered = entry
                 when {
+                    entering -> {
+                        when (entered) {
+                            is EntryStatus.Waiting -> Text("Waiting for ${entered.name} to accept…")
+                            is EntryStatus.Paired -> Text("Paired with ${entered.name}", style = MaterialTheme.typography.titleLarge)
+                            else -> {
+                                OutlinedTextField(
+                                    value = input, onValueChange = { input = it }, singleLine = true,
+                                    label = { Text("Code from the other device") },
+                                )
+                                (entered as? EntryStatus.Failed)?.let { Text(it.message) }
+                                Button(enabled = input.isNotBlank(), onClick = {
+                                    entry = EntryStatus.Idle
+                                    // The claim runs in the controller's scope; this scope only waits for its outcome.
+                                    windowScope.launch {
+                                        entry = when (val r = c.pairWithCode(input) { entry = EntryStatus.Waiting(it.name) }) {
+                                            is ClaimOutcome.Paired -> EntryStatus.Paired(r.peer.name)
+                                            is ClaimOutcome.Failed -> EntryStatus.Failed(r.message)
+                                        }
+                                    }
+                                }) { Text("Pair") }
+                            }
+                        }
+                    }
                     paired != null -> Text("Paired with $paired", style = MaterialTheme.typography.titleLarge)
                     current != null && remaining > 0 -> {
                         Text(PairingCode.display(current), fontSize = 48.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
@@ -99,6 +139,11 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
                         Button(onClick = { generation++ }) { Text("Get a new code") }
                     }
                     else -> Text("…")
+                }
+                if (paired == null && entered !is EntryStatus.Waiting && entered !is EntryStatus.Paired) {
+                    TextButton(onClick = { entering = !entering; entry = EntryStatus.Idle }) {
+                        Text(if (entering) "Show a code instead" else "Enter a code instead")
+                    }
                 }
             }
         }

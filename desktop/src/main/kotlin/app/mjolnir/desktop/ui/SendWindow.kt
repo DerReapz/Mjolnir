@@ -50,6 +50,7 @@ import app.mjolnir.desktop.AppController
 import app.mjolnir.desktop.SendState
 import app.mjolnir.desktop.scanFiles
 import app.mjolnir.desktop.uploadUnitKey
+import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.topFolder
 import java.awt.FileDialog
 import java.awt.Frame
@@ -79,7 +80,7 @@ fun fileGroups(files: List<LocalUpload>): List<FileGroup> =
 fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<File>>, onPair: () -> Unit, onClose: () -> Unit) {
     val peers by c.peers.collectAsState()
     val config by c.config.collectAsState()
-    var state by remember { mutableStateOf(SendState().withPhones(peers, config.lastPhoneId)) }
+    var state by remember { mutableStateOf(SendState().withTargets(peers, config.lastPhoneId)) }
     var sending by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val open = remember { AtomicBoolean(true) }
@@ -94,7 +95,7 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
     }
 
     LaunchedEffect(Unit) { c.refreshPeers() }
-    LaunchedEffect(peers) { state = state.withPhones(peers, config.lastPhoneId) }
+    LaunchedEffect(peers) { state = state.withTargets(peers, config.lastPhoneId) }
 
     fun applySendResult(r: app.mjolnir.desktop.SendResult, tabs: List<app.mjolnir.protocol.Tab>, files: List<LocalUpload>) {
         val sentUrls = r.sentTabs.map { it.url }.toSet()
@@ -120,7 +121,7 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
         }
     }
 
-    Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(560.dp, 640.dp)), title = "Send to phone", icon = icon) {
+    Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(560.dp, 640.dp)), title = "Send to device", icon = icon) {
         val awtWindow = window
         // Explorer's *Send to*: add the paths (scanned off the UI thread), aim at the last phone, and come to the front.
         LaunchedEffect(Unit) {
@@ -179,7 +180,7 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
                 }
                 state.notice?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    PhonePicker(state, onPick = { state = state.selectTarget(it) }, onPair = onPair)
+                    TargetPicker(state, onPick = { state = state.selectTarget(it) }, onPair = onPair)
                     Spacer(Modifier.weight(1f))
                     Button(
                         enabled = state.canSend && !sending,
@@ -203,17 +204,18 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
 }
 
 @Composable
-private fun PhonePicker(state: SendState, onPick: (String) -> Unit, onPair: () -> Unit) {
-    if (state.phones.isEmpty()) {
-        TextButton(onClick = onPair) { Text("Pair a phone…") }
+private fun TargetPicker(state: SendState, onPick: (String) -> Unit, onPair: () -> Unit) {
+    if (state.targets.isEmpty()) {
+        TextButton(onClick = onPair) { Text("Pair a device…") }
         return
     }
     var open by remember { mutableStateOf(false) }
     Box {
         OutlinedButton(onClick = { open = true }) { Text((state.target?.name ?: "") + "  ▾") }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            for (phone in state.phones) {
-                DropdownMenuItem(text = { Text(phone.name) }, onClick = { onPick(phone.deviceId); open = false })
+            for (peer in state.targets) {
+                val label = if (peer.kind == DeviceKind.PHONE) "Phone" else "PC"
+                DropdownMenuItem(text = { Text("${peer.name} · $label") }, onClick = { onPick(peer.deviceId); open = false })
             }
         }
     }

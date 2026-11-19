@@ -47,7 +47,7 @@ fun DevicesWindow(c: AppController, icon: Painter, onPair: () -> Unit, onClose: 
                         HorizontalDivider()
                     }
                 }
-                TextButton(onClick = onPair) { Text("Pair a phone…") }
+                TextButton(onClick = onPair) { Text("Pair a device…") }
             }
         }
     }

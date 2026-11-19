@@ -76,15 +76,15 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     }
 
     Tray(icon = icon, state = trayState, tooltip = tooltip, onAction = { showSend = true }, menu = {
-        Item("Send to phone…", onClick = { showSend = true })
+        Item("Send to device…", onClick = { showSend = true })
         val lastPhoneId = config.lastPhoneId
         if (lastPhoneId != null) {
-            val name = peers.find { it.deviceId == lastPhoneId }?.name ?: "phone"
+            val name = peers.find { it.deviceId == lastPhoneId }?.name ?: "device"
             Item("Send clipboard to $name", onClick = { c.sendClipboard() })
         }
         Item("Open received files", onClick = { c.openReceivedFiles() })
         Separator()
-        Item("Pair a phone…", onClick = { showPair = true })
+        Item("Pair a device…", onClick = { showPair = true })
         Item("Paired devices…", onClick = { showDevices = true })
         Item("Settings…", onClick = { showSettings = true })
         Separator()

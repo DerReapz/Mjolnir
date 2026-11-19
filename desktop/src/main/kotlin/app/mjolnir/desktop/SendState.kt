@@ -17,7 +17,7 @@ data class SendState(
     val text: String = "",
     val links: List<String> = emptyList(),
     val selected: Set<String> = emptySet(),
-    val phones: List<Peer> = emptyList(),
+    val targets: List<Peer> = emptyList(),
     val targetId: String? = null,
     val files: List<LocalUpload> = emptyList(),
     val notice: String? = null,
@@ -60,21 +60,20 @@ data class SendState(
 
     fun toggle(url: String): SendState = copy(selected = if (url in selected) selected - url else selected + url)
 
-    /** Target: the current or [lastPhoneId] if still paired, else the first phone, else null. */
-    fun withPhones(phones: List<Peer>, lastPhoneId: String?): SendState {
-        val list = phones.filter { it.kind == DeviceKind.PHONE }
-        val ids = list.map { it.deviceId }
-        val target = targetId?.takeIf { it in ids } ?: lastPhoneId?.takeIf { it in ids } ?: ids.firstOrNull()
-        return copy(phones = list, targetId = target)
+    /** Target: the current or [lastTargetId] if still paired, else the first paired device (PC or phone), else null. */
+    fun withTargets(peers: List<Peer>, lastTargetId: String?): SendState {
+        val ids = peers.map { it.deviceId }
+        val target = targetId?.takeIf { it in ids } ?: lastTargetId?.takeIf { it in ids } ?: ids.firstOrNull()
+        return copy(targets = peers, targetId = target)
     }
 
-    fun selectTarget(id: String): SendState = if (phones.any { it.deviceId == id }) copy(targetId = id) else this
+    fun selectTarget(id: String): SendState = if (targets.any { it.deviceId == id }) copy(targetId = id) else this
 
     val canSend: Boolean get() = targetId != null && (selected.isNotEmpty() || files.isNotEmpty())
 
     fun tabs(): List<Tab> = links.filter { it in selected }.map { Tab(it) }
 
-    val target: Peer? get() = phones.find { it.deviceId == targetId }
+    val target: Peer? get() = targets.find { it.deviceId == targetId }
 }
 
 /** One added file or folder after reading the disk: its uploads, or why it was refused. */

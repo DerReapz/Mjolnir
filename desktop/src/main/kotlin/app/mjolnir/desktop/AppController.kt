@@ -40,7 +40,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import app.mjolnir.client.ClaimOutcome
+import app.mjolnir.client.claimAndAwait
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -70,7 +73,7 @@ class AppController(
     private val _pairRequest = MutableStateFlow<RelayEvent.PairRequested?>(null)
     val pairRequest: StateFlow<RelayEvent.PairRequested?> = _pairRequest.asStateFlow()
 
-    /** Name of the phone just paired, for the pairing window. */
+    /** Name of the device just paired, for the pairing window. */
     private val _pairedWith = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val pairedWith: SharedFlow<String> = _pairedWith
 
@@ -322,11 +325,11 @@ class AppController(
         return SendResult(parts.joinToString(" "), sentTabs, files.isNotEmpty())
     }
 
-    /** Tray action: sends the links found in the clipboard to the last phone. */
+    /** Tray action: sends the links found in the clipboard to the last device. */
     fun sendClipboard() {
         scope.launch {
             val phoneId = _config.value.lastPhoneId ?: return@launch
-            val phone = _peers.value.find { it.deviceId == phoneId } ?: Peer(phoneId, lastPhoneName(), app.mjolnir.protocol.DeviceKind.PHONE)
+            val phone = _peers.value.find { it.deviceId == phoneId } ?: Peer(phoneId, lastPhoneName(), app.mjolnir.protocol.DeviceKind.PC)
             val text = withContext(Dispatchers.Main) { clipboardText() }
             val urls = extractUrls(text ?: "")
             if (urls.isEmpty()) return@launch notify(Messages.NO_LINKS)
@@ -334,8 +337,28 @@ class AppController(
         }
     }
 
+    /**
+     * Claims a code typed on this device and waits for the other device to accept. Runs in [scope], so closing the
+     * window does not stop it; the caller only waits for the outcome. Refreshes the device list on success.
+     */
+    suspend fun pairWithCode(input: String, onWaiting: (Peer) -> Unit): ClaimOutcome {
+        val api = api() ?: return ClaimOutcome.Failed("Can't reach the relay. Check your connection.")
+        val token = store.read().token
+        return scope.async {
+            val outcome = claimAndAwait(api, input, onWaiting)
+            when (outcome) {
+                is ClaimOutcome.Paired -> {
+                    if (_config.value.lastPhoneId == null) updateConfig { it.copy(lastPhoneId = outcome.peer.deviceId) }
+                    refreshPeers()
+                }
+                is ClaimOutcome.Failed -> if (outcome.kind == RelayErrorKind.UNAUTHORIZED) recoverUnauthorized(token)
+            }
+            outcome
+        }.await()
+    }
+
     fun lastPhoneName(): String =
-        _peers.value.find { it.deviceId == _config.value.lastPhoneId }?.name ?: "phone"
+        _peers.value.find { it.deviceId == _config.value.lastPhoneId }?.name ?: "device"
 
     fun openReceivedFiles() {
         scope.launch {
