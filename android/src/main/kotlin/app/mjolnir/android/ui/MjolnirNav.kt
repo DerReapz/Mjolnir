@@ -1,28 +1,66 @@
 package app.mjolnir.android.ui
 
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 
-enum class Screen(val label: String, val glyph: String) {
-    THROW("Throw", "🔨"),
-    CAUGHT("Caught", "📥"),
-    DEVICES("Devices", "📱"),
-    SETTINGS("Settings", "⚙"),
+/** A 24-unit stroke icon from SVG path data (the Forge nav icons). */
+private fun strokeIcon(name: String, vararg paths: String): ImageVector =
+    ImageVector.Builder(name, 22.dp, 22.dp, 24f, 24f).apply {
+        for (d in paths) {
+            addPath(
+                addPathNodes(d), stroke = SolidColor(Color.Black), strokeLineWidth = 2f,
+                strokeLineCap = StrokeCap.Butt, strokeLineJoin = StrokeJoin.Miter,
+            )
+        }
+    }.build()
+
+private val ThrowIcon = strokeIcon("throw", "M4 20l8-8M14 4l6 6-4 4-6-6z")
+private val CaughtIcon = strokeIcon("caught", "M12 4v12M6 10l6 6 6-6M4 20h16")
+private val DevicesIcon = strokeIcon("devices", "M3 5h12v9H3z", "M16 8h5v11h-5z")
+private val SettingsIcon = strokeIcon("settings", "M9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0", "M12 2v3M12 19v3M2 12h3M19 12h3")
+
+enum class Screen(val label: String, val icon: ImageVector) {
+    THROW("Throw", ThrowIcon),
+    CAUGHT("Caught", CaughtIcon),
+    DEVICES("Devices", DevicesIcon),
+    SETTINGS("Settings", SettingsIcon),
 }
 
 /** Bottom navigation over [Screen]; the current screen is held by the caller (in `rememberSaveable`). */
 @Composable
 fun MjolnirNav(current: Screen, onSelect: (Screen) -> Unit, modifier: Modifier = Modifier) {
-    NavigationBar(modifier) {
+    NavigationBar(
+        modifier.drawBehind { drawLine(Forge.Border, Offset.Zero, Offset(size.width, 0f), 1.dp.toPx()) },
+        containerColor = Forge.Background,
+        tonalElevation = 0.dp,
+    ) {
         for (screen in Screen.entries) {
+            val active = screen == current
             NavigationBarItem(
-                selected = screen == current,
+                selected = active,
                 onClick = { onSelect(screen) },
-                icon = { Text(screen.glyph) },
-                label = { Text(screen.label) },
+                icon = { Icon(screen.icon, contentDescription = null) },
+                label = { Text(screen.label, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = Forge.Accent, selectedTextColor = Forge.Accent,
+                    unselectedIconColor = Forge.Muted, unselectedTextColor = Forge.Muted,
+                    indicatorColor = Color.Transparent,
+                ),
             )
         }
     }

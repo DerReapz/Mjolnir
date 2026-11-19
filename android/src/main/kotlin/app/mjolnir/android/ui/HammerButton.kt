@@ -1,6 +1,18 @@
 package app.mjolnir.android.ui
 
 import android.view.HapticFeedbackConstants
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import app.mjolnir.R
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
@@ -48,54 +60,72 @@ fun hammerLabel(phase: ThrowPhase, hasTarget: Boolean): String = when {
 
 /**
  * Press and hold to arm, flick the phone to throw. [sensor] counts flicks only while held; the view model decides
- * whether a press arms (needs a target and a selection).
+ * whether a press arms (needs a target and a selection). [onCentre] reports the circle's centre in window coordinates.
  */
 @Composable
-fun HammerButton(vm: ThrowViewModel, sensor: FlickSensor, phase: ThrowPhase, hasTarget: Boolean, flight: HammerFlight, modifier: Modifier = Modifier) {
+fun HammerButton(
+    vm: ThrowViewModel, sensor: FlickSensor, phase: ThrowPhase, hasTarget: Boolean, flight: HammerFlight,
+    modifier: Modifier = Modifier, onCentre: (Offset) -> Unit = {},
+) {
     val view = LocalView.current
     val enabled = hasTarget
     val currentVm by rememberUpdatedState(vm)
     val currentSensor by rememberUpdatedState(sensor)
+    val armedNow = phase == ThrowPhase.Armed
 
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(200.dp)
-            .pointerInput(enabled) {
-                if (!enabled) return@pointerInput
-                awaitEachGesture {
-                    awaitFirstDown()
-                    currentVm.onHoldStart()
-                    val armed = currentVm.state.value.phase == ThrowPhase.Armed
+    val gesture = Modifier
+        .onGloballyPositioned { onCentre(it.boundsInWindow().center) }
+        .pointerInput(enabled) {
+            if (!enabled) return@pointerInput
+            awaitEachGesture {
+                awaitFirstDown()
+                currentVm.onHoldStart()
+                val armed = currentVm.state.value.phase == ThrowPhase.Armed
+                if (armed) {
+                    currentSensor.start()
+                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                }
+                try {
+                    waitForUpOrCancellation()
+                } finally { // also runs when this coroutine is cancelled mid-hold (e.g. `enabled` flips)
                     if (armed) {
-                        currentSensor.start()
-                        view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                    }
-                    try {
-                        waitForUpOrCancellation()
-                    } finally { // also runs when this coroutine is cancelled mid-hold (e.g. `enabled` flips)
-                        if (armed) {
-                            currentSensor.stop()
-                            currentVm.onHoldEnd()
-                        }
+                        currentSensor.stop()
+                        currentVm.onHoldEnd()
                     }
                 }
-            },
-        shape = RoundedCornerShape(24.dp),
-        color = if (!enabled) MaterialTheme.colorScheme.surfaceVariant
-        else if (phase == ThrowPhase.Armed) MaterialTheme.colorScheme.primary
-        else MaterialTheme.colorScheme.primaryContainer,
-    ) {
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            Box(Modifier.size(96.dp).alpha(flight.restAlpha.value), contentAlignment = Alignment.Center) { Text("🔨", fontSize = 64.sp) }
-            Text(
-                hammerLabel(phase, hasTarget),
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 16.dp),
-                style = MaterialTheme.typography.titleMedium,
-                textAlign = TextAlign.Center,
-            )
+            }
         }
+    HammerDisc(hammerLabel(phase, hasTarget), enabled, armed = phase == ThrowPhase.Armed, restAlpha = flight.restAlpha.value, modifier, gesture)
+}
+
+/** The look of the hammer button: a 176 dp disc with an accent border and a glow ring, and its label below. */
+@Composable
+fun HammerDisc(label: String, enabled: Boolean, armed: Boolean, restAlpha: Float, modifier: Modifier = Modifier, disc: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Box(
+            Modifier.size(196.dp).background(if (armed) Forge.AccentGlow.copy(alpha = 0.3f) else Forge.AccentGlow, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                Modifier
+                    .size(176.dp)
+                    .then(disc)
+                    .background(Forge.Surface, CircleShape)
+                    .border(3.dp, if (!enabled) Forge.Border else if (armed) Forge.AccentPressed else Forge.Accent, CircleShape)
+                    .semantics { contentDescription = label },
+                contentAlignment = Alignment.Center,
+            ) {
+                HammerImage(Modifier.size(120.dp).alpha(restAlpha))
+            }
+        }
+        Text(label, style = MaterialTheme.typography.titleMedium.copy(letterSpacing = 0.5.sp), textAlign = TextAlign.Center)
     }
+}
+
+/** The white hammer, for the dark Forge surfaces. */
+@Composable
+fun HammerImage(modifier: Modifier = Modifier) {
+    Image(painterResource(R.drawable.hammer_white), contentDescription = null, modifier = modifier)
 }
 
 /** The haptic for a registered flick: CONFIRM on API 30+, LONG_PRESS before. */
@@ -135,18 +165,18 @@ fun FlyingHammer(flight: HammerFlight, phase: ThrowPhase, start: Offset?, modifi
     val density = LocalDensity.current
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     if (phase != ThrowPhase.Throwing || flight.progress.value >= 1f || start == null) return
-    val halfPx = with(density) { 48.dp.roundToPx() }
+    val halfPx = with(density) { 60.dp.roundToPx() }
     Box(modifier.fillMaxSize()) {
         Box(
             Modifier
                 .offset { IntOffset(start.x.roundToInt() - halfPx, start.y.roundToInt() - halfPx) }
-                .size(96.dp)
+                .size(120.dp)
                 .graphicsLayer {
                     clip = false
                     translationY = -screenHeightPx * flight.progress.value
                     rotationZ = 720f * flight.progress.value
                 },
             contentAlignment = Alignment.Center,
-        ) { Text("🔨", fontSize = 64.sp) }
+        ) { HammerImage(Modifier.size(120.dp)) }
     }
 }

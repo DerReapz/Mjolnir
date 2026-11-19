@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -21,6 +20,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -79,16 +79,16 @@ fun CaughtScreen(vm: CaughtViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val tabs = items.mapNotNull { it.tab }
 
-    Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = { openTabs(context, tabs) }, enabled = tabs.isNotEmpty()) { Text("Open all links") }
             TextButton(onClick = vm::clear, enabled = items.isNotEmpty()) { Text("Clear") }
         }
         if (items.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Nothing caught yet") }
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Nothing caught yet", color = Forge.Muted) }
         } else {
             val now = System.currentTimeMillis()
-            LazyColumn(Modifier.weight(1f)) {
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 itemsIndexed(items) { _, item ->
                     CaughtRow(item, now) {
                         when {
@@ -97,7 +97,6 @@ fun CaughtScreen(vm: CaughtViewModel, modifier: Modifier = Modifier) {
                             item.folder != null -> openDownloads(context)
                         }
                     }
-                    HorizontalDivider()
                 }
             }
         }
@@ -105,7 +104,7 @@ fun CaughtScreen(vm: CaughtViewModel, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun CaughtRow(item: CaughtItem, now: Long, onClick: () -> Unit) {
+internal fun CaughtRow(item: CaughtItem, now: Long, onClick: () -> Unit) {
     val (glyph, title, detail) = when {
         item.tab != null -> Triple("🔗", item.tab.title ?: item.tab.url, if (item.tab.title != null) item.tab.url else null)
         item.file != null -> Triple("📄", item.file.name, Messages.size(item.file.sizeBytes))
@@ -113,21 +112,17 @@ private fun CaughtRow(item: CaughtItem, now: Long, onClick: () -> Unit) {
         else -> Triple("•", "", null)
     }
     val ago = DateUtils.getRelativeTimeSpanString(item.caughtAtEpochMs, now, DateUtils.MINUTE_IN_MILLIS)
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text(glyph, style = MaterialTheme.typography.titleLarge)
+    ForgeCard(onClick = onClick) {
+        Text(glyph, Modifier.padding(end = 12.dp), style = MaterialTheme.typography.titleLarge)
         Column(Modifier.weight(1f)) {
-            Text(title, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium), maxLines = 2, overflow = TextOverflow.Ellipsis)
             detail?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(it, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Text(
                 "from ${item.fromName} · $ago",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = Forge.Muted,
             )
         }
     }

@@ -53,6 +53,8 @@ def main() -> None:
     white.putalpha(hammer.getchannel("A"))
     fit(white, 64).save(DESKTOP_RES / "hammer-white.png", optimize=True)
 
+    fit(white, 512).save(ANDROID_RES / "drawable-nodpi" / "hammer_white.png", optimize=True)
+
     sizes = [16, 24, 32, 48, 64, 128, 256]
     frames = [tile(hammer, s, s * 0.19, round(s * 0.8)) for s in sizes]
     frames[-1].save(DESKTOP_RES / "mjolnir.ico", format="ICO",

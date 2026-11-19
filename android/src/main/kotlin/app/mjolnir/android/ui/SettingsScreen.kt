@@ -4,6 +4,8 @@ import app.mjolnir.android.session.resetQuietly
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -141,10 +143,11 @@ fun SettingsScreen(vm: SettingsViewModel, modifier: Modifier = Modifier) {
     val urlChanged = normalized != null && normalized != config.relayUrl
     val nameValid = name.trim().length in 1..64
 
-    Column(modifier.padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(modifier.padding(horizontal = 20.dp, vertical = 16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         state.notice?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
         OutlinedTextField(
+            shape = FieldShape,
             value = url,
             onValueChange = { url = it },
             label = { Text("Relay URL") },
@@ -152,9 +155,10 @@ fun SettingsScreen(vm: SettingsViewModel, modifier: Modifier = Modifier) {
             supportingText = { Text(if (normalized == null) "Use an https:// address" else if (urlChanged) "Changing the relay unpairs all devices." else "") },
             singleLine = true,
         )
-        if (urlChanged) Button(onClick = { vm.changeRelayUrl(url) }) { Text("Change relay") }
+        if (urlChanged) Button(onClick = { vm.changeRelayUrl(url) }, shape = ButtonShape) { Text("Change relay") }
 
         OutlinedTextField(
+            shape = FieldShape,
             value = name,
             onValueChange = { name = it },
             label = { Text("Device name") },
@@ -162,16 +166,16 @@ fun SettingsScreen(vm: SettingsViewModel, modifier: Modifier = Modifier) {
             supportingText = { Text("1 to 64 characters") },
             singleLine = true,
         )
-        if (nameValid && name.trim() != config.deviceName) Button(onClick = { vm.rename(name) }) { Text("Save name") }
+        if (nameValid && name.trim() != config.deviceName) Button(onClick = { vm.rename(name) }, shape = ButtonShape) { Text("Save name") }
 
-        Text("Flick sensitivity", style = MaterialTheme.typography.titleMedium)
+        SectionLabel("Flick sensitivity")
         Choices(
             options = listOf(Sensitivity.LOW to "Low", Sensitivity.MEDIUM to "Medium", Sensitivity.HIGH to "High"),
             selected = config.sensitivity,
             onSelect = vm::setSensitivity,
         )
 
-        Text("Large files (over ${config.largeFileThresholdMb} MB)", style = MaterialTheme.typography.titleMedium)
+        SectionLabel("Large files (over ${config.largeFileThresholdMb} MB)")
         Choices(
             options = listOf(LargeFilePolicy.WAIT_FOR_WIFI to "Wait for Wi-Fi", LargeFilePolicy.USE_MOBILE_DATA to "Use mobile data"),
             selected = config.largeFilePolicy,
@@ -182,11 +186,11 @@ fun SettingsScreen(vm: SettingsViewModel, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun <T> Choices(options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
+internal fun <T> Choices(options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
     Column(Modifier.selectableGroup()) {
         options.forEach { (value, label) ->
             Row(
-                Modifier.selectable(selected = value == selected, role = Role.RadioButton, onClick = { onSelect(value) }),
+                Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(selected = value == selected, role = Role.RadioButton, onClick = { onSelect(value) }),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 RadioButton(selected = value == selected, onClick = null)

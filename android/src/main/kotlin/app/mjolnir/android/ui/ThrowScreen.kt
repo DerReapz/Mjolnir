@@ -1,6 +1,21 @@
 package app.mjolnir.android.ui
 
 import android.net.Uri
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
+import app.mjolnir.android.send.OutgoingStatus
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -145,9 +160,13 @@ fun ThrowScreen(
     var overlayOrigin by remember { mutableStateOf(Offset.Zero) }
     var hammerCentre by remember { mutableStateOf<Offset?>(null) } // in window coordinates
     Box(modifier.fillMaxSize().onGloballyPositioned { overlayOrigin = it.positionInWindow() }) {
-        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) { TargetPicker(state, vm, onPairDevice) }
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 20.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                HammerImage(Modifier.size(32.dp))
+                Text(
+                    "MJOLNIR", Modifier.padding(start = 10.dp).weight(1f),
+                    style = MaterialTheme.typography.headlineSmall.copy(letterSpacing = 0.5.sp),
+                )
                 IconButton(onClick = { pickFiles.launch(arrayOf("*/*")) }) {
                     Text("📄", Modifier.semantics { contentDescription = "Add files" })
                 }
@@ -155,32 +174,47 @@ fun ThrowScreen(
                     Text("📁", Modifier.semantics { contentDescription = "Add folder" })
                 }
             }
+            Box(Modifier.padding(horizontal = 20.dp)) { TargetPicker(state, vm, onPairDevice) }
             val throwing = state.phase == ThrowPhase.Throwing
-            LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (state.outgoing.isNotEmpty()) {
-                    item(key = "on-the-way") {
-                        Text("On the way", Modifier.padding(top = 8.dp), style = MaterialTheme.typography.titleSmall)
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (state.tray.isNotEmpty()) {
+                    item(key = "tray-header") { SectionLabel("In your tray · ${state.tray.size}") }
+                    items(state.tray, key = { it.id }) { item ->
+                        TrayRow(item, checked = item.id in state.selected, removable = !throwing,
+                            onToggle = { vm.toggle(item.id) }, onRemove = { vm.remove(item.id) })
                     }
+                }
+                if (state.outgoing.isNotEmpty()) {
+                    item(key = "on-the-way") { SectionLabel("On the way", Modifier.padding(top = 8.dp)) }
                     items(state.outgoing, key = { "out-" + it.id }) { item ->
                         OutgoingRow(item, onFinished = { vm.refreshOutgoing() }, onSendNow = {
                             scope.launch(Dispatchers.IO) { sendNow(context, item.id) }
                         })
                     }
-                    item(key = "tray-gap") { Spacer(Modifier.height(8.dp)) }
-                }
-                items(state.tray, key = { it.id }) { item ->
-                    TrayRow(item, checked = item.id in state.selected, removable = !throwing,
-                        onToggle = { vm.toggle(item.id) }, onRemove = { vm.remove(item.id) })
                 }
             }
             HammerButton(
                 vm, sensor, state.phase, hasTarget = state.targetId != null, flight = flight,
-                modifier = Modifier.padding(vertical = 16.dp).onGloballyPositioned { hammerCentre = it.boundsInWindow().center },
+                modifier = Modifier.padding(vertical = 12.dp), onCentre = { hammerCentre = it },
             )
         }
         FlyingHammer(flight, state.phase, start = hammerCentre?.let { it - overlayOrigin }) // above everything, unclipped, so it can leave the top of the screen
-        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 232.dp))
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 260.dp))
     }
+}
+
+/** An uppercase muted section heading. */
+@Composable
+internal fun SectionLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text.uppercase(), modifier,
+        style = MaterialTheme.typography.titleSmall.copy(fontSize = 13.sp, letterSpacing = 1.sp),
+        color = Forge.Muted,
+    )
 }
 
 /** One pending background throw: `{items} to {pc}` and its status; a row waiting for Wi-Fi offers `Send now`. */
@@ -205,12 +239,25 @@ private fun OutgoingRow(item: OutgoingFiles, onFinished: () -> Unit, onSendNow: 
             scheduleOutgoing(context.applicationContext, item.id, policy = ExistingWorkPolicy.KEEP)
         }
     }
-    ListItem(
-        leadingContent = { Text("📤") },
-        headlineContent = { Text(rowTitle(item), maxLines = 1) },
-        supportingContent = { Text(status.label, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-        trailingContent = if (status.waitingForWifi && !status.running) ({ TextButton(onClick = onSendNow) { Text("Send now") } }) else null,
-    )
+    OutgoingCard(rowTitle(item), status, onSendNow)
+}
+
+/** A pending throw: its title, a 6 dp progress bar and the status line; a row waiting for Wi-Fi offers `Send now`. */
+@Composable
+internal fun OutgoingCard(title: String, status: OutgoingStatus, onSendNow: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().border(1.dp, Forge.Border, RoundedCornerShape(12.dp)).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+            if (status.waitingForWifi && !status.running) TextButton(onClick = onSendNow) { Text("Send now") }
+        }
+        Box(Modifier.fillMaxWidth().height(6.dp).background(Forge.Border, RoundedCornerShape(3.dp))) {
+            Box(Modifier.fillMaxWidth((status.progressPct ?: 0).coerceIn(0, 100) / 100f).height(6.dp).background(Forge.Accent, RoundedCornerShape(3.dp)))
+        }
+        Text(status.label, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1)
+    }
 }
 
 private fun kindLabel(peer: app.mjolnir.protocol.Peer) = if (peer.kind == app.mjolnir.protocol.DeviceKind.PC) "PC" else "Phone"
@@ -218,16 +265,52 @@ private fun kindLabel(peer: app.mjolnir.protocol.Peer) = if (peer.kind == app.mj
 @Composable
 private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: () -> Unit) {
     if (state.targets.isEmpty()) {
-        TextButton(onClick = onPairDevice) { Text("Pair a device first") }
+        TargetCard(null, null, onClick = onPairDevice)
         return
     }
     var open by remember { mutableStateOf(false) }
     val current = state.targets.find { it.deviceId == state.targetId } ?: state.targets.first()
     Box {
-        OutlinedButton(onClick = { open = true }) { Text("To: ${current.name} (${kindLabel(current)}) ▾") }
+        TargetCard(current.name, kindLabel(current), onClick = { open = true })
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             for (device in state.targets) {
                 DropdownMenuItem(text = { Text("${device.name} (${kindLabel(device)})") }, onClick = { vm.selectTarget(device.deviceId); open = false })
+            }
+        }
+    }
+}
+
+/** The target selector: `Throw to`, the device name, a `PC`/`Phone` badge and a chevron. [name] is null before any pairing. */
+@Composable
+internal fun TargetCard(name: String?, kind: String?, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .background(Forge.Surface, RoundedCornerShape(14.dp))
+            .border(1.dp, Forge.Border, RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (name == null) {
+            Text("Pair a device first", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold))
+        } else {
+            Text("Throw to", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
+            Text(name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1)
+            if (kind != null) {
+                Text(
+                    kind,
+                    Modifier.background(Forge.Accent, RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 2.dp),
+                    style = MaterialTheme.typography.labelSmall, color = Forge.OnAccent,
+                )
+            }
+            Canvas(Modifier.size(16.dp)) {
+                val w = 2.dp.toPx()
+                val p = Path().apply { moveTo(size.width * 0.25f, size.height * 0.375f); lineTo(size.width * 0.5f, size.height * 0.625f); lineTo(size.width * 0.75f, size.height * 0.375f) }
+                drawPath(p, Forge.Muted, style = Stroke(w))
             }
         }
     }
@@ -247,27 +330,42 @@ private fun TrayRow(item: TrayItem, checked: Boolean, removable: Boolean, onTogg
         enableDismissFromEndToStart = removable,
         backgroundContent = {},
     ) {
-        val (title, subtitle, icon) = describe(item)
-        ListItem(
-            modifier = Modifier.clickable(onClick = onToggle),
-            leadingContent = { Text(icon) },
-            headlineContent = { Text(title, maxLines = 1) },
-            supportingContent = subtitle?.let { { Text(it, maxLines = 1, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
-            trailingContent = { Checkbox(checked = checked, onCheckedChange = { onToggle() }) },
-        )
+        val (title, subtitle) = describe(item)
+        TrayCard(title, subtitle, checked, onToggle)
     }
 }
 
-private data class RowText(val title: String, val subtitle: String?, val icon: String)
+/** A tray entry: accent checkbox, name (500) and a muted detail line, on a surface card. */
+@Composable
+internal fun TrayCard(title: String, subtitle: String?, checked: Boolean, onToggle: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 56.dp)
+            .background(Forge.Surface, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = { onToggle() })
+        Column(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        }
+    }
+}
+
+private data class RowText(val title: String, val subtitle: String?)
 
 private fun describe(item: TrayItem): RowText = when (item) {
     is TrayItem.Link -> {
         val host = runCatching { java.net.URI(item.tab.url).host }.getOrNull()
-        RowText(item.tab.title?.takeIf { it.isNotBlank() } ?: item.tab.url, host, "🔗")
+        RowText(item.tab.title?.takeIf { it.isNotBlank() } ?: item.tab.url, host)
     }
-    is TrayItem.LocalFile -> RowText(item.name, Messages.size(item.sizeBytes), "📄")
+    is TrayItem.LocalFile -> RowText(item.name, Messages.size(item.sizeBytes))
     is TrayItem.Folder -> {
         val n = item.files.size
-        RowText(item.name, "${Messages.items(0, n)}, ${Messages.size(item.files.sumOf { it.sizeBytes })}", "📁")
+        RowText(item.name, "${Messages.items(0, n)}, ${Messages.size(item.files.sumOf { it.sizeBytes })}")
     }
 }

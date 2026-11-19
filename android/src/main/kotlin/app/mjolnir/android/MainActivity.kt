@@ -13,7 +13,10 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
+import app.mjolnir.android.ui.Forge
+import app.mjolnir.android.ui.MjolnirTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -78,6 +81,10 @@ class MainActivity : ComponentActivity() {
     private var requestedScreen by mutableStateOf<Screen?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         super.onCreate(savedInstanceState)
         askForNotifications()
         if (savedInstanceState == null) {
@@ -85,12 +92,12 @@ class MainActivity : ComponentActivity() {
             handleScreen(intent)
         }
         setContent {
-            MaterialTheme {
+            MjolnirTheme {
                 var screen by rememberSaveable { mutableStateOf(Screen.THROW) }
                 LaunchedEffect(requestedScreen) {
                     requestedScreen?.let { screen = it; requestedScreen = null }
                 }
-                Scaffold(bottomBar = { MjolnirNav(screen, onSelect = { screen = it }) }) { padding ->
+                Scaffold(containerColor = Forge.Background, bottomBar = { MjolnirNav(screen, onSelect = { screen = it }) }) { padding ->
                     Box(Modifier.fillMaxSize().padding(padding)) {
                         when (screen) {
                             Screen.THROW -> ThrowScreen(throwVm, importer, onPairDevice = { screen = Screen.DEVICES })
