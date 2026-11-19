@@ -40,7 +40,7 @@ import app.mjolnir.android.throwing.FlickSensor
 
 /** The label under the hammer: what the button says in each state. */
 fun hammerLabel(phase: ThrowPhase, hasTarget: Boolean): String = when {
-    !hasTarget -> "Pair a PC first"
+    !hasTarget -> "Pair a device first"
     phase == ThrowPhase.Armed -> "Flick!"
     phase == ThrowPhase.Throwing -> "Throwing…"
     else -> "Hold & flick to throw"

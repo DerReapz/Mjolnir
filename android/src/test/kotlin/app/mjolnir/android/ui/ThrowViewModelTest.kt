@@ -105,29 +105,38 @@ class ThrowViewModelTest {
         assertEquals(listOf(a, b), trayStore.read())
     }
 
-    @Test fun phonesAreNotThrowTargets() = runTest {
-        vm.refreshPcs(); advanceUntilIdle()
-        assertEquals(listOf("pc1", "pc2"), vm.state.value.pcs.map { it.deviceId })
+    @Test fun phonesAreThrowTargetsToo() = runTest {
+        vm.refreshTargets(); advanceUntilIdle()
+        assertEquals(listOf("pc1", "pc2", "ph"), vm.state.value.targets.map { it.deviceId })
+    }
+
+    @Test fun throwToAPhoneSendsToItsId() = runTest {
+        vm.addShared(listOf(a)); vm.refreshTargets(); advanceUntilIdle()
+        vm.selectTarget("ph"); advanceUntilIdle()
+        vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
+        assertEquals(listOf(SendRequest("ph", listOf(a.tab))), api.sent)
+        assertEquals("Thrown 1 tab to Other phone", vm.state.value.notice)
+        assertEquals("ph", configStore.read().targetPcId)
     }
 
     @Test fun targetDefaultsToRememberedPcOrFirstPc() = runTest {
         configStore.write(configStore.read().copy(targetPcId = "pc2"))
-        val remembered = newVm(); remembered.refreshPcs(); advanceUntilIdle()
-        assertEquals("pc2", remembered.state.value.targetPcId)
+        val remembered = newVm(); remembered.refreshTargets(); advanceUntilIdle()
+        assertEquals("pc2", remembered.state.value.targetId)
         configStore.write(configStore.read().copy(targetPcId = "gone"))
-        val fallback = newVm(); fallback.refreshPcs(); advanceUntilIdle()
-        assertEquals("pc1", fallback.state.value.targetPcId)
+        val fallback = newVm(); fallback.refreshTargets(); advanceUntilIdle()
+        assertEquals("pc1", fallback.state.value.targetId)
     }
 
     @Test fun selectedTargetIsRemembered() = runTest {
-        vm.refreshPcs(); advanceUntilIdle()
+        vm.refreshTargets(); advanceUntilIdle()
         vm.selectTarget("pc2"); advanceUntilIdle()
-        assertEquals("pc2", vm.state.value.targetPcId)
+        assertEquals("pc2", vm.state.value.targetId)
         assertEquals("pc2", configStore.read().targetPcId)
     }
 
     @Test fun throwSendsSelectedLinksToTargetAndClearsThem() = runTest {
-        vm.addShared(listOf(a, b, c)); vm.toggle(b.id); vm.refreshPcs(); advanceUntilIdle()
+        vm.addShared(listOf(a, b, c)); vm.toggle(b.id); vm.refreshTargets(); advanceUntilIdle()
         vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
         assertEquals(listOf(SendRequest("pc1", listOf(a.tab, c.tab))), api.sent)
         assertEquals(listOf(b), vm.state.value.tray); assertEquals("Thrown 2 tabs to DESKTOP-4F2K", vm.state.value.notice)
@@ -136,7 +145,7 @@ class ThrowViewModelTest {
     }
 
     @Test fun throwQueuesFilesAndFoldersInTheOutbox() = runTest {
-        vm.addShared(listOf(a, f, photos)); vm.refreshPcs(); advanceUntilIdle(); vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
+        vm.addShared(listOf(a, f, photos)); vm.refreshTargets(); advanceUntilIdle(); vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
         assertEquals(listOf(SendRequest("pc1", listOf(a.tab))), api.sent)
         val queued = outbox.pending().single()
         assertEquals(listOf("f.txt", "Photos/a.jpg", "Photos/b.jpg"), queued.files.map { it.relativePath })
@@ -151,7 +160,7 @@ class ThrowViewModelTest {
         vm = ThrowViewModel(api, trayStore, configStore, outbox, { scheduled += it }, main.dispatcher,
             onUnauthorized = { resets++; throw java.io.IOException("disk full") })
         api.onSend = { throw RelayException(RelayErrorKind.UNAUTHORIZED, "x") }
-        vm.addShared(listOf(a)); vm.refreshPcs(); advanceUntilIdle(); throwNow(); advanceUntilIdle()
+        vm.addShared(listOf(a)); vm.refreshTargets(); advanceUntilIdle(); throwNow(); advanceUntilIdle()
         assertEquals(1, resets)
         assertEquals(app.mjolnir.client.Messages.RESET, vm.state.value.notice)
         assertEquals(listOf(a), vm.state.value.tray)
@@ -159,14 +168,14 @@ class ThrowViewModelTest {
 
     @Test fun offlineThrowKeepsTabsAndQueuesFiles() = runTest {
         api.onSend = { throw RelayException(RelayErrorKind.NETWORK, "down") }
-        vm.addShared(listOf(a, f)); vm.refreshPcs(); advanceUntilIdle(); vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
+        vm.addShared(listOf(a, f)); vm.refreshTargets(); advanceUntilIdle(); vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
         assertEquals(listOf(a), vm.state.value.tray); assertEquals(setOf(a.id), vm.state.value.selected)
         assertEquals(1, outbox.pending().size)
         assertEquals("Not thrown: no connection. Your tabs are still here. Throwing 1 file to DESKTOP-4F2K in the background", vm.state.value.notice)
     }
 
     @Test fun over1000FilesAreSplitWithoutSplittingFolders() = runTest {
-        vm.addShared(listOf(folder("p1", "One", 600), folder("p2", "Two", 600))); vm.refreshPcs(); advanceUntilIdle()
+        vm.addShared(listOf(folder("p1", "One", 600), folder("p2", "Two", 600))); vm.refreshTargets(); advanceUntilIdle()
         throwNow(); advanceUntilIdle()
         assertEquals(listOf(600, 600), outbox.pending().map { it.files.size })
         assertEquals(2, scheduled.size)
@@ -174,7 +183,7 @@ class ThrowViewModelTest {
     }
 
     @Test fun smallItemsShareOneOutgoingItem() = runTest {
-        vm.addShared(listOf(folder("p1", "One", 600), f, folder("p2", "Two", 399))); vm.refreshPcs(); advanceUntilIdle()
+        vm.addShared(listOf(folder("p1", "One", 600), f, folder("p2", "Two", 399))); vm.refreshTargets(); advanceUntilIdle()
         throwNow(); advanceUntilIdle()
         assertEquals(listOf(1000), outbox.pending().map { it.files.size })
     }
@@ -188,13 +197,13 @@ class ThrowViewModelTest {
     }
 
     @Test fun flickWithoutHoldDoesNothing() = runTest {
-        vm.addShared(listOf(a, f)); vm.refreshPcs(); advanceUntilIdle()
+        vm.addShared(listOf(a, f)); vm.refreshTargets(); advanceUntilIdle()
         vm.onFlick(); advanceUntilIdle()
         assertTrue(api.sent.isEmpty()); assertTrue(outbox.pending().isEmpty())
     }
 
     @Test fun releasingTheHoldDisarms() = runTest {
-        vm.addShared(listOf(a)); vm.refreshPcs(); advanceUntilIdle()
+        vm.addShared(listOf(a)); vm.refreshTargets(); advanceUntilIdle()
         vm.onHoldStart(); assertEquals(ThrowPhase.Armed, vm.state.value.phase)
         vm.onHoldEnd(); assertEquals(ThrowPhase.Idle, vm.state.value.phase)
         vm.onFlick(); advanceUntilIdle()
@@ -203,11 +212,11 @@ class ThrowViewModelTest {
 
     @Test fun holdIsIgnoredWithoutTargetOrSelection() = runTest {
         api.peers.clear()
-        vm.addShared(listOf(a)); vm.refreshPcs(); advanceUntilIdle()
+        vm.addShared(listOf(a)); vm.refreshTargets(); advanceUntilIdle()
         vm.onHoldStart()
         assertEquals(ThrowPhase.Idle, vm.state.value.phase)
         api.peers += Peer("pc1", "DESKTOP-4F2K", DeviceKind.PC)
-        vm.refreshPcs(); vm.toggle(a.id); advanceUntilIdle()
+        vm.refreshTargets(); vm.toggle(a.id); advanceUntilIdle()
         vm.onHoldStart()
         assertEquals(ThrowPhase.Idle, vm.state.value.phase)
     }
@@ -220,7 +229,7 @@ class ThrowViewModelTest {
             open = { u, offset -> File(u.path).inputStream().also { it.skip(offset) } },
         )
         val broken = ThrowViewModel(api, trayStore, configStore, brokenOutbox, { scheduled += it }, main.dispatcher)
-        broken.refreshPcs(); broken.addShared(listOf(f), listOf("stale notice")); advanceUntilIdle()
+        broken.refreshTargets(); broken.addShared(listOf(f), listOf("stale notice")); advanceUntilIdle()
         broken.onHoldStart(); broken.onFlick(); advanceUntilIdle()
         assertEquals("Not thrown: this phone couldn't queue the files. Your tabs are still here.", broken.state.value.notice)
         assertEquals(listOf<TrayItem>(f), broken.state.value.tray)
@@ -275,7 +284,7 @@ class ThrowViewModelTest {
     }
 
     @Test fun aReturnedItemThatIsThrownIsNotThrownTwice() = runTest {
-        vm.addShared(listOf(a)); vm.refreshPcs(); advanceUntilIdle()
+        vm.addShared(listOf(a)); vm.refreshTargets(); advanceUntilIdle()
         trayStore.update { it + photos } // the background worker gave a failed throw back
         vm.refreshOutgoing(); advanceUntilIdle()
         vm.toggle(a.id) // throw only the returned folder
@@ -305,7 +314,7 @@ class ThrowViewModelTest {
     @Test fun secondFlickWhileThrowingIsIgnored() = runTest {
         val gate = CompletableDeferred<Unit>()
         api.onSend = { gate.await(); SendResponse("d1") }
-        vm.addShared(listOf(a)); vm.refreshPcs(); advanceUntilIdle()
+        vm.addShared(listOf(a)); vm.refreshTargets(); advanceUntilIdle()
         throwNow(); advanceUntilIdle()
         assertEquals(ThrowPhase.Throwing, vm.state.value.phase)
         vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
@@ -315,7 +324,7 @@ class ThrowViewModelTest {
     }
 
     @Test fun throwOf250TabsGoesInBatches() = runTest {
-        vm.addShared((1..250).map { TrayItem.Link(Tab("https://a.com/$it")) }); vm.refreshPcs(); advanceUntilIdle()
+        vm.addShared((1..250).map { TrayItem.Link(Tab("https://a.com/$it")) }); vm.refreshTargets(); advanceUntilIdle()
         throwNow(); advanceUntilIdle()
         assertEquals(listOf(100, 100, 50), api.sent.map { it.tabs.size })
         assertTrue(vm.state.value.tray.isEmpty())
@@ -324,7 +333,7 @@ class ThrowViewModelTest {
 
     @Test fun batchFailureKeepsOnlyTheUnsentTabs() = runTest {
         api.onSend = { if (api.sent.size > 1) throw RelayException(RelayErrorKind.RATE_LIMITED, "slow down") else SendResponse("d") }
-        vm.addShared((1..150).map { TrayItem.Link(Tab("https://a.com/$it")) }); vm.refreshPcs(); advanceUntilIdle()
+        vm.addShared((1..150).map { TrayItem.Link(Tab("https://a.com/$it")) }); vm.refreshTargets(); advanceUntilIdle()
         throwNow(); advanceUntilIdle()
         assertEquals(50, vm.state.value.tray.size)
         assertEquals("Thrown 100 tabs to DESKTOP-4F2K. Not thrown: too many throws, wait a minute. Your tabs are still here.", vm.state.value.notice)

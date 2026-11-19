@@ -15,6 +15,14 @@ The step-by-step lists are in the plan (`docs/superpowers/plans/2026-11-18-mjoln
 - **Phone background throwing / Wi-Fi rule:** Task 19, Step 5 (6 checks)
 - **Phone receiving:** Task 20, Step 5 (7 checks)
 
+## Any-device pairing
+Needs two devices of each kind where noted (use a second PC or phone, or the fake phone for the Windows-only parts).
+- **PC to PC:** on PC A choose *Pair a device…* and show a code; on PC B enter it. PC A shows `Pair with {name}?`; *Accept* gives `Paired with {name}` on both. PC B does not link before PC A accepts. Send a tab and a file from each PC to the other.
+- **Phone to phone:** on phone A open Devices, *Pair a device*, *Show a code* (shows `XXX-XXX` and `Expires in m:ss`); on phone B choose *Enter a code*. Phone A shows `Pair with {name}?`; *Accept* gives `Paired with {name}`. Throw a link and a file from each phone to the other; the throw target list labels it `Phone`.
+- **PC and phone, both directions:** show a code on the phone and enter it on the PC, then the reverse.
+- **Reject and expiry:** *Reject* returns the code-showing device to its code and the other shows `{name} said no.`; leave a code until it expires and check *Get a new code*. Double-tap *Accept* and check the device is paired once.
+- **Leaving the view:** leave the Show a code view on the phone, then enter its code from another device; no dialog appears and the entering side eventually reports the code expired.
+
 ## Extra points the code reviews asked to confirm on a device
 - **Start at sign-in:** the Run-key value is stored *quoted* (`"C:\…\Mjolnir.exe"`) so paths with spaces launch.
 - **PC sleep:** after the PC sleeps and wakes, tabs thrown while it slept open on their own within about a minute (OkHttp ping + heartbeat).

@@ -93,7 +93,7 @@ class MainActivity : ComponentActivity() {
                 Scaffold(bottomBar = { MjolnirNav(screen, onSelect = { screen = it }) }) { padding ->
                     Box(Modifier.fillMaxSize().padding(padding)) {
                         when (screen) {
-                            Screen.THROW -> ThrowScreen(throwVm, importer, onPairPc = { screen = Screen.DEVICES })
+                            Screen.THROW -> ThrowScreen(throwVm, importer, onPairDevice = { screen = Screen.DEVICES })
                             Screen.CAUGHT -> CaughtScreen(viewModel(factory = factory))
                             Screen.DEVICES -> DevicesScreen(viewModel(factory = factory), viewModel(factory = factory))
                             Screen.SETTINGS -> SettingsScreen(viewModel(factory = factory))
@@ -127,7 +127,7 @@ class MainActivity : ComponentActivity() {
                 syncPushToken(applicationContext)
             } catch (_: Exception) { }
             enqueueInboxDrain(applicationContext) // pick up anything the push didn't announce (or no Firebase)
-            throwVm.refreshPcs()
+            throwVm.refreshTargets()
         }
     }
 

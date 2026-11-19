@@ -16,7 +16,6 @@ import app.mjolnir.client.Outbox
 import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.sendInBatches
-import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
 import java.io.File
@@ -41,14 +40,14 @@ sealed interface ThrowPhase {
 data class ThrowUiState(
     val tray: List<TrayItem> = emptyList(),
     val selected: Set<String> = emptySet(),
-    val pcs: List<Peer> = emptyList(),
-    val targetPcId: String? = null,
+    val targets: List<Peer> = emptyList(),
+    val targetId: String? = null,
     val phase: ThrowPhase = ThrowPhase.Idle,
     val notice: String? = null,
     val outgoing: List<OutgoingFiles> = emptyList(),
     val sensitivity: Sensitivity = Sensitivity.MEDIUM,
 ) {
-    val canThrow: Boolean get() = targetPcId != null && selected.isNotEmpty() && phase == ThrowPhase.Idle
+    val canThrow: Boolean get() = targetId != null && selected.isNotEmpty() && phase == ThrowPhase.Idle
 }
 
 /**
@@ -160,20 +159,20 @@ class ThrowViewModel(
         if (item is TrayItem.LocalFile) viewModelScope.launch(io) { File(item.path).delete() }
     }
 
-    fun selectTarget(pcId: String) {
-        if (_state.value.pcs.none { it.deviceId == pcId }) return
-        _state.update { it.copy(targetPcId = pcId) }
+    fun selectTarget(deviceId: String) {
+        if (_state.value.targets.none { it.deviceId == deviceId }) return
+        _state.update { it.copy(targetId = deviceId) }
         viewModelScope.launch(writes) {
             try {
-                config.update { it.copy(targetPcId = pcId) }
+                config.update { it.copy(targetPcId = deviceId) } // persisted key keeps its old name
             } catch (e: IOException) {
                 // Only the default for next time is lost.
             }
         }
     }
 
-    /** Loads the paired PCs (phones are not throw targets) and picks the target: current, remembered, or the first. */
-    fun refreshPcs() {
+    /** Loads every paired device (PC or phone) and picks the target: current, remembered, or the first. */
+    fun refreshTargets() {
         viewModelScope.launch {
             val peers = try {
                 api.peers()
@@ -185,11 +184,10 @@ class ThrowViewModel(
             } catch (e: IOException) {
                 null
             }
-            val pcs = peers.filter { it.kind == DeviceKind.PC }
-            val ids = pcs.mapTo(HashSet()) { it.deviceId }
+            val ids = peers.mapTo(HashSet()) { it.deviceId }
             _state.update { s ->
-                val target = s.targetPcId?.takeIf { it in ids } ?: remembered?.takeIf { it in ids } ?: pcs.firstOrNull()?.deviceId
-                s.copy(pcs = pcs, targetPcId = target)
+                val target = s.targetId?.takeIf { it in ids } ?: remembered?.takeIf { it in ids } ?: peers.firstOrNull()?.deviceId
+                s.copy(targets = peers, targetId = target)
             }
         }
     }
@@ -252,7 +250,7 @@ class ThrowViewModel(
 
     private suspend fun throwSelected() {
         val s = _state.value
-        val pc = s.pcs.find { it.deviceId == s.targetPcId } ?: return
+        val pc = s.targets.find { it.deviceId == s.targetId } ?: return
         val chosen = s.tray.filter { it.id in s.selected }
         val links = chosen.filterIsInstance<TrayItem.Link>()
         val fileItems = chosen.filter { it !is TrayItem.Link }

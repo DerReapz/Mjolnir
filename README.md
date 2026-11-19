@@ -4,6 +4,15 @@
 
 Mjolnir sends browser tabs and files between your phone and your Windows PC through a small relay server that you host yourself. The relay holds a delivery until the other device picks it up (at most 7 days), and the phone is woken by an optional Firebase "doorbell" push that carries no content.
 
+## Pairing: any two devices
+
+Any two devices can link: PC and phone, PC and PC, or phone and phone. Both apps have the same two ways in (*Pair a device…* on the PC, *Pair a device* on the phone's Devices screen):
+
+- **Show a code:** the device shows a code like `K7M-2QX` with `Expires in m:ss` (*Get a new code* after it runs out). When the other device enters it, `Pair with {name}?` appears with *Accept* and *Reject*. Nothing links until you accept here.
+- **Enter a code:** type the code shown on the other device, then wait for that device to accept.
+
+Every pairing is accepted on the code-showing device. Once paired, each device lists the other as a send target (`PC` or `Phone`), so you can throw tabs and files in either direction.
+
 Modules: `:protocol` (shared models), `:server` (the Ktor relay), `:relay-client`, `:desktop` (Windows app), `:android`.
 
 ## Run the relay locally
@@ -79,7 +88,7 @@ The PC app is a tray app for Windows 10/11 (x64), packaged as an MSI.
 
 1. Get the MSI: download the `mjolnir-msi` artifact from the latest `windows` CI run, or build it on Windows with `./gradlew :desktop:packageMsi` (output in `desktop/build/compose/binaries/main/msi/`). To bake a default relay URL into the build, add `-Pmjolnir.relayUrl=https://<app>.fly.dev`.
 2. Run the MSI. It installs for the current user only (no admin rights needed) and adds Mjolnir to the Start menu.
-3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray; click it to open *Send to phone…*. The tray menu also has *Pair a phone…*, *Paired devices…*, *Open received files* and *Settings…*.
+3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray; click it to open *Send to phone…*. The tray menu also has *Pair a device…*, *Paired devices…*, *Open received files* and *Settings…*.
 4. Received files are saved to `Downloads\Mjolnir` (changeable in Settings). Tick *Start Mjolnir when I sign in to Windows* in Settings to start it automatically.
 
 Mjolnir adds itself to Explorer's *Send to* menu (right-click files or folders → *Send to* → *Mjolnir*; on Windows 11 it is under *Show more options*). The selection opens in the Send window of the running Mjolnir, or starts it. Untick *Show Mjolnir in Explorer's Send to menu* in Settings to remove the entry.
@@ -93,7 +102,7 @@ Settings and state live in `%APPDATA%\Mjolnir` (`config.json`, `seen.json`, `out
 `scripts/fake-phone.ps1` acts as a phone against your relay (state in `fake-phone.json`, downloads in `.\inbox\`):
 
 ```
-.\scripts\fake-phone.ps1 -Relay https://<app>.fly.dev -Pair K7M-2QX   # use the code from "Pair a phone…"
+.\scripts\fake-phone.ps1 -Relay https://<app>.fly.dev -Pair K7M-2QX   # use the code from "Pair a device…" → Show a code
 .\scripts\fake-phone.ps1 -Send https://example.com,https://example.org
 .\scripts\fake-phone.ps1 -SendFile .\report.pdf
 .\scripts\fake-phone.ps1 -SendFolder .\Photos

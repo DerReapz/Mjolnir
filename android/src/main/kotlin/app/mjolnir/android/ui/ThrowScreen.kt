@@ -76,7 +76,7 @@ import kotlinx.coroutines.launch
 fun ThrowScreen(
     vm: ThrowViewModel,
     importer: UriImporter,
-    onPairPc: () -> Unit,
+    onPairDevice: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -147,7 +147,7 @@ fun ThrowScreen(
     Box(modifier.fillMaxSize().onGloballyPositioned { overlayOrigin = it.positionInWindow() }) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) { PcPicker(state, vm, onPairPc) }
+                Box(Modifier.weight(1f)) { TargetPicker(state, vm, onPairDevice) }
                 IconButton(onClick = { pickFiles.launch(arrayOf("*/*")) }) {
                     Text("📄", Modifier.semantics { contentDescription = "Add files" })
                 }
@@ -174,7 +174,7 @@ fun ThrowScreen(
                 }
             }
             HammerButton(
-                vm, sensor, state.phase, hasTarget = state.targetPcId != null, flight = flight,
+                vm, sensor, state.phase, hasTarget = state.targetId != null, flight = flight,
                 modifier = Modifier.padding(vertical = 16.dp).onGloballyPositioned { hammerCentre = it.boundsInWindow().center },
             )
         }
@@ -213,19 +213,21 @@ private fun OutgoingRow(item: OutgoingFiles, onFinished: () -> Unit, onSendNow: 
     )
 }
 
+private fun kindLabel(peer: app.mjolnir.protocol.Peer) = if (peer.kind == app.mjolnir.protocol.DeviceKind.PC) "PC" else "Phone"
+
 @Composable
-private fun PcPicker(state: ThrowUiState, vm: ThrowViewModel, onPairPc: () -> Unit) {
-    if (state.pcs.isEmpty()) {
-        TextButton(onClick = onPairPc) { Text("Pair a PC first") }
+private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: () -> Unit) {
+    if (state.targets.isEmpty()) {
+        TextButton(onClick = onPairDevice) { Text("Pair a device first") }
         return
     }
     var open by remember { mutableStateOf(false) }
-    val current = state.pcs.find { it.deviceId == state.targetPcId } ?: state.pcs.first()
+    val current = state.targets.find { it.deviceId == state.targetId } ?: state.targets.first()
     Box {
-        OutlinedButton(onClick = { open = true }) { Text("To: ${current.name} ▾") }
+        OutlinedButton(onClick = { open = true }) { Text("To: ${current.name} (${kindLabel(current)}) ▾") }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            for (pc in state.pcs) {
-                DropdownMenuItem(text = { Text(pc.name) }, onClick = { vm.selectTarget(pc.deviceId); open = false })
+            for (device in state.targets) {
+                DropdownMenuItem(text = { Text("${device.name} (${kindLabel(device)})") }, onClick = { vm.selectTarget(device.deviceId); open = false })
             }
         }
     }

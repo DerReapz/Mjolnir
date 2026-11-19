@@ -18,7 +18,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import app.mjolnir.protocol.PairingCode
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.collectAsState
@@ -93,7 +100,7 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Mod
                     }
                 }
             }
-            Button(onClick = { pairing.restart(); showPairing = true }) { Text("Pair a PC") }
+            Button(onClick = { pairing.restart(); showPairing = true }) { Text("Pair a device") }
         }
     }
 
@@ -107,36 +114,98 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Mod
     }
 }
 
+private enum class PairMode { CHOOSE, ENTER, SHOW }
+
+/** `m:ss` for the time left on a code. */
+internal fun formatRemaining(ms: Long): String {
+    val s = (ms.coerceAtLeast(0) + 999) / 1000
+    return "%d:%02d".format(s / 60, s % 60)
+}
+
 @Composable
 private fun PairingFlow(vm: PairingViewModel, state: PairingUi, onDone: () -> Unit) {
+    var mode by remember { mutableStateOf(PairMode.CHOOSE) }
     var code by remember { mutableStateOf("") }
-    when (state) {
-        is PairingUi.Entering -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = code,
-                onValueChange = { code = it },
-                label = { Text("Code from your PC") },
-                isError = state.error != null,
-                supportingText = state.error?.let { { Text(it) } },
-                singleLine = true,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { vm.submit(code) }) { Text("Pair") }
-                TextButton(onClick = onDone) { Text("Cancel") }
-            }
-        }
-        is PairingUi.Waiting -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            CircularProgressIndicator(Modifier.size(24.dp))
-            Text("Waiting for ${state.pcName} to accept…")
-        }
-        is PairingUi.Paired -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Paired with ${state.pcName}")
+    when {
+        state is PairingUi.Paired -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Paired with ${state.name}")
             Button(onClick = onDone) { Text("Done") }
         }
-        is PairingUi.Failed -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(state.message, color = MaterialTheme.colorScheme.error)
-            Button(onClick = { code = ""; vm.restart() }) { Text("Try again") }
+        mode == PairMode.CHOOSE -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { code = ""; vm.restart(); mode = PairMode.ENTER }) { Text("Enter a code") }
+            Button(onClick = { mode = PairMode.SHOW }) { Text("Show a code") }
             TextButton(onClick = onDone) { Text("Cancel") }
         }
+        mode == PairMode.SHOW -> ShowCode(vm, state, onBack = { vm.stopShowing(); mode = PairMode.CHOOSE })
+        else -> when (state) {
+            is PairingUi.Waiting -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                CircularProgressIndicator(Modifier.size(24.dp))
+                Text("Waiting for ${state.name} to accept…")
+            }
+            is PairingUi.Failed -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(state.message, color = MaterialTheme.colorScheme.error)
+                Button(onClick = { code = ""; vm.restart() }) { Text("Try again") }
+                TextButton(onClick = onDone) { Text("Cancel") }
+            }
+            else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val error = (state as? PairingUi.Entering)?.error
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it },
+                    label = { Text("Code from the other device") },
+                    isError = error != null,
+                    supportingText = error?.let { { Text(it) } },
+                    singleLine = true,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { vm.submit(code) }) { Text("Pair") }
+                    TextButton(onClick = { vm.restart(); mode = PairMode.CHOOSE }) { Text("Back") }
+                }
+            }
+        }
+    }
+}
+
+/** The code-showing view. It listens for a request only while it is on screen. */
+@Composable
+private fun ShowCode(vm: PairingViewModel, state: PairingUi, onBack: () -> Unit) {
+    LaunchedEffect(Unit) { vm.showCode() }
+    DisposableEffect(Unit) { onDispose { vm.stopShowing() } }
+    var remaining by remember { mutableLongStateOf(0L) }
+    val showing = state as? PairingUi.Showing
+    LaunchedEffect(showing?.code) {
+        val until = showing?.expiresAtEpochMs ?: return@LaunchedEffect
+        while (true) {
+            remaining = until - System.currentTimeMillis()
+            if (remaining <= 0) break
+            delay(250)
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        when (state) {
+            is PairingUi.Showing -> {
+                Text(PairingCode.display(state.code), fontSize = 48.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                Text("Expires in ${formatRemaining(remaining)}")
+                state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+            is PairingUi.Expired -> {
+                Text("The code expired.")
+                Button(onClick = { vm.showCode() }) { Text("Get a new code") }
+            }
+            is PairingUi.Failed -> {
+                Text(state.message, color = MaterialTheme.colorScheme.error)
+                Button(onClick = { vm.showCode() }) { Text("Get a new code") }
+            }
+            else -> CircularProgressIndicator(Modifier.size(24.dp))
+        }
+        TextButton(onClick = onBack) { Text("Back") }
+    }
+    (showing?.request)?.let { peer ->
+        AlertDialog(
+            onDismissRequest = {}, // answer with a button, so a stray tap can't dismiss it
+            title = { Text("Pair with ${peer.name}?") },
+            confirmButton = { TextButton(onClick = { vm.answer(true) }) { Text("Accept") } },
+            dismissButton = { TextButton(onClick = { vm.answer(false) }) { Text("Reject") } },
+        )
     }
 }
