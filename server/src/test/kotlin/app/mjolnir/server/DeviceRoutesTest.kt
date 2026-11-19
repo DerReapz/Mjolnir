@@ -41,5 +41,25 @@ class DeviceRoutesTest {
         repeat(5) { register() }
         assertEquals(HttpStatusCode.TooManyRequests, client.post("/v1/devices") { contentType(Json); setBody(RegisterRequest("x", DeviceKind.PC)) }.status)
     }
+    @Test fun spoofedForwardedForDoesNotBypassTheRegistrationLimit() = relayTest {
+        // The client controls the first X-Forwarded-For entries; only the last hop (added by the proxy) counts.
+        suspend fun reg(i: Int) = client.post("/v1/devices") {
+            header("X-Forwarded-For", "10.9.9.$i, 203.0.113.7"); contentType(Json); setBody(RegisterRequest("x", DeviceKind.PC))
+        }.status
+        repeat(5) { assertEquals(HttpStatusCode.Created, reg(it)) }
+        assertEquals(HttpStatusCode.TooManyRequests, reg(99))
+        // A different last hop is a different client.
+        assertEquals(HttpStatusCode.Created, client.post("/v1/devices") {
+            header("X-Forwarded-For", "10.9.9.1, 203.0.113.8"); contentType(Json); setBody(RegisterRequest("x", DeviceKind.PC))
+        }.status)
+    }
+    @Test fun flyClientIpIsTheRegistrationKeyWhenPresent() = relayTest {
+        suspend fun reg(i: Int) = client.post("/v1/devices") {
+            header("Fly-Client-IP", "198.51.100.4"); header("X-Forwarded-For", "10.0.0.$i")
+            contentType(Json); setBody(RegisterRequest("x", DeviceKind.PC))
+        }.status
+        repeat(5) { assertEquals(HttpStatusCode.Created, reg(it)) }
+        assertEquals(HttpStatusCode.TooManyRequests, reg(99))
+    }
     @Test fun healthIsOpen() = relayTest { assertEquals("ok", client.get("/health").bodyAsText()) }
 }

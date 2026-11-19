@@ -24,9 +24,14 @@ fun main() {
     )
     val log = LoggerFactory.getLogger("app.mjolnir.server.Main")
     val push: PushSender = if (!System.getenv("GOOGLE_APPLICATION_CREDENTIALS").isNullOrBlank()) {
-        FirebaseApp.initializeApp()
-        log.info("FCM enabled")
-        FcmPushSender(FirebaseMessaging.getInstance())
+        try {
+            FirebaseApp.initializeApp()
+            FcmPushSender(FirebaseMessaging.getInstance()).also { log.info("FCM enabled") }
+        } catch (e: Exception) {
+            // A bad or unreadable credentials file must not keep the relay from starting.
+            log.warn("FCM disabled (init failed: {})", e.toString())
+            NoopPushSender
+        }
     } else {
         log.info("FCM disabled (GOOGLE_APPLICATION_CREDENTIALS not set)")
         NoopPushSender

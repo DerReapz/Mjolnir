@@ -40,7 +40,7 @@ Run these from the `server/` directory after `./gradlew :server:buildFatJar` (th
    fly secrets set GOOGLE_APPLICATION_CREDENTIALS=/data/secrets/firebase.json
    ```
    Alternatively store the JSON itself as a secret and write it to a file at startup. Never commit the JSON.
-4. `fly deploy` builds the image and starts the relay. Check `https://<app>.fly.dev/health`.
+4. `fly deploy --ha=false` builds the image and starts the relay on a single machine (the relay keeps its data in one SQLite file, so it must never run on two). Check `https://<app>.fly.dev/health`.
 
 Use the `https://<app>.fly.dev` address as the relay URL in the PC and phone apps. Relay URLs must be `https://` (plain `http://` only for localhost).
 
@@ -84,7 +84,7 @@ The PC app is a tray app for Windows 10/11 (x64), packaged as an MSI.
 
 Mjolnir adds itself to Explorer's *Send to* menu (right-click files or folders → *Send to* → *Mjolnir*; on Windows 11 it is under *Show more options*). The selection opens in the Send window of the running Mjolnir, or starts it. Untick *Show Mjolnir in Explorer's Send to menu* in Settings to remove the entry.
 
-**Uninstalling** leaves the *Send to* shortcut behind: untick *Show Mjolnir in Explorer's Send to menu* in Settings first, or delete `%APPDATA%\Microsoft\Windows\SendTo\Mjolnir.lnk` afterwards.
+**Uninstalling** leaves the *Send to* shortcut behind: untick *Show Mjolnir in Explorer's Send to menu* in Settings first, or delete `%APPDATA%\Microsoft\Windows\SendTo\Mjolnir.lnk` afterwards. Also untick *Start Mjolnir when I sign in to Windows* before uninstalling, or its sign-in entry (a `Run` registry value) stays behind.
 
 Settings and state live in `%APPDATA%\Mjolnir` (`config.json`, `seen.json`, `outbox.json`). Delete that folder to start over.
 

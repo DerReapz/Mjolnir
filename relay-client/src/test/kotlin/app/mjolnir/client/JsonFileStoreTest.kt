@@ -14,6 +14,24 @@ class JsonFileStoreTest {
     private val ser = ListSerializer(Tab.serializer())
     private fun store(f: File = File(dir, "s.json")) = JsonFileStore(f, ser) { emptyList() }
 
+    @Test fun lockedTargetIsRetriedThenWritten() {
+        val s = store(); var calls = 0
+        val real = s.move
+        s.moveRetryDelayMs = 1
+        s.move = { from, to -> if (++calls < 3) throw java.nio.file.AccessDeniedException(to.toString()) else real(from, to) }
+        s.write(listOf(Tab("https://a.com")))
+        assertEquals(3, calls)
+        assertEquals(listOf(Tab("https://a.com")), store().read())
+    }
+
+    @Test fun targetLockedForGoodFailsAfterFiveTries() {
+        val s = store(); var calls = 0
+        s.moveRetryDelayMs = 1
+        s.move = { _, to -> calls++; throw java.nio.file.AccessDeniedException(to.toString()) }
+        assertFailsWith<java.nio.file.AccessDeniedException> { s.write(listOf(Tab("https://a.com"))) }
+        assertEquals(5, calls)
+    }
+
     @Test fun missingFileGivesDefault() { assertEquals(emptyList(), store().read()) }
 
     @Test fun writeThenReadFromNewInstance() {

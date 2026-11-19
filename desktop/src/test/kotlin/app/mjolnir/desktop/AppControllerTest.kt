@@ -93,6 +93,20 @@ class AppControllerTest {
         scope.cancel()
     }
 
+    // a hand-edited config with plain http to a remote host never gets a client
+    @Test fun plainHttpToRemoteRelayGetsNoClient() = runTest {
+        File(dir, "config.json").writeText(
+            """{"relayUrl":"http://relay.example.com","deviceName":"PC","saveDir":"${File(dir, "save").path.replace("\\", "\\\\")}"}"""
+        )
+        val urls = mutableListOf<String>()
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        val c = AppController(dir, scope) { url, _ -> urls += url; FakeRelayApi() }
+        assertNull(c.api())
+        c.start(); runCurrent()
+        assertTrue(urls.isEmpty())
+        scope.cancel()
+    }
+
     // a send whose window has closed reports through a tray notification
     @Test fun sendResultBecomesNotificationWhenWindowIsGone() = runTest {
         val fake = FakeRelayApi()
@@ -102,6 +116,20 @@ class AppControllerTest {
         assertEquals(1, fake.sent.size)
         assertEquals(listOf("Sent 1 tab to Pixel 8"), notes)
         assertEquals("ph", c.config.value.lastPhoneId)
+        scope.cancel()
+    }
+
+    // a file that cannot be read says so instead of blaming the relay
+    @Test fun unreadableFileNotificationNamesTheFile() = runTest {
+        val fake = FakeRelayApi()
+        val (c, scope) = controller(fake)
+        val notes = notes(c)
+        val gone = File(dir, "gone.txt")
+        c.send(phone, emptyList(), listOf(LocalUpload(gone.absolutePath, "gone.txt", "text/plain", 4)))
+        val deadline = System.currentTimeMillis() + 5_000 // the read itself runs on Dispatchers.IO
+        while (notes.none { it.startsWith("Not sent") } && System.currentTimeMillis() < deadline) { runCurrent(); Thread.sleep(10) }
+        assertTrue("Not sent: Couldn't read gone.txt." in notes, notes.toString())
+        assertTrue(fake.sent.isEmpty())
         scope.cancel()
     }
 

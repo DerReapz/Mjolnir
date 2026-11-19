@@ -153,6 +153,37 @@ class FileRoutesTest {
         assertEquals(HttpStatusCode.NotFound, client.get("/v1/files/${ref.id}") { bearerAuth(pc.token) }.status)
     }
 
+    @Test fun resendAfterAckIsAlreadySent() = relayTest {
+        val (pc, phone) = pairedPcAndPhone()
+        val ref = upload(phone, "a.bin", ByteArray(3))
+        assertEquals(HttpStatusCode.Accepted, sendFiles(phone, pc.deviceId, listOf(ref.id)).status)
+        val id = inbox(pc).single().id
+        client.delete("/v1/inbox/$id") { bearerAuth(pc.token) }
+        // The sender's response was lost and it retries after the PC acked: the relay still remembers the ids.
+        assertEquals(HttpStatusCode.Conflict, sendFiles(phone, pc.deviceId, listOf(ref.id)).status)
+        assertEquals(emptyList(), inbox(pc))
+        // A tombstone is not downloadable by anyone.
+        assertEquals(HttpStatusCode.NotFound, client.get("/v1/files/${ref.id}") { bearerAuth(phone.token) }.status)
+        assertEquals(HttpStatusCode.NotFound, client.get("/v1/files/${ref.id}") { bearerAuth(pc.token) }.status)
+        // The tombstone outlives the unsent-file TTL and goes once the delivery TTL has passed since the ack.
+        clock.now += Limits.UNSENT_FILE_TTL_MS + 1
+        purge(deps)
+        assertEquals(1, store.rowCount("files"))
+        assertEquals(HttpStatusCode.Conflict, sendFiles(phone, pc.deviceId, listOf(ref.id)).status)
+        clock.now += Limits.DELIVERY_TTL_MS
+        purge(deps)
+        assertEquals(0, store.rowCount("files"))
+    }
+
+    @Test fun tombstoneCannotBeSentToAnotherDevice() = relayTest {
+        val (pc, phone) = pairedPcAndPhone()
+        val ref = upload(phone, "a.bin", ByteArray(3))
+        sendFiles(phone, pc.deviceId, listOf(ref.id))
+        client.delete("/v1/inbox/${inbox(pc).single().id}") { bearerAuth(pc.token) }
+        val fresh = upload(phone, "b.bin", ByteArray(3))
+        assertEquals(HttpStatusCode.BadRequest, sendFiles(phone, pc.deviceId, listOf(ref.id, fresh.id)).status)
+    }
+
     @Test fun incompleteUploadsArePurgedAfterADay() = relayTest {
         val phone = register(); val bytes = ByteArray(20)
         val s = createUpload(phone, "a.bin", "application/octet-stream", 20)

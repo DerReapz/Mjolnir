@@ -1,5 +1,8 @@
 package app.mjolnir.android.send
 
+import kotlinx.coroutines.CancellationException
+import app.mjolnir.android.session.resetQuietly
+import app.mjolnir.client.RelayErrorKind
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -21,6 +24,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import app.mjolnir.android.MjolnirApp
+import app.mjolnir.android.receive.syncPushToken
 import app.mjolnir.android.notificationId
 import app.mjolnir.android.postNotification
 import app.mjolnir.android.shouldReportProgress
@@ -169,7 +173,22 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                 } catch (e: IOException) {
                     // The outbox entry is gone already; the copies stay on disk but leave the tray.
                 }
-                notifyResult(item.id, Messages.filesBack(Messages.failureReason(result.kind, result.item.toName)))
+                if (result.kind == RelayErrorKind.UNAUTHORIZED) {
+                    // The relay forgot this phone: register again so the next throw can work after pairing.
+                    notifyResult(item.id, Messages.RESET)
+                    resetQuietly(container.session)
+                    try {
+                        syncPushToken(applicationContext)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // The app syncs the token on its next start.
+                    }
+                } else {
+                    // A specific reason such as "Couldn't read a.jpg" beats the generic one.
+                    val reason = result.message ?: Messages.failureReason(result.kind, result.item.toName)
+                    notifyResult(item.id, Messages.filesBack(reason))
+                }
                 Result.success()
             }
         }

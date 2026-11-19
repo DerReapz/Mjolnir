@@ -94,7 +94,7 @@ fun Route.sendRoutes(deps: RelayDeps) {
 
         delete("/v1/inbox/{id}") {
             val me = call.principal<DevicePrincipal>()!!
-            val fileIds = store.deleteDelivery(me.deviceId, call.parameters["id"]!!)
+            val fileIds = store.deleteDelivery(me.deviceId, call.parameters["id"]!!, deps.clock.nowMs())
             withContext(Dispatchers.IO) { fileIds.forEach(deps.files::delete) }
             call.respond(HttpStatusCode.NoContent)
         }

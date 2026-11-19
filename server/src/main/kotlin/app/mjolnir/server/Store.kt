@@ -104,10 +104,20 @@ class Store(jdbcUrl: String) {
                     sha256 TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     delivery_id TEXT NULL,
-                    sent_to TEXT NULL)"""
+                    sent_to TEXT NULL,
+                    acked_at INTEGER NULL)"""
             )
             it.executeUpdate("CREATE INDEX IF NOT EXISTS files_delivery ON files(delivery_id)")
         }
+        // Databases created before tombstones existed lack acked_at.
+        val hasAckedAt = conn.createStatement().use { st ->
+            st.executeQuery("PRAGMA table_info(files)").use { rs ->
+                var found = false
+                while (rs.next()) if (rs.getString("name") == "acked_at") found = true
+                found
+            }
+        }
+        if (!hasAckedAt) conn.createStatement().use { it.executeUpdate("ALTER TABLE files ADD COLUMN acked_at INTEGER NULL") }
     }
 
     private fun ResultSet.toPairing() = PairingRow(
@@ -298,16 +308,22 @@ class Store(jdbcUrl: String) {
             it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toFileRef()) } }
         }
 
-    /** Idempotent; only the recipient's own delivery is removed. Returns the ids of its file blobs to delete. */
+    /**
+     * Idempotent; only the recipient's own delivery is removed. Returns the ids of its file blobs to delete.
+     * The file rows stay as tombstones (acked_at set, delivery_id cleared, sent_to kept) for [Limits.DELIVERY_TTL_MS],
+     * so a sender retrying after a lost send response gets ALREADY_SENT instead of INVALID.
+     */
     @Synchronized
-    fun deleteDelivery(toId: String, id: String): List<String> = transaction {
+    fun deleteDelivery(toId: String, id: String, nowMs: Long): List<String> = transaction {
         val owned = conn.prepareStatement("SELECT 1 FROM deliveries WHERE id=? AND to_id=?").use {
             it.setString(1, id); it.setString(2, toId)
             it.executeQuery().use { rs -> rs.next() }
         }
         if (!owned) return@transaction emptyList()
         val fileIds = filesOfDelivery(id).map { it.id }
-        conn.prepareStatement("DELETE FROM files WHERE delivery_id=?").use { it.setString(1, id); it.executeUpdate() }
+        conn.prepareStatement("UPDATE files SET acked_at=?, delivery_id=NULL WHERE delivery_id=?").use {
+            it.setLong(1, nowMs); it.setString(2, id); it.executeUpdate()
+        }
         conn.prepareStatement("DELETE FROM deliveries WHERE id=?").use { it.setString(1, id); it.executeUpdate() }
         fileIds
     }
@@ -380,23 +396,27 @@ class Store(jdbcUrl: String) {
 
     /**
      * Attaches files [ids] owned by [ownerId] to delivery [deliveryId] for [to].
-     * ALREADY_SENT when every id already belongs to a delivery from [ownerId] to [to];
-     * INVALID when any id is unknown, someone else's, duplicated, or attached elsewhere.
+     * ALREADY_SENT when every id was already sent to [to] (still in a delivery, or acked and kept as a tombstone);
+     * INVALID when any id is unknown, someone else's, duplicated, or already sent elsewhere.
      */
     @Synchronized
     fun attachFiles(ids: List<String>, ownerId: String, to: String, deliveryId: String): AttachResult = transaction {
         if (ids.isEmpty() || ids.toSet().size != ids.size) return@transaction AttachResult.INVALID
         val rows = ids.map { id ->
-            conn.prepareStatement("SELECT owner_id, delivery_id, sent_to FROM files WHERE id=?").use {
+            conn.prepareStatement("SELECT owner_id, delivery_id, sent_to, acked_at FROM files WHERE id=?").use {
                 it.setString(1, id)
                 it.executeQuery().use { rs ->
-                    if (rs.next()) Triple(rs.getString(1), rs.getString(2), rs.getString(3)) else null
+                    if (!rs.next()) null
+                    else {
+                        val sent = rs.getString(2) != null || rs.getObject(4) != null
+                        Triple(rs.getString(1), sent, rs.getString(3))
+                    }
                 }
             } ?: return@transaction AttachResult.INVALID
         }
         if (rows.any { it.first != ownerId }) return@transaction AttachResult.INVALID
-        if (rows.all { it.second != null && it.third == to }) return@transaction AttachResult.ALREADY_SENT
-        if (rows.any { it.second != null }) return@transaction AttachResult.INVALID
+        if (rows.all { it.second && it.third == to }) return@transaction AttachResult.ALREADY_SENT
+        if (rows.any { it.second }) return@transaction AttachResult.INVALID
         conn.prepareStatement("UPDATE files SET delivery_id=?, sent_to=? WHERE id=?").use {
             for (id in ids) {
                 it.setString(1, deliveryId); it.setString(2, to); it.setString(3, id); it.executeUpdate()
@@ -416,19 +436,19 @@ class Store(jdbcUrl: String) {
             result to DeliveryRow(id, fromId, toId, emptyList(), nowMs, filesOfDelivery(id))
         }
 
-    /** A file [deviceId] may download: its own, or one sent to it in a live delivery. */
+    /** A file [deviceId] may download: its own, or one sent to it in a live delivery; never an acked tombstone. */
     @Synchronized
     fun fileForDownload(id: String, deviceId: String): FileRef? =
         conn.prepareStatement(
             """SELECT f.* FROM files f LEFT JOIN deliveries d ON d.id=f.delivery_id
-               WHERE f.id=? AND (f.owner_id=? OR (f.sent_to=? AND d.to_id=?))"""
+               WHERE f.id=? AND f.acked_at IS NULL AND (f.owner_id=? OR (f.sent_to=? AND d.to_id=?))"""
         ).use {
             it.setString(1, id); it.setString(2, deviceId); it.setString(3, deviceId); it.setString(4, deviceId)
             it.executeQuery().use { rs -> if (rs.next()) rs.toFileRef() else null }
         }
 
     /**
-     * Deletes stale uploads, unsent files and expired deliveries; returns the blob ids to delete.
+     * Deletes stale uploads, unsent files, expired deliveries and old ack tombstones; returns the blob ids to delete.
      */
     @Synchronized
     fun purgeExpired(nowMs: Long): List<String> = transaction {
@@ -443,11 +463,12 @@ class Store(jdbcUrl: String) {
         val deliveryCutoff = nowMs - Limits.DELIVERY_TTL_MS
         val out = buildList {
             addAll(ids("SELECT id FROM uploads WHERE created_at<=?", uploadCutoff))
-            addAll(ids("SELECT id FROM files WHERE delivery_id IS NULL AND created_at<=?", unsentCutoff))
+            addAll(ids("SELECT id FROM files WHERE delivery_id IS NULL AND acked_at IS NULL AND created_at<=?", unsentCutoff))
             addAll(ids("SELECT f.id FROM files f JOIN deliveries d ON d.id=f.delivery_id WHERE d.sent_at<=?", deliveryCutoff))
         }
         exec("DELETE FROM uploads WHERE created_at<=?", uploadCutoff)
-        exec("DELETE FROM files WHERE delivery_id IS NULL AND created_at<=?", unsentCutoff)
+        exec("DELETE FROM files WHERE delivery_id IS NULL AND acked_at IS NULL AND created_at<=?", unsentCutoff)
+        exec("DELETE FROM files WHERE acked_at IS NOT NULL AND acked_at<=?", deliveryCutoff) // blobs went on ack
         exec("DELETE FROM files WHERE delivery_id IN (SELECT id FROM deliveries WHERE sent_at<=?)", deliveryCutoff)
         exec("DELETE FROM deliveries WHERE sent_at<=?", deliveryCutoff)
         out

@@ -31,6 +31,13 @@ class PhoneSessionTest {
         assertEquals(api.registerResult.deviceId, config.read().deviceId)
     }
 
+    @Test fun resetQuietlySwallowsRelayAndIoFailures() = runTest {
+        api.failAllWith = app.mjolnir.client.RelayException(app.mjolnir.client.RelayErrorKind.NETWORK, "down")
+        resetQuietly(PhoneSession(api, config())) // relay failure: no throw
+        val unreadable = File(tmp.root, "dir-config.json").apply { mkdirs() } // reading a directory is an IOException
+        resetQuietly(PhoneSession(api, JsonFileStore(unreadable, serializer<PhoneConfig>()) { PhoneConfig("https://relay.example", deviceName = "P") }))
+    }
+
     @Test fun resetClearsTargetAndReRegisters() = runTest {
         val config = config(PhoneConfig("https://relay.example", "old", "old-tok", "Pixel 8", targetPcId = "pc1"))
         val reset = PhoneSession(api, config).reset()

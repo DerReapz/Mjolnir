@@ -34,7 +34,7 @@ class PairingViewModelTest {
     private lateinit var config: JsonFileStore<PhoneConfig>
     private lateinit var vm: PairingViewModel
     private var onUnauthorizedCalls = 0
-    private var unauthorizedFailure: RelayException? = null
+    private var unauthorizedFailure: Exception? = null
 
     @Before fun setUp() {
         config = JsonFileStore(File(tmp.root, "config.json"), serializer<PhoneConfig>()) {
@@ -121,6 +121,14 @@ class PairingViewModelTest {
 
     @Test fun unauthorizedClaimShowsResetEvenIfResetFails() = runTest {
         unauthorizedFailure = RelayException(RelayErrorKind.NETWORK, "down")
+        api.onClaim = { throw RelayException(RelayErrorKind.UNAUTHORIZED, "x") }
+        vm.submit("k7m-2qx"); runCurrent()
+        assertEquals(1, onUnauthorizedCalls)
+        assertEquals(PairingUi.Entering(app.mjolnir.client.Messages.RESET), vm.state.value)
+    }
+
+    @Test fun unauthorizedClaimShowsResetEvenIfTheConfigCannotBeWritten() = runTest {
+        unauthorizedFailure = java.io.IOException("disk full")
         api.onClaim = { throw RelayException(RelayErrorKind.UNAUTHORIZED, "x") }
         vm.submit("k7m-2qx"); runCurrent()
         assertEquals(1, onUnauthorizedCalls)

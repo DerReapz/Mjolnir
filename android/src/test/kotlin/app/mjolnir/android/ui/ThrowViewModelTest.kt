@@ -146,6 +146,17 @@ class ThrowViewModelTest {
         assertEquals(listOf(queued), vm.state.value.outgoing)
     }
 
+    @Test fun unauthorizedThrowResetsTheSessionAndSaysSo() = runTest {
+        var resets = 0
+        vm = ThrowViewModel(api, trayStore, configStore, outbox, { scheduled += it }, main.dispatcher,
+            onUnauthorized = { resets++; throw java.io.IOException("disk full") })
+        api.onSend = { throw RelayException(RelayErrorKind.UNAUTHORIZED, "x") }
+        vm.addShared(listOf(a)); vm.refreshPcs(); advanceUntilIdle(); throwNow(); advanceUntilIdle()
+        assertEquals(1, resets)
+        assertEquals(app.mjolnir.client.Messages.RESET, vm.state.value.notice)
+        assertEquals(listOf(a), vm.state.value.tray)
+    }
+
     @Test fun offlineThrowKeepsTabsAndQueuesFiles() = runTest {
         api.onSend = { throw RelayException(RelayErrorKind.NETWORK, "down") }
         vm.addShared(listOf(a, f)); vm.refreshPcs(); advanceUntilIdle(); vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()

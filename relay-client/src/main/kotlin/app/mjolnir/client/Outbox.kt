@@ -8,10 +8,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 
-/**
- * Files queued for one background send to [to]. [sendAttempted] is true once a send may have reached the relay
- * without us seeing the answer (set before every send, cleared again only after a definite RATE_LIMITED refusal).
- */
+/** Files queued for one background send to [to]. */
 @Serializable
 data class OutgoingFiles(
     val id: String,
@@ -20,7 +17,6 @@ data class OutgoingFiles(
     val files: List<LocalUpload>,
     val allowMetered: Boolean = false,
     val createdAtEpochMs: Long,
-    val sendAttempted: Boolean = false,
 ) {
     val totalBytes: Long get() = files.sumOf { it.sizeBytes }
 }
@@ -29,8 +25,11 @@ sealed interface OutboxResult {
     data class Done(val item: OutgoingFiles) : OutboxResult
     /** NETWORK, SERVER, RATE_LIMITED: state kept. Also returned for an id that is no longer queued. */
     data object Retry : OutboxResult
-    /** Anything else: item removed (cleanup not called, so the caller can give the files back). */
-    data class Failed(val item: OutgoingFiles, val kind: RelayErrorKind) : OutboxResult
+    /**
+     * Anything else: item removed (cleanup not called, so the caller can give the files back). [message] is a
+     * specific reason such as "Couldn't read a.jpg" that callers show instead of the kind's generic one.
+     */
+    data class Failed(val item: OutgoingFiles, val kind: RelayErrorKind, val message: String? = null) : OutboxResult
 }
 
 /** Persistent queue of background file sends that survives restarts and resumes interrupted uploads. */
@@ -62,6 +61,18 @@ class Outbox(
     private suspend fun processLocked(id: String, onProgress: (Long, Long) -> Unit): OutboxResult {
         var item = get(id) ?: return OutboxResult.Retry
         val api = api()
+
+        // The relay drops unsent files after an hour: re-upload any finished file it no longer has.
+        for ((index, file) in item.files.withIndex()) {
+            val ref = file.ref ?: continue
+            try {
+                api.uploadStatus(ref.id)
+            } catch (e: RelayException) {
+                if (e.kind != RelayErrorKind.NOT_FOUND) return failure(item, e)
+                item = persistFile(id, index, file.copy(uploadId = null, ref = null)) ?: item
+            }
+        }
+
         val total = item.totalBytes
         var finished = item.files.filter { it.ref != null }.sumOf { it.sizeBytes }
         var reported = -1L
@@ -80,33 +91,24 @@ class Outbox(
                     chunkBytes = chunkBytes,
                 )
             } catch (e: RelayException) {
-                return failure(item, e.kind)
+                return failure(item, e)
             }
             if (file.ref == null) finished += file.sizeBytes
             refs += ref
         }
         report(total)
 
-        val wasAttempted = item.sendAttempted
-        item = persist(id) { it.copy(sendAttempted = true) } ?: item // before send: a crash mid-send is ambiguous too
         val error = sendInBatches(api, item.to, emptyList(), refs).error ?: return done(item)
-        return when {
-            error.kind == RelayErrorKind.ALREADY_SENT -> done(item)
-            // The relay deletes file rows once the recipient acks; after a lost response the retry gets INVALID.
-            error.kind == RelayErrorKind.INVALID && wasAttempted && item.files.all { it.ref != null } -> done(item)
-            error.kind == RelayErrorKind.RATE_LIMITED && !wasAttempted -> {
-                persist(id) { it.copy(sendAttempted = false) } // a definite refusal: nothing was sent
-                OutboxResult.Retry
-            }
-            else -> failure(item, error.kind)
-        }
+        // A lost response: the relay already holds this delivery (or the recipient acked it, leaving tombstones).
+        if (error.kind == RelayErrorKind.ALREADY_SENT) return done(item)
+        return failure(item, error)
     }
 
-    private fun failure(item: OutgoingFiles, kind: RelayErrorKind): OutboxResult = when (kind) {
+    private fun failure(item: OutgoingFiles, e: RelayException): OutboxResult = when (e.kind) {
         RelayErrorKind.NETWORK, RelayErrorKind.SERVER, RelayErrorKind.RATE_LIMITED -> OutboxResult.Retry
         else -> {
             remove(item.id)
-            OutboxResult.Failed(item, kind)
+            OutboxResult.Failed(item, e.kind, e.userMessage)
         }
     }
 

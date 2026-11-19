@@ -12,6 +12,7 @@ import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayClient
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
+import app.mjolnir.client.RelayUrls
 import app.mjolnir.client.cleanStaging
 import app.mjolnir.client.sendInBatches
 import app.mjolnir.protocol.Peer
@@ -96,9 +97,12 @@ class AppController(
         _notifications.tryEmit(message)
     }
 
-    /** The relay client for the configured URL, or null while no relay is set. */
+    /**
+     * The relay client for the configured URL, or null while no valid relay is set. A hand-edited config with plain
+     * http to a remote host (or any URL [RelayUrls.normalize] rejects) gets no client; Settings shows the error.
+     */
     fun api(): RelayApi? = synchronized(clientLock) {
-        val url = _config.value.relayUrl.takeIf { it.isNotBlank() } ?: return null
+        val url = RelayUrls.normalize(_config.value.relayUrl) ?: return null
         if (client == null || clientUrl != url) {
             (client as? AutoCloseable)?.close()
             client = apiFactory(url) { store.read().token }
@@ -123,7 +127,7 @@ class AppController(
 
     private suspend fun serviceLoop() {
         while (true) {
-            _config.first { it.relayUrl.isNotBlank() }
+            _config.first { RelayUrls.normalize(it.relayUrl) != null }
             val api = api() ?: continue
             var token: String? = null
             try {
@@ -255,7 +259,7 @@ class AppController(
             is OutboxResult.Done -> notify(Messages.sent(0, item.files.size, item.toName))
             is OutboxResult.Retry -> scheduleRetry()
             is OutboxResult.Failed -> {
-                notify(Messages.notSent(Messages.failureReason(result.kind, item.toName)))
+                notify(Messages.notSent(result.message ?: Messages.failureReason(result.kind, item.toName)))
                 if (result.kind == RelayErrorKind.UNAUTHORIZED) recoverUnauthorized(token)
             }
         }

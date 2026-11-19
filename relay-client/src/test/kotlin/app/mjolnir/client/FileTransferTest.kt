@@ -1,6 +1,7 @@
 package app.mjolnir.client
 
 import app.mjolnir.protocol.FileRef
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
@@ -45,6 +46,33 @@ class FileTransferTest {
         assertContentEquals(bytes, seen.single())
         assertEquals(5000L, progress.last())
         assertFalse(File(staging, "x.part").exists())
+    }
+
+    // Cancelling mid-publish must not leave a partial folder that a retry would then publish again in full.
+    @Test fun cancelDuringPublishStillPublishesEveryFileOnce() = kotlinx.coroutines.runBlocking {
+        val refs = (1..3).map { api.putBlob("f$it", "Photos/$it.jpg", byteArrayOf(it.toByte())) }
+        val published = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val inSecond = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        var thrown: Throwable? = null
+        val job = launch(kotlinx.coroutines.Dispatchers.Default) {
+            try {
+                receiveFiles(api, refs, staging, { false }) { _, _, r ->
+                    if (r.id == "f2") { inSecond.countDown(); release.await() }
+                    published += r.id
+                }
+            } catch (e: Throwable) {
+                thrown = e
+                throw e
+            }
+        }
+        assertTrue(inSecond.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        job.cancel()
+        release.countDown()
+        job.join()
+        assertEquals(listOf("f1", "f2", "f3"), published.toList())
+        assertTrue(thrown is kotlinx.coroutines.CancellationException, "got $thrown")
+        assertTrue(staging.listFiles()!!.none { it.name.endsWith(".part") })
     }
 
     @Test fun receiveFilesPublishesOnlyWhenAllDownloaded() = runTest {

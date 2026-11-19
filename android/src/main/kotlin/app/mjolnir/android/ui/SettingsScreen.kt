@@ -1,5 +1,6 @@
 package app.mjolnir.android.ui
 
+import app.mjolnir.android.session.resetQuietly
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -117,7 +118,7 @@ class SettingsViewModel(
             _state.update { it.copy(notice = null) }
         } catch (e: RelayException) {
             if (e.kind == RelayErrorKind.UNAUTHORIZED) {
-                try { session.reset() } catch (_: RelayException) { }
+                resetQuietly(session)
                 _state.update { it.copy(notice = Messages.RESET) }
             } else {
                 _state.update { it.copy(notice = "$failure: ${Messages.failureReason(e.kind, "the relay")}.") }

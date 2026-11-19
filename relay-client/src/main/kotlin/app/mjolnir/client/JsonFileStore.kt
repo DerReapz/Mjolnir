@@ -2,8 +2,10 @@ package app.mjolnir.client
 
 import app.mjolnir.protocol.MjolnirJson
 import java.io.File
+import java.nio.file.AccessDeniedException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import kotlinx.serialization.KSerializer
 
@@ -13,6 +15,10 @@ import kotlinx.serialization.KSerializer
  */
 class JsonFileStore<T>(private val file: File, private val serializer: KSerializer<T>, private val default: () -> T) {
     private val lock = Any()
+
+    /** Replaces the target with the temp file; swappable so tests can simulate a locked file. */
+    internal var move: (Path, Path) -> Unit = ::atomicReplace
+    internal var moveRetryDelayMs: Long = 50
 
     fun read(): T = synchronized(lock) { readLocked() }
 
@@ -37,10 +43,29 @@ class JsonFileStore<T>(private val file: File, private val serializer: KSerializ
         parent?.mkdirs()
         val tmp = File(parent, file.name + ".tmp")
         tmp.writeText(MjolnirJson.encodeToString(serializer, value))
-        try {
-            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } catch (e: AtomicMoveNotSupportedException) {
-            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        // On Windows an antivirus scanner or the indexer briefly holding the file makes the rename fail: retry a little.
+        var attempt = 1
+        while (true) {
+            try {
+                move(tmp.toPath(), file.toPath())
+                return
+            } catch (e: AccessDeniedException) {
+                if (attempt >= MOVE_ATTEMPTS) throw e
+                attempt++
+                Thread.sleep(moveRetryDelayMs)
+            }
+        }
+    }
+
+    private companion object {
+        const val MOVE_ATTEMPTS = 5
+
+        fun atomicReplace(from: Path, to: Path) {
+            try {
+                Files.move(from, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (e: AtomicMoveNotSupportedException) {
+                Files.move(from, to, StandardCopyOption.REPLACE_EXISTING)
+            }
         }
     }
 }

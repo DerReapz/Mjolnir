@@ -1,5 +1,6 @@
 package app.mjolnir.android.ui
 
+import app.mjolnir.client.RelayErrorKind
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.mjolnir.android.data.PhoneConfig
@@ -61,6 +62,8 @@ class ThrowViewModel(
     private val outbox: Outbox,
     private val scheduleOutgoing: (String) -> Unit,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** Called when the relay rejects this device's token, so the registration is reset (must not throw). */
+    private val onUnauthorized: suspend () -> Unit = {},
 ) : ViewModel() {
     private val _state = MutableStateFlow(ThrowUiState())
     val state: StateFlow<ThrowUiState> = _state.asStateFlow()
@@ -261,7 +264,20 @@ class ThrowViewModel(
             val sentUrls = outcome.sentTabs.mapTo(HashSet()) { it.url }
             links.filter { it.tab.url in sentUrls }.mapTo(gone) { it.id }
             if (outcome.sentTabs.isNotEmpty()) parts += Messages.thrown(outcome.sentTabs.size, 0, pc.name)
-            outcome.error?.let { parts += Messages.notThrown(Messages.failureReason(it.kind, pc.name)) }
+            outcome.error?.let { error ->
+                if (error.kind == RelayErrorKind.UNAUTHORIZED) {
+                    parts += Messages.RESET
+                    try {
+                        onUnauthorized()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Registering again failed; the app registers on its next start.
+                    }
+                } else {
+                    parts += Messages.notThrown(Messages.failureReason(error.kind, pc.name))
+                }
+            }
         }
 
         if (fileItems.isNotEmpty()) {

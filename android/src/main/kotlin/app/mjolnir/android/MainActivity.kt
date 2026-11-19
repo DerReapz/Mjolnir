@@ -1,5 +1,6 @@
 package app.mjolnir.android
 
+import app.mjolnir.android.session.resetQuietly
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -57,7 +58,10 @@ class MainActivity : ComponentActivity() {
             return when (modelClass) {
                 ThrowViewModel::class.java -> {
                     val appContext = applicationContext
-                    ThrowViewModel(c.api, c.tray, c.config, c.outbox, scheduleOutgoing = { id -> scheduleOutgoing(appContext, id) }, io = Dispatchers.IO)
+                    ThrowViewModel(
+                        c.api, c.tray, c.config, c.outbox, scheduleOutgoing = { id -> scheduleOutgoing(appContext, id) },
+                        io = Dispatchers.IO, onUnauthorized = { resetQuietly(session) },
+                    )
                 }
                 DevicesViewModel::class.java -> DevicesViewModel(c.api, session)
                 PairingViewModel::class.java -> PairingViewModel(c.api, c.config, onUnauthorized = { session.reset() })

@@ -1,5 +1,6 @@
 package app.mjolnir.desktop.ui
 
+import app.mjolnir.client.RelayUrls
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -56,7 +57,7 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     var showSend by remember { mutableStateOf(false) }
     var showPair by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(config.relayUrl.isBlank()) }
+    var showSettings by remember { mutableStateOf(RelayUrls.normalize(config.relayUrl) == null) }
 
     LaunchedEffect(Unit) {
         c.notifications.collect { trayState.sendNotification(Notification("Mjolnir", it)) }

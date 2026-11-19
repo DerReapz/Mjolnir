@@ -112,7 +112,8 @@ fun Route.pairingRoutes(deps: RelayDeps) {
 
         webSocket("/v1/ws") {
             val me = call.me()
-            hub.add(me.deviceId, this)
+            val sink = WebSocketSink(this)
+            hub.add(me.deviceId, sink)
             val heartbeat = launch {
                 while (true) {
                     delay(deps.heartbeatMs)
@@ -123,7 +124,7 @@ fun Route.pairingRoutes(deps: RelayDeps) {
                 for (frame in incoming) { /* client frames are ignored; the channel is server-push */ }
             } finally {
                 heartbeat.cancel()
-                hub.remove(me.deviceId, this)
+                hub.remove(me.deviceId, sink)
             }
         }
     }

@@ -13,6 +13,17 @@ class FilesTest {
         assertEquals("file", safeFileName("")); assertEquals("file", safeFileName("..."))
         val long = safeFileName("x".repeat(300) + ".pdf"); assertEquals(200, long.length); assertTrue(long.endsWith(".pdf"))
     }
+    @Test fun longMultiByteNamesFitIn240Utf8Bytes() {
+        val cjk = safeFileName("写".repeat(150) + ".jpg") // 450 bytes
+        assertTrue(cjk.toByteArray(Charsets.UTF_8).size <= 240, "${cjk.toByteArray().size}"); assertTrue(cjk.endsWith(".jpg"))
+        assertEquals("写".repeat(78) + ".jpg", cjk)
+        val emoji = safeFileName("\uD83D\uDE00".repeat(100) + ".png") // 400 bytes, surrogate pairs
+        assertTrue(emoji.toByteArray(Charsets.UTF_8).size <= 240); assertTrue(emoji.endsWith(".png"))
+        assertEquals("\uD83D\uDE00".repeat(59) + ".png", emoji)
+        assertEquals("a".repeat(200), safeFileName("a".repeat(200))) // ASCII under both caps is untouched
+        val noExt = safeFileName("é".repeat(190)) // 380 bytes, no extension
+        assertEquals("é".repeat(120), noExt)
+    }
     @Test fun relativePathsStayRelativeAndSafe() {
         assertEquals("Photos/2024/a.jpg", safeRelativePath("Photos/2024/a.jpg"))
         assertEquals("Windows/System32/x.dll", safeRelativePath("..\\..\\Windows\\System32\\x.dll"))

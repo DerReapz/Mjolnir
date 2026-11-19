@@ -119,27 +119,77 @@ class OutboxTest {
         assertEquals(1, ob.pending().size)
     }
 
-    // R8: the PC acked before the lost response reached us, so the relay forgot the file ids → INVALID means Done.
-    @Test fun invalidAfterAmbiguousSendFailureCountsAsDone() = runTest {
+    // The relay keeps acked files as tombstones, so a retry after a lost response is ALREADY_SENT, never INVALID.
+    @Test fun lostResponseThenRecipientAckedThenRetryIsDone() = runTest {
+        var calls = 0
+        api.onSend = { if (++calls == 1) throw fail(RelayErrorKind.SERVER) else throw fail(RelayErrorKind.ALREADY_SENT) }
+        val ob = outbox(); ob.enqueue(item(upload("a", 5)))
+        assertEquals(OutboxResult.Retry, ob.process("o1"))
+        val ref = ob.get("o1")!!.files.single().ref!!
+        assertTrue(ob.process("o1") is OutboxResult.Done)
+        assertEquals(listOf(ref.id, ref.id), api.sent.map { it.fileIds.single() })   // the same ids, no re-upload
+        assertEquals(1, api.uploads.size)
+        assertTrue(ob.pending().isEmpty()); assertEquals(listOf("a"), cleaned)
+    }
+
+    // INVALID is a real failure, even after an ambiguous earlier send.
+    @Test fun invalidAfterAmbiguousSendFails() = runTest {
         var calls = 0
         api.onSend = { if (++calls == 1) throw fail(RelayErrorKind.SERVER) else throw fail(RelayErrorKind.INVALID) }
         val ob = outbox(); ob.enqueue(item(upload("a", 5)))
         assertEquals(OutboxResult.Retry, ob.process("o1"))
-        assertTrue(ob.get("o1")!!.sendAttempted)
-        assertTrue(ob.process("o1") is OutboxResult.Done)
-        assertTrue(ob.pending().isEmpty()); assertEquals(listOf("a"), cleaned)
-    }
-
-    // R8: INVALID with no earlier ambiguous send (or only a definite RATE_LIMITED refusal) is a real failure.
-    @Test fun invalidWithoutAmbiguousSendFails() = runTest {
-        var calls = 0
-        api.onSend = { if (++calls == 1) throw fail(RelayErrorKind.RATE_LIMITED) else throw fail(RelayErrorKind.INVALID) }
-        val ob = outbox(); ob.enqueue(item(upload("a", 5)))
-        assertEquals(OutboxResult.Retry, ob.process("o1"))
-        assertEquals(false, ob.get("o1")!!.sendAttempted)
         val result = ob.process("o1")
         assertTrue(result is OutboxResult.Failed); assertEquals(RelayErrorKind.INVALID, result.kind)
+        assertEquals(null, result.message)
         assertTrue(cleaned.isEmpty())
+    }
+
+    // The relay dropped the unsent files (1 h TTL) between upload and send: upload again, then send the fresh ids.
+    @Test fun filesExpiredBeforeSendAreUploadedAgain() = runTest {
+        var calls = 0
+        api.onSend = { if (++calls == 1) throw fail(RelayErrorKind.NETWORK) else app.mjolnir.protocol.SendResponse("del-1") }
+        val ob = outbox(); ob.enqueue(item(upload("a", 10), upload("b", 3)))
+        assertEquals(OutboxResult.Retry, ob.process("o1"))
+        val stale = ob.get("o1")!!.files.map { it.ref!!.id }
+        stale.forEach(api::expire)
+        val result = ob.process("o1")
+        assertTrue(result is OutboxResult.Done)
+        val fresh = api.sent.last().fileIds
+        assertEquals(2, fresh.size); assertTrue(fresh.none { it in stale })
+        assertEquals(data.getValue("a").toList(), api.blobs.getValue(fresh[0]).toList())
+        assertEquals(data.getValue("b").toList(), api.blobs.getValue(fresh[1]).toList())
+    }
+
+    // Only the expired file is uploaded again; a file the relay still holds keeps its ref.
+    @Test fun onlyExpiredFilesAreUploadedAgain() = runTest {
+        var calls = 0
+        api.onSend = { if (++calls == 1) throw fail(RelayErrorKind.NETWORK) else app.mjolnir.protocol.SendResponse("del-1") }
+        val ob = outbox(); ob.enqueue(item(upload("a", 10), upload("b", 3)))
+        ob.process("o1")
+        val (a, b) = ob.get("o1")!!.files.map { it.ref!!.id }
+        api.expire(a)
+        assertTrue(ob.process("o1") is OutboxResult.Done)
+        val sentIds = api.sent.last().fileIds
+        assertTrue(sentIds[0] != a); assertEquals(b, sentIds[1])
+        assertEquals(listOf(b, sentIds[0]), api.uploads.map { it.id })   // b kept; a uploaded again
+    }
+
+    @Test fun outboxWrittenByAnOlderVersionStillLoads() {
+        storeFile.writeText(
+            """[{"id":"o1","to":"pc1","toName":"Desk PC","files":[],"createdAtEpochMs":1,"sendAttempted":true}]"""
+        )
+        assertEquals("o1", outbox().pending().single().id)
+    }
+
+    // Item 7: a local read failure says which file instead of "the relay had a problem".
+    @Test fun unreadableFileFailureCarriesItsMessage() = runTest {
+        val src = File(dir, "photo.jpg").apply { writeBytes(ByteArray(8)) }
+        val ob = Outbox(store(), { api }, open = { u, off -> File(u.path).inputStream().apply { skip(off) } })
+        ob.enqueue(item(LocalUpload(src.absolutePath, "Pics/photo.jpg", "image/jpeg", 8)))
+        src.delete()
+        val result = ob.process("o1")
+        assertTrue(result is OutboxResult.Failed)
+        assertEquals("Couldn't read photo.jpg", result.message)
     }
 
     // R14: a source file that vanished is a permanent failure, not an endless NETWORK retry.

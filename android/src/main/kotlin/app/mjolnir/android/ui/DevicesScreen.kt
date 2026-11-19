@@ -1,5 +1,7 @@
 package app.mjolnir.android.ui
 
+import app.mjolnir.android.session.resetQuietly
+import java.io.IOException
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -57,11 +59,13 @@ class DevicesViewModel(private val api: RelayApi, private val session: PhoneSess
                 block()
             } catch (e: RelayException) {
                 if (e.kind == RelayErrorKind.UNAUTHORIZED) {
-                    try { session.reset() } catch (_: RelayException) { }
+                    resetQuietly(session)
                     _state.value = DevicesUi(notice = Messages.RESET)
                 } else {
                     _state.value = _state.value.copy(notice = "$failure: ${Messages.failureReason(e.kind, "your PC")}.")
                 }
+            } catch (e: IOException) { // the phone's own config couldn't be read or written
+                _state.value = _state.value.copy(notice = "$failure.")
             }
         }
     }

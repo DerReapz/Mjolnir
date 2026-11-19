@@ -59,6 +59,11 @@ class FakeRelayApi : RelayApi {
         return FileRef(id, safeFileName(path), bytes.size.toLong(), "application/octet-stream", sha256(bytes), path)
     }
 
+    /** Forgets finished file or open session [id], as the relay does after its unsent-file / session TTL. */
+    fun expire(id: String) {
+        blobs.remove(id); uploads.removeAll { it.id == id }; sessions.remove(id)
+    }
+
     private fun sha256(bytes: ByteArray) =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
@@ -110,7 +115,8 @@ class FakeRelayApi : RelayApi {
     override suspend fun uploadStatus(uploadId: String): UploadStatus {
         check()
         sessions[uploadId]?.let { return UploadStatus(uploadId, it.size().toLong()) }
-        val ref = uploads.find { it.id == uploadId } ?: throw RelayException(RelayErrorKind.NOT_FOUND, "not_found")
+        val ref = uploads.find { it.id == uploadId }?.takeIf { it.id in blobs }
+            ?: throw RelayException(RelayErrorKind.NOT_FOUND, "not_found")
         return UploadStatus(uploadId, ref.sizeBytes, ref)
     }
 

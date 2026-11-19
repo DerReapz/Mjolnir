@@ -7,6 +7,9 @@ import app.mjolnir.protocol.safeRelativePath
 import app.mjolnir.protocol.topFolder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.io.File
@@ -86,7 +89,12 @@ suspend fun uploadResumable(
                 val len = minOf(chunkBytes, size - pos).toInt()
                 val chunk = buf ?: ByteArray(minOf(chunkBytes, size).toInt()).also { buf = it }
                 val read = withContext(Dispatchers.IO) { readFailure(state) { stream.readNBytes(chunk, 0, len) } }
-                if (read < len) throw RelayException(RelayErrorKind.INVALID, "${state.path} is shorter than $size bytes")
+                if (read < len) {
+                    val name = state.relativePath.substringAfterLast('/')
+                    throw RelayException(
+                        RelayErrorKind.INVALID, "${state.path} is shorter than $size bytes", userMessage = Messages.unreadable(name),
+                    )
+                }
                 status = api.uploadChunk(uploadId, pos, size, chunk, len)
                 if (status.file != null) break
                 if (status.offset != pos + len) {
@@ -114,7 +122,8 @@ private inline fun <T> readFailure(file: LocalUpload, block: () -> T): T = try {
 } catch (e: RelayException) {
     throw e // a deliberate classification by the caller's open()
 } catch (e: Exception) {
-    throw RelayException(RelayErrorKind.INVALID, Messages.unreadable(file.relativePath.substringAfterLast('/')), e)
+    val message = Messages.unreadable(file.relativePath.substringAfterLast('/'))
+    throw RelayException(RelayErrorKind.INVALID, message, e, userMessage = message)
 }
 
 /** Where a received file goes: [folder] (null = the save root, else e.g. "Photos (1)/2024") and its [fileName]. */
@@ -124,7 +133,8 @@ data class ReceivedPath(val folder: String?, val fileName: String)
  * Downloads every ref into `stagingDir/<id>.part` (resuming existing parts), and only once all of them are present
  * and hash-checked publishes them in order, giving each distinct top folder one unique name via [folderExists].
  * Chosen names are compared case-insensitively ("Photos" and "photos" never share a folder on Windows).
- * [publish] is last so it can be a trailing lambda. Each part is deleted after its publish. On failure the exception is rethrown and parts are kept for resume.
+ * [publish] is last so it can be a trailing lambda. Each part is deleted after its publish. Once publishing starts it
+ * is not cancellable: every file is published, then a pending cancellation is rethrown. On failure the exception is rethrown and parts are kept for resume.
  */
 suspend fun <T> receiveFiles(
     api: RelayApi,
@@ -147,14 +157,20 @@ suspend fun <T> receiveFiles(
             folderExists(c) || folderNames.values.any { it.equals(c, ignoreCase = true) }
         }
     }
-    return refs.indices.map { i ->
-        val segments = paths[i].split('/')
-        val folder = if (segments.size < 2) null
-        else (listOf(folderNames.getValue(segments.first())) + segments.subList(1, segments.size - 1)).joinToString("/")
-        val result = publish(parts[i], ReceivedPath(folder, segments.last()), refs[i])
-        withContext(Dispatchers.IO) { parts[i].delete() }
-        result
+    // Everything is downloaded: publish all of it even if cancelled meanwhile, else a partial folder stays behind and
+    // the redelivery publishes the whole folder again next to it. A cancellation is rethrown once all are published.
+    val results = withContext(NonCancellable) {
+        refs.indices.map { i ->
+            val segments = paths[i].split('/')
+            val folder = if (segments.size < 2) null
+            else (listOf(folderNames.getValue(segments.first())) + segments.subList(1, segments.size - 1)).joinToString("/")
+            val result = publish(parts[i], ReceivedPath(folder, segments.last()), refs[i])
+            withContext(Dispatchers.IO) { parts[i].delete() }
+            result
+        }
     }
+    currentCoroutineContext().ensureActive()
+    return results
 }
 
 /** A file in [dir] named [name], or "name (1).ext", "name (2).ext", … when taken. */

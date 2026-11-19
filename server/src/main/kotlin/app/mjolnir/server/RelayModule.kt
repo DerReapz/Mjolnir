@@ -6,6 +6,8 @@ import app.mjolnir.protocol.MjolnirJson
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.request.header
 import io.ktor.server.application.install
 import io.ktor.server.auth.Authentication
 import io.ktor.server.auth.bearer
@@ -57,14 +59,18 @@ data class RelayDeps(
     val store: Store,
     val clock: Clock = SystemClock,
     val limits: RelayLimits = RelayLimits(),
-    val hub: SessionHub = SessionHub(),
+    /** Scope for fire-and-forget work such as push pings and event pushes; cancelled when the application stops. */
+    val asyncScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    val hub: SessionHub = SessionHub(asyncScope),
     val files: FileStorage = FileStorage(createTempDirectory("mjolnir-files").toFile()),
     val push: PushSender = NoopPushSender,
-    /** Scope for fire-and-forget work such as push pings; cancelled when the application stops. */
-    val asyncScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
     /** Interval of the `{"type":"heartbeat"}` text frame sent on every open WebSocket (clients use it to detect dead links). */
     val heartbeatMs: Long = 30_000,
 )
+
+/** The registration rate-limit key: Fly's own `Fly-Client-IP` when present, else the last proxy hop. */
+internal fun clientIp(call: ApplicationCall): String =
+    call.request.header("Fly-Client-IP")?.trim()?.takeIf { it.isNotEmpty() } ?: call.request.origin.remoteHost
 
 data class DevicePrincipal(val deviceId: String, val name: String, val kind: DeviceKind)
 
@@ -74,7 +80,8 @@ val SendLimit = RateLimitName("send")
 
 fun Application.relayModule(deps: RelayDeps) {
     install(ContentNegotiation) { json(MjolnirJson) }
-    install(XForwardedHeaders)
+    // Only the last X-Forwarded-For hop is added by our own proxy; earlier entries are whatever the client sent.
+    install(XForwardedHeaders) { useLastProxy() }
     install(RequestBodyLimit) {
         // JSON bodies are capped at 1 MiB. Upload chunks are exempt: the PUT handler itself reads at most the
         // Content-Range length (≤ UPLOAD_CHUNK_BYTES, else 400) and rejects any extra byte.
@@ -109,7 +116,7 @@ fun Application.relayModule(deps: RelayDeps) {
     install(RateLimit) {
         register(RegisterLimit) {
             rateLimiter(limit = deps.limits.registrationsPerHourPerIp, refillPeriod = 1.hours)
-            requestKey { call -> call.request.origin.remoteHost }
+            requestKey { call -> clientIp(call) }
         }
         register(ClaimLimit) {
             rateLimiter(limit = deps.limits.claimsPerMinute, refillPeriod = 1.minutes)

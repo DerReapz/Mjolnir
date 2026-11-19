@@ -17,7 +17,13 @@ import java.io.File
 
 enum class RelayErrorKind { UNAUTHORIZED, NOT_PAIRED, INVALID, NOT_FOUND, RATE_LIMITED, TOO_LARGE, STORAGE_FULL, ALREADY_SENT, SERVER, NETWORK }
 
-class RelayException(val kind: RelayErrorKind, message: String, cause: Throwable? = null) : Exception(message, cause)
+/** [userMessage], when set, is a ready-made reason for the user (e.g. "Couldn't read a.jpg") that beats the kind's generic one. */
+class RelayException(
+    val kind: RelayErrorKind,
+    message: String,
+    cause: Throwable? = null,
+    val userMessage: String? = null,
+) : Exception(message, cause)
 
 interface RelayApi {
     suspend fun register(name: String, kind: DeviceKind): RegisterResponse

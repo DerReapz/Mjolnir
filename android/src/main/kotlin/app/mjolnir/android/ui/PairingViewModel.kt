@@ -1,5 +1,6 @@
 package app.mjolnir.android.ui
 
+import kotlinx.coroutines.CancellationException
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.mjolnir.android.data.PhoneConfig
@@ -64,8 +65,12 @@ class PairingViewModel(
     private suspend fun resetAfterUnauthorized() {
         try {
             onUnauthorized()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: RelayException) {
             // The user sees the reset message either way; registration is retried on the next use.
+        } catch (e: IOException) {
+            // The config couldn't be written; same as above.
         }
     }
 

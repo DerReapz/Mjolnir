@@ -1,5 +1,8 @@
 package app.mjolnir.android.session
 
+import kotlinx.coroutines.CancellationException
+import java.io.IOException
+import app.mjolnir.client.RelayException
 import app.mjolnir.android.data.PhoneConfig
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.RelayApi
@@ -9,6 +12,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+
+/**
+ * [PhoneSession.reset] after the relay rejected this device's token, never throwing: a failure to register again
+ * (relay or local config I/O) is left for the next use. Cancellation still propagates.
+ */
+suspend fun resetQuietly(session: PhoneSession) {
+    try {
+        session.reset()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: RelayException) {
+    } catch (e: IOException) {
+    }
+}
 
 /** Registers this phone with the relay (once) and re-registers after a reset. */
 class PhoneSession(private val api: RelayApi, private val config: JsonFileStore<PhoneConfig>,
