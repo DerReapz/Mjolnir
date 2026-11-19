@@ -206,7 +206,7 @@ internal fun SendContent(
                             .dashedBorder(if (pasteFocused) Forge.accent else Forge.dashed, 10.dp)
                             .background(Forge.surface, Forge.inputShape).padding(10.dp),
                         interactionSource = pasteInteraction,
-                        textStyle = MaterialTheme.typography.bodyMedium,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = Forge.text), // BasicTextField ignores LocalContentColor
                         cursorBrush = SolidColor(Forge.accent),
                         minLines = 3, maxLines = 6,
                     )

@@ -148,6 +148,7 @@ fun SettingsScreen(vm: SettingsViewModel, modifier: Modifier = Modifier) {
 
         OutlinedTextField(
             shape = FieldShape,
+            colors = forgeFieldColors(),
             value = url,
             onValueChange = { url = it },
             label = { Text("Relay URL") },
@@ -159,6 +160,7 @@ fun SettingsScreen(vm: SettingsViewModel, modifier: Modifier = Modifier) {
 
         OutlinedTextField(
             shape = FieldShape,
+            colors = forgeFieldColors(),
             value = name,
             onValueChange = { name = it },
             label = { Text("Device name") },

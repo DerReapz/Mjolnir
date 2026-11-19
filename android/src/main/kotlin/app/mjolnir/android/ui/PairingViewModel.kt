@@ -97,8 +97,8 @@ class PairingViewModel(
         showCode()
     }
 
-    /** Shows a new code and, while it is showing, listens for the device that enters it. */
-    fun showCode() {
+    /** Shows a new code (with [error], if given) and, while it is showing, listens for the device that enters it. */
+    fun showCode(error: String? = null) {
         stopAll()
         job = viewModelScope.launch {
             val created = try {
@@ -110,7 +110,7 @@ class PairingViewModel(
             }
             // Count down from the moment the code arrived (like the desktop), so a skewed phone clock can't shorten it.
             val remaining = Limits.PAIRING_TTL_MS
-            _state.value = PairingUi.Showing(created.code, clock() + remaining)
+            _state.value = PairingUi.Showing(created.code, clock() + remaining, error = error)
             // Events are collected only while the code shows; running out of time ends the collection.
             var failed = false
             val finished = withTimeoutOrNull(remaining) {
@@ -145,14 +145,16 @@ class PairingViewModel(
             try {
                 if (accept) api.acceptPairing(pairingId) else api.rejectPairing(pairingId)
             } catch (e: RelayException) {
-                if (e.kind == RelayErrorKind.UNAUTHORIZED) {
-                    job?.cancel()
-                    _state.value = PairingUi.Failed(Messages.RESET)
-                    resetAfterUnauthorized()
-                } else if (e.kind == RelayErrorKind.NOT_FOUND) {
-                    _state.updateShowing(s) { it.copy(request = null, error = "That request is gone. Ask them to enter the code again.") }
-                } else {
-                    _state.updateShowing(s) { it.copy(error = failure(e)) } // the request stays, so the user can answer again
+                when {
+                    e.kind == RelayErrorKind.UNAUTHORIZED -> {
+                        job?.cancel()
+                        _state.value = PairingUi.Failed(Messages.RESET)
+                        resetAfterUnauthorized()
+                    }
+                    // The request is gone, or a reject didn't reach the relay: the claim used the code up either way.
+                    e.kind == RelayErrorKind.NOT_FOUND -> showFreshCode(s, error = "That request is gone.")
+                    !accept -> showFreshCode(s)
+                    else -> _state.updateShowing(s) { it.copy(error = failure(e)) } // the request stays, so the user can answer again
                 }
                 return@launch
             }
@@ -161,12 +163,23 @@ class PairingViewModel(
                 rememberTargetIfNone(request.deviceId)
                 _state.value = PairingUi.Paired(request.name)
                 onPaired()
-            } else if (_state.value.let { it is PairingUi.Showing && it.code == s.code }) {
-                // The claim used the code up, so a rejected request leaves it dead: show a fresh one.
-                answerJob = null // this job; showCode must not cancel it mid-way
-                showCode()
+            } else {
+                showFreshCode(s) // a rejected request leaves the claimed code dead
             }
         }
+    }
+
+    /**
+     * Replaces the used-up code [from] with a new one, if it still shows. Called from the answer job: the request is
+     * cleared first, so a tap in the gap can't answer it again, and the job itself is left running.
+     */
+    private fun showFreshCode(from: PairingUi.Showing, error: String? = null) {
+        val now = _state.value
+        if (now !is PairingUi.Showing || now.code != from.code) return
+        _state.value = now.copy(request = null)
+        requestId = null
+        answerJob = null // this job; showCode must not cancel it mid-way
+        showCode(error)
     }
 
     /** Leaves the show-a-code view: stops listening and goes back to the start. Never replaces Paired. */

@@ -115,6 +115,25 @@ class AppControllerTest {
         scope.cancel()
     }
 
+    // a failed accept can't be retried (the dialog is gone) and the claim used the code up: ask for a fresh one
+    @Test fun failedAcceptAsksForAFreshCode() = runTest {
+        val fake = FakeRelayApi()
+        val api = object : RelayApi by fake {
+            override suspend fun acceptPairing(pairingId: String) = throw RelayException(RelayErrorKind.NETWORK, "offline")
+        }
+        val (c, scope) = controller(api)
+        val notes = notes(c)
+        var fresh = 0
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.codeUsedUp.collect { fresh++ } }
+        val req = RelayEvent.PairRequested("pair-1", phone)
+        c.onPairRequested(req)
+        c.answerPairRequest(req, accept = true); runCurrent()
+        assertEquals(1, fresh)
+        assertEquals(listOf("Couldn't answer the request: no connection."), notes)
+        assertNull(c.config.value.lastPhoneId)
+        scope.cancel()
+    }
+
     // changing the relay runs in the controller's scope, clears credentials and registers on the new relay
     @Test fun changeRelayReRegistersOnNewRelay() = runTest {
         val fake = FakeRelayApi(); val urls = mutableListOf<String>()

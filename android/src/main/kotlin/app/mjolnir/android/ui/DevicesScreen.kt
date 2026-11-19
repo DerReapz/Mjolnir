@@ -156,6 +156,7 @@ private fun PairingFlow(vm: PairingViewModel, state: PairingUi, onDone: () -> Un
                 val error = (state as? PairingUi.Entering)?.error
                 OutlinedTextField(
                     shape = FieldShape,
+                    colors = forgeFieldColors(),
                     value = code,
                     onValueChange = { code = it },
                     label = { Text("Code from the other device") },

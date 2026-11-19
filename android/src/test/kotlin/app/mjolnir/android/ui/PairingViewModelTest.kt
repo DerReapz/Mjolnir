@@ -90,6 +90,63 @@ class PairingViewModelTest {
         assertEquals(pc, (vm.state.value as PairingUi.Showing).request)
     }
 
+    /** A view model whose accept or reject fails with [kind]; everything else goes to the fake. */
+    private fun failingAnswers(kind: RelayErrorKind, accept: Boolean = true, reject: Boolean = true): PairingViewModel {
+        val failing = object : app.mjolnir.client.RelayApi by api {
+            override suspend fun acceptPairing(pairingId: String) { if (accept) throw RelayException(kind, "x") else api.acceptPairing(pairingId) }
+            override suspend fun rejectPairing(pairingId: String) { if (reject) throw RelayException(kind, "x") else api.rejectPairing(pairingId) }
+        }
+        return PairingViewModel(failing, config, io = main.dispatcher, clock = { main.dispatcher.scheduler.currentTime }, onPaired = { pairedCalls++ })
+    }
+
+    private suspend fun TestScope.requestOn(v: PairingViewModel) {
+        api.pairingCodeResult = PairingCodeResponse("K7M2QX", 300_000)
+        v.showCode(); runCurrent()
+        api.events.emit(RelayEvent.PairRequested("p9", phone)); runCurrent()
+        api.pairingCodeResult = PairingCodeResponse("N3W2CD", 300_000)
+    }
+
+    @Test fun rejectNotFoundShowsAFreshCode() = runTest {
+        val v = failingAnswers(RelayErrorKind.NOT_FOUND)
+        requestOn(v)
+        v.answer(false); runCurrent()
+        assertEquals(PairingUi.Showing("N3W2CD", 300_000, null, "That request is gone."), v.state.value)
+        assertEquals(1, api.events.subscriptionCount.value)
+    }
+
+    @Test fun acceptNotFoundShowsAFreshCode() = runTest {
+        val v = failingAnswers(RelayErrorKind.NOT_FOUND)
+        requestOn(v)
+        v.answer(true); runCurrent()
+        assertEquals(PairingUi.Showing("N3W2CD", 300_000, null, "That request is gone."), v.state.value)
+        assertEquals(0, pairedCalls)
+    }
+
+    @Test fun failedRejectStillShowsAFreshCode() = runTest {
+        val v = failingAnswers(RelayErrorKind.NETWORK)
+        requestOn(v)
+        v.answer(false); runCurrent()
+        assertEquals(PairingUi.Showing("N3W2CD", 300_000, null), v.state.value)
+    }
+
+    @Test fun acceptAfterRejectCannotActOnTheRejectedRequest() = runTest {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val slowCodes = object : app.mjolnir.client.RelayApi by api {
+            override suspend fun createPairingCode(): PairingCodeResponse {
+                if (api.rejected.isNotEmpty()) gate.await()
+                return api.createPairingCode()
+            }
+        }
+        val v = PairingViewModel(slowCodes, config, io = main.dispatcher, clock = { main.dispatcher.scheduler.currentTime })
+        requestOn(v)
+        v.answer(false); runCurrent() // the new code is still on its way
+        assertNull((v.state.value as PairingUi.Showing).request)
+        v.answer(true); runCurrent()
+        assertEquals(emptyList(), api.accepted)
+        gate.complete(Unit); runCurrent()
+        assertEquals("N3W2CD", (v.state.value as PairingUi.Showing).code)
+    }
+
     @Test fun countdownStartsWhenTheCodeArrivesNotFromTheRelayClock() = runTest {
         advanceTimeBy(5_000)
         api.pairingCodeResult = PairingCodeResponse("K7M2QX", 1_000) // the relay's clock is far behind this phone's

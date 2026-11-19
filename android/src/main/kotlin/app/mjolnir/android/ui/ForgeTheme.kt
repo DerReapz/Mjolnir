@@ -3,6 +3,8 @@ package app.mjolnir.android.ui
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -106,6 +108,14 @@ fun MjolnirTheme(content: @Composable () -> Unit) {
 /** Buttons use 10 dp corners, text fields 14 dp (cards are 12). */
 val ButtonShape = RoundedCornerShape(10.dp)
 val FieldShape = RoundedCornerShape(14.dp)
+
+/** Text field colours: a surface container with a border outline that turns accent while focused. */
+@Composable
+fun forgeFieldColors(): TextFieldColors = OutlinedTextFieldDefaults.colors(
+    focusedContainerColor = Forge.Surface, unfocusedContainerColor = Forge.Surface,
+    focusedBorderColor = Forge.Accent, unfocusedBorderColor = Forge.Border,
+    cursorColor = Forge.Accent,
+)
 
 /** A surface card, 12 dp radius, at least 56 dp tall. */
 @Composable

@@ -425,6 +425,8 @@ class AppController(
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
+            // The dialog is gone, so a failed accept can't be retried; the claim used the code up.
+            if (accept && e.kind != RelayErrorKind.UNAUTHORIZED) _codeUsedUp.tryEmit(Unit)
             notify(couldntAnswer(Messages.failureReason(e.kind, request.from.name)))
             return
         }

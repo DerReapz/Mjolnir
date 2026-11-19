@@ -86,7 +86,7 @@ object ForgeFonts {
 }
 
 private fun style(family: FontFamily, size: Int, spacing: Double = 0.0) =
-    TextStyle(fontFamily = family, fontWeight = FontWeight.Normal, fontSize = size.sp, letterSpacing = spacing.sp, color = Forge.text)
+    TextStyle(fontFamily = family, fontWeight = FontWeight.Normal, fontSize = size.sp, letterSpacing = spacing.sp)
 
 private fun forgeTypography() = Typography(
     displayLarge = style(ForgeFonts.grotesk700, 48), displayMedium = style(ForgeFonts.grotesk700, 40),
