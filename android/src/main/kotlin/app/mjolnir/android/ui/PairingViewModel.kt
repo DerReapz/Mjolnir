@@ -84,6 +84,12 @@ class PairingViewModel(
         }
     }
 
+    /** Shows a code unless one is already showing (e.g. after a rotation), so the view can resume. */
+    fun ensureShowing() {
+        if (_state.value is PairingUi.Showing && job?.isActive == true) return
+        showCode()
+    }
+
     /** Shows a new code and, while it is showing, listens for the device that enters it. */
     fun showCode() {
         stopAll()
@@ -98,7 +104,9 @@ class PairingViewModel(
             _state.value = PairingUi.Showing(created.code, created.expiresAtEpochMs)
             val remaining = (created.expiresAtEpochMs - clock()).coerceAtLeast(0)
             // Events are collected only while the code shows; running out of time ends the collection.
+            var failed = false
             val finished = withTimeoutOrNull(remaining) {
+              try {
                 api.events().collect { event ->
                     if (event is RelayEvent.PairRequested) {
                         _state.value.let { s ->
@@ -109,8 +117,13 @@ class PairingViewModel(
                         }
                     }
                 }
+              } catch (e: RelayException) {
+                failed = true
+                _state.value = PairingUi.Failed(failure(e))
+                if (e.kind == RelayErrorKind.UNAUTHORIZED) resetAfterUnauthorized()
+              }
             }
-            if (finished == null && _state.value is PairingUi.Showing) _state.value = PairingUi.Expired
+            if (!failed && finished == null && _state.value is PairingUi.Showing) _state.value = PairingUi.Expired
         }
     }
 
@@ -145,8 +158,10 @@ class PairingViewModel(
         }
     }
 
-    /** Leaves the show-a-code view: stops listening and goes back to the start. */
-    fun stopShowing() = restart()
+    /** Leaves the show-a-code view: stops listening and goes back to the start. Never replaces Paired. */
+    fun stopShowing() {
+        if (_state.value is PairingUi.Showing || _state.value is PairingUi.Expired || _state.value is PairingUi.Failed) restart()
+    }
 
     fun restart() {
         stopAll()

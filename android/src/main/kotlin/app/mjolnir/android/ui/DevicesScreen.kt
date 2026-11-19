@@ -30,6 +30,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.activity.compose.LocalActivity
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -82,7 +84,7 @@ class DevicesViewModel(private val api: RelayApi, private val session: PhoneSess
 fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Modifier = Modifier) {
     val state by vm.state.collectAsState()
     val pairingState by pairing.state.collectAsState()
-    var showPairing by remember { mutableStateOf(false) }
+    var showPairing by rememberSaveable { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<Peer?>(null) }
     LaunchedEffect(Unit) { vm.refresh() }
     LaunchedEffect(pairingState) { if (pairingState is PairingUi.Paired) vm.refresh() }
@@ -124,7 +126,7 @@ internal fun formatRemaining(ms: Long): String {
 
 @Composable
 private fun PairingFlow(vm: PairingViewModel, state: PairingUi, onDone: () -> Unit) {
-    var mode by remember { mutableStateOf(PairMode.CHOOSE) }
+    var mode by rememberSaveable { mutableStateOf(PairMode.CHOOSE) }
     var code by remember { mutableStateOf("") }
     when {
         state is PairingUi.Paired -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -169,8 +171,12 @@ private fun PairingFlow(vm: PairingViewModel, state: PairingUi, onDone: () -> Un
 /** The code-showing view. It listens for a request only while it is on screen. */
 @Composable
 private fun ShowCode(vm: PairingViewModel, state: PairingUi, onBack: () -> Unit) {
-    LaunchedEffect(Unit) { vm.showCode() }
-    DisposableEffect(Unit) { onDispose { vm.stopShowing() } }
+    LaunchedEffect(Unit) { vm.ensureShowing() } // resumes the code after a rotation
+    val activity = LocalActivity.current
+    DisposableEffect(Unit) {
+        // A rotation keeps the code and any pending request; leaving the view stops listening.
+        onDispose { if (activity?.isChangingConfigurations != true) vm.stopShowing() }
+    }
     var remaining by remember { mutableLongStateOf(0L) }
     val showing = state as? PairingUi.Showing
     LaunchedEffect(showing?.code) {

@@ -82,6 +82,33 @@ class PairingViewModelTest {
         assertEquals(pc, (vm.state.value as PairingUi.Showing).request)
     }
 
+    @Test fun stopShowingAfterPairedKeepsPaired() = runTest {
+        showing()
+        api.events.emit(RelayEvent.PairRequested("p9", phone)); runCurrent()
+        vm.answer(true); runCurrent()
+        vm.stopShowing(); runCurrent()
+        assertEquals(PairingUi.Paired("Pixel 6"), vm.state.value)
+        assertEquals(0, api.events.subscriptionCount.value)
+    }
+
+    @Test fun ensureShowingResumesInsteadOfRestarting() = runTest {
+        val first = showing()
+        api.events.emit(RelayEvent.PairRequested("p9", phone)); runCurrent()
+        vm.ensureShowing(); runCurrent()
+        assertEquals(first.copy(request = phone), vm.state.value)
+        assertEquals(1, api.events.subscriptionCount.value)
+    }
+
+    @Test fun eventsUnauthorizedResetsInsteadOfCrashing() = runTest {
+        val failing = object : app.mjolnir.client.RelayApi by api {
+            override fun events() = kotlinx.coroutines.flow.flow<RelayEvent> { throw RelayException(RelayErrorKind.UNAUTHORIZED, "x") }
+        }
+        val vm2 = PairingViewModel(failing, config, onUnauthorized = { onUnauthorizedCalls++ }, io = main.dispatcher, clock = { main.dispatcher.scheduler.currentTime })
+        vm2.showCode(); runCurrent()
+        assertEquals(1, onUnauthorizedCalls)
+        assertEquals(PairingUi.Failed(app.mjolnir.client.Messages.RESET), vm2.state.value)
+    }
+
     @Test fun leavingStopsListening() = runTest {
         showing()
         assertEquals(1, api.events.subscriptionCount.value)
