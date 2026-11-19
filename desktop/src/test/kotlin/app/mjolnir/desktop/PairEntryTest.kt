@@ -9,6 +9,7 @@ import kotlin.test.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -47,6 +48,26 @@ class PairEntryTest {
         assertNull(outcome) // the window's own await was cancelled; the claim itself finished
         assertEquals(listOf("Paired with Laptop"), notes) // window gone: tray notification
         assertEquals(listOf("Laptop"), paired)
+        scope.cancel()
+    }
+
+    // no relay configured: the failure still reaches deliver (or a notification), never silence
+    @Test fun noRelayClientStillReportsFailure() = runTest {
+        File(dir, "config.json").writeText("""{"relayUrl":"","deviceName":"PC"}""")
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        val c = AppController(dir, scope) { _, _ -> FakeRelayApi() }
+        val delivered = mutableListOf<ClaimOutcome>()
+        val r = async { c.pairWithCode("ABC234", deliver = { delivered += it; true }) {} }
+        runCurrent()
+        val expected = ClaimOutcome.Failed("Can't reach the relay. Check your connection.")
+        assertEquals(expected, r.await())
+        assertEquals(listOf<ClaimOutcome>(expected), delivered)
+
+        val notes = mutableListOf<String>()
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) { c.notifications.collect { notes += it } }
+        val r2 = async { c.pairWithCode("ABC234") {} }
+        runCurrent(); r2.await()
+        assertEquals(listOf(expected.message), notes)
         scope.cancel()
     }
 }

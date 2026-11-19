@@ -123,13 +123,18 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
                                     // The claim runs in the controller's scope; this scope only waits for its outcome.
                                     windowScope.launch {
                                         c.pairWithCode(input, deliver = { r ->
-                                            if (!windowOpen.get()) return@pairWithCode false
-                                            entry = when (r) {
-                                                is ClaimOutcome.Paired -> EntryStatus.Paired(r.peer.name)
-                                                is ClaimOutcome.Failed -> EntryStatus.Failed(r.message)
+                                            // On the UI thread, where dispose also runs: the check and the write cannot interleave with a close.
+                                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                                if (!windowOpen.get()) return@withContext false
+                                                entry = when (r) {
+                                                    is ClaimOutcome.Paired -> EntryStatus.Paired(r.peer.name)
+                                                    is ClaimOutcome.Failed -> EntryStatus.Failed(r.message)
+                                                }
+                                                true
                                             }
-                                            true
-                                        }) { if (windowOpen.get()) entry = EntryStatus.Waiting(it.name) }
+                                        }) { peer ->
+                                            javax.swing.SwingUtilities.invokeLater { if (windowOpen.get()) entry = EntryStatus.Waiting(peer.name) }
+                                        }
                                     }
                                 }) { Text("Pair") }
                             }

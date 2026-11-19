@@ -344,13 +344,14 @@ class AppController(
     suspend fun pairWithCode(
         input: String,
         /** Shows the outcome in the pair window; returns false if that window is gone (then it becomes a tray notification). */
-        deliver: (ClaimOutcome) -> Boolean = { false },
+        deliver: suspend (ClaimOutcome) -> Boolean = { false },
         onWaiting: (Peer) -> Unit,
     ): ClaimOutcome {
-        val api = api() ?: return ClaimOutcome.Failed("Can't reach the relay. Check your connection.")
+        val api = api()
         val token = store.read().token
         return scope.async {
-            val outcome = claimAndAwait(api, input, onWaiting)
+            val outcome = if (api == null) ClaimOutcome.Failed("Can't reach the relay. Check your connection.")
+            else claimAndAwait(api, input, onWaiting)
             when (outcome) {
                 is ClaimOutcome.Paired -> {
                     if (_config.value.lastPhoneId == null) updateConfig { it.copy(lastPhoneId = outcome.peer.deviceId) }
