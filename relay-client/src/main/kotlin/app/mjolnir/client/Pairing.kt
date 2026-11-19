@@ -16,6 +16,10 @@ sealed interface ClaimOutcome {
 
 private const val EXPIRED = "The code expired. Get a new code on the other device."
 private const val GENERIC = "Something went wrong. Try again."
+private const val NOT_FOUND = "Code not found or expired. Get a new code on the other device."
+
+/** The relay's error for claiming a code this device created itself. */
+private const val OWN_CODE_ERROR = "own_code"
 
 /**
  * Claims a pairing code typed on this device, then waits for the code's owner to accept. Shared by Android and desktop.
@@ -34,9 +38,12 @@ suspend fun claimAndAwait(
     } catch (e: RelayException) {
         return when (e.kind) {
             RelayErrorKind.UNAUTHORIZED -> ClaimOutcome.Failed(Messages.RESET, RelayErrorKind.UNAUTHORIZED)
-            RelayErrorKind.NOT_FOUND -> ClaimOutcome.Failed("Code not found or expired. Get a new code on the other device.")
+            RelayErrorKind.NOT_FOUND -> ClaimOutcome.Failed(NOT_FOUND)
             RelayErrorKind.RATE_LIMITED -> ClaimOutcome.Failed("Too many tries. Wait a minute.")
-            RelayErrorKind.INVALID -> ClaimOutcome.Failed("That's this device's own code. Enter it on the other device.")
+            // Only the relay's own_code error means this device's code; any other bad request is treated as not found.
+            RelayErrorKind.INVALID -> ClaimOutcome.Failed(
+                if (e.message == OWN_CODE_ERROR) "That's this device's own code. Enter it on the other device." else NOT_FOUND,
+            )
             RelayErrorKind.NETWORK -> ClaimOutcome.Failed("Can't reach the relay. Check your connection.")
             else -> ClaimOutcome.Failed(GENERIC)
         }

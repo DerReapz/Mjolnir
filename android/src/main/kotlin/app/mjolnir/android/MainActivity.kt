@@ -67,7 +67,11 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 DevicesViewModel::class.java -> DevicesViewModel(c.api, session)
-                PairingViewModel::class.java -> PairingViewModel(c.api, c.config, onUnauthorized = { session.reset() })
+                PairingViewModel::class.java -> {
+                    // The ThrowViewModel lives in the same store, so holding it (not the Activity) is safe.
+                    val throwing = throwVm
+                    PairingViewModel(c.api, c.config, onUnauthorized = { session.reset() }, onPaired = { throwing.refreshTargets() })
+                }
                 CaughtViewModel::class.java -> CaughtViewModel(c.caught, c.caughtChanged, Dispatchers.IO)
                 SettingsViewModel::class.java -> SettingsViewModel(c.api, c.config, session, onRelayUrlChanged = c::invalidateRelayClient)
                 else -> error("Unknown ViewModel $modelClass")

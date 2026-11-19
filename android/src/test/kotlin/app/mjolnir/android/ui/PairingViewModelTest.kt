@@ -38,12 +38,13 @@ class PairingViewModelTest {
     private lateinit var vm: PairingViewModel
     private var onUnauthorizedCalls = 0
     private var unauthorizedFailure: Exception? = null
+    private var pairedCalls = 0
 
     @Before fun setUp() {
         config = JsonFileStore(File(tmp.root, "config.json"), serializer<PhoneConfig>()) {
             PhoneConfig("https://relay.example", "d", "t", "Pixel 8")
         }
-        vm = PairingViewModel(api, config, onUnauthorized = { onUnauthorizedCalls++; unauthorizedFailure?.let { throw it } }, io = main.dispatcher, clock = { main.dispatcher.scheduler.currentTime })
+        vm = PairingViewModel(api, config, onUnauthorized = { onUnauthorizedCalls++; unauthorizedFailure?.let { throw it } }, io = main.dispatcher, clock = { main.dispatcher.scheduler.currentTime }, onPaired = { pairedCalls++ })
         api.onClaim = { ClaimResponse("p1", pc) }
     }
 
@@ -67,19 +68,37 @@ class PairingViewModelTest {
         assertEquals(listOf("p9"), api.accepted)
         assertEquals(PairingUi.Paired("Pixel 6"), vm.state.value)
         assertEquals("ph1", config.read().targetPcId)
+        assertEquals(1, pairedCalls)
         vm.answer(true); runCurrent()
         assertEquals(listOf("p9"), api.accepted)
+        assertEquals(1, pairedCalls)
     }
 
     @Test fun rejectGoesBackToShowing() = runTest {
         showing()
         api.events.emit(RelayEvent.PairRequested("p9", phone)); runCurrent()
+        // The claimed code is used up: rejecting shows a new one.
+        api.pairingCodeResult = PairingCodeResponse("N3W2CD", 300_000)
+        advanceTimeBy(1_000)
         vm.answer(false); vm.answer(false); runCurrent()
         assertEquals(listOf("p9"), api.rejected)
-        assertEquals(PairingUi.Showing("K7M2QX", 300_000, null), vm.state.value)
+        assertEquals(PairingUi.Showing("N3W2CD", 301_000, null), vm.state.value)
         assertNull(config.read().targetPcId)
+        assertEquals(0, pairedCalls)
+        assertEquals(1, api.events.subscriptionCount.value)
         api.events.emit(RelayEvent.PairRequested("p10", pc)); runCurrent() // still listening
         assertEquals(pc, (vm.state.value as PairingUi.Showing).request)
+    }
+
+    @Test fun countdownStartsWhenTheCodeArrivesNotFromTheRelayClock() = runTest {
+        advanceTimeBy(5_000)
+        api.pairingCodeResult = PairingCodeResponse("K7M2QX", 1_000) // the relay's clock is far behind this phone's
+        vm.showCode(); runCurrent()
+        assertEquals(PairingUi.Showing("K7M2QX", 305_000, null), vm.state.value)
+        advanceTimeBy(299_000)
+        assertEquals("K7M2QX", (vm.state.value as PairingUi.Showing).code)
+        advanceTimeBy(2_000)
+        assertEquals(PairingUi.Expired, vm.state.value)
     }
 
     @Test fun stopShowingAfterPairedKeepsPaired() = runTest {
@@ -124,7 +143,7 @@ class PairingViewModelTest {
         assertEquals(0, api.events.subscriptionCount.value)
         api.pairingCodeResult = PairingCodeResponse("N3W2CD", 700_000)
         vm.showCode(); runCurrent()
-        assertEquals(PairingUi.Showing("N3W2CD", 700_000, null), vm.state.value)
+        assertEquals(PairingUi.Showing("N3W2CD", 600_001, null), vm.state.value) // counted from now, not the relay's time
         assertEquals(1, api.events.subscriptionCount.value)
     }
 
@@ -170,6 +189,7 @@ class PairingViewModelTest {
         advanceTimeBy(4_001)
         assertEquals(PairingUi.Paired("DESKTOP-4F2K"), vm.state.value)
         assertEquals("pc1", config.read().targetPcId)
+        assertEquals(1, pairedCalls)
     }
 
     @Test fun acceptedKeepsExistingTarget() = runTest {
@@ -185,6 +205,7 @@ class PairingViewModelTest {
         vm.submit("k7m-2qx"); advanceTimeBy(2_001)
         assertEquals(PairingUi.Failed("DESKTOP-4F2K said no."), vm.state.value)
         assertNull(config.read().targetPcId)
+        assertEquals(0, pairedCalls)
     }
 
     @Test fun expiredShowsFailure() = runTest {

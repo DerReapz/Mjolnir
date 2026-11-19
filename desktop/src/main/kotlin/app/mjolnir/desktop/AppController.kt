@@ -77,6 +77,10 @@ class AppController(
     private val _pairedWith = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val pairedWith: SharedFlow<String> = _pairedWith
 
+    /** Emits when this device's shown code was used up by a request it rejected, so the pair window shows a fresh one. */
+    private val _codeUsedUp = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+    val codeUsedUp: SharedFlow<Unit> = _codeUsedUp
+
     private val _notifications = MutableSharedFlow<String>(extraBufferCapacity = 32)
     val notifications: SharedFlow<String> = _notifications
 
@@ -328,12 +332,12 @@ class AppController(
     /** Tray action: sends the links found in the clipboard to the last device. */
     fun sendClipboard() {
         scope.launch {
-            val phoneId = _config.value.lastPhoneId ?: return@launch
-            val phone = _peers.value.find { it.deviceId == phoneId } ?: Peer(phoneId, lastPhoneName(), app.mjolnir.protocol.DeviceKind.PC)
+            val targetId = _config.value.lastPhoneId ?: return@launch // the last target, PC or phone
+            val target = _peers.value.find { it.deviceId == targetId } ?: Peer(targetId, lastPhoneName(), app.mjolnir.protocol.DeviceKind.PC)
             val text = withContext(Dispatchers.Main) { clipboardText() }
             val urls = extractUrls(text ?: "")
             if (urls.isEmpty()) return@launch notify(Messages.NO_LINKS)
-            notify(send(phone, urls.map { Tab(it) }, emptyList()).message)
+            notify(send(target, urls.map { Tab(it) }, emptyList()).message)
         }
     }
 
@@ -410,7 +414,12 @@ class AppController(
             if (accept) {
                 api.acceptPairing(request.pairingId)
             } else {
-                api.rejectPairing(request.pairingId)
+                // The claim used the code up whether or not the reject reaches the relay: show a fresh one.
+                try {
+                    api.rejectPairing(request.pairingId)
+                } finally {
+                    _codeUsedUp.tryEmit(Unit)
+                }
                 return
             }
         } catch (e: CancellationException) {
@@ -419,6 +428,7 @@ class AppController(
             notify(couldntAnswer(Messages.failureReason(e.kind, request.from.name)))
             return
         }
+        if (_config.value.lastPhoneId == null) updateConfig { it.copy(lastPhoneId = request.from.deviceId) }
         refreshPeers()
         val name = request.from.name
         if (_pairedWith.subscriptionCount.value > 0) _pairedWith.emit(name) else notify("Paired with $name")

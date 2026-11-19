@@ -20,7 +20,7 @@ fun createSendToShortcutCommand(lnk: File, exe: String): List<String> {
     return listOf(
         "powershell", "-NoProfile", "-NonInteractive", "-Command",
         "\$s=(New-Object -ComObject WScript.Shell).CreateShortcut('$l');\$s.TargetPath='$e';\$s.IconLocation='$e,0';" +
-            "\$s.Description='Send to a phone with Mjolnir';\$s.Save()",
+            "\$s.Description='Send to a device with Mjolnir';\$s.Save()",
     )
 }
 

@@ -20,7 +20,7 @@ Needs two devices of each kind where noted (use a second PC or phone, or the fak
 - **PC to PC:** on PC A choose *Pair a device…* and show a code; on PC B enter it. PC A shows `Pair with {name}?`; *Accept* gives `Paired with {name}` on both. PC B does not link before PC A accepts. Send a tab and a file from each PC to the other.
 - **Phone to phone:** on phone A open Devices, *Pair a device*, *Show a code* (shows `XXX-XXX` and `Expires in m:ss`); on phone B choose *Enter a code*. Phone A shows `Pair with {name}?`; *Accept* gives `Paired with {name}`. Throw a link and a file from each phone to the other; the throw target list labels it `Phone`.
 - **PC and phone, both directions:** show a code on the phone and enter it on the PC, then the reverse.
-- **Reject and expiry:** *Reject* returns the code-showing device to its code and the other shows `{name} said no.`; leave a code until it expires and check *Get a new code*. Double-tap *Accept* and check the device is paired once.
+- **Reject and expiry:** *Reject* shows a fresh code on the code-showing device and the other shows `{name} said no.`; leave a code until it expires and check *Get a new code*. Double-tap *Accept* and check the device is paired once.
 - **Leaving the view:** leave the Show a code view on the phone, then enter its code from another device; no dialog appears and the entering side eventually reports the code expired.
 
 ## Extra points the code reviews asked to confirm on a device

@@ -3,10 +3,8 @@ package app.mjolnir.desktop.ui
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.heightIn
@@ -21,6 +19,8 @@ import androidx.compose.material3.Text
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -133,7 +133,7 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
 
     Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(760.dp, 560.dp)), title = "Send to device", icon = icon) {
         val awtWindow = window
-        // Explorer's *Send to*: add the paths (scanned off the UI thread), aim at the last phone, and come to the front.
+        // Explorer's *Send to*: add the paths (scanned off the UI thread), aim at the last target, and come to the front.
         LaunchedEffect(Unit) {
             for (files in handoff) {
                 c.config.value.lastPhoneId?.let { state = state.selectTarget(it) }
@@ -197,10 +197,15 @@ internal fun SendContent(
             Column(Modifier.weight(1f).fillMaxHeight().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Paste or drop links, files and folders", style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted))
+                    val pasteInteraction = remember { MutableInteractionSource() }
+                    val pasteFocused by pasteInteraction.collectIsFocusedAsState()
                     BasicTextField(
                         value = state.text,
                         onValueChange = { onState(state.withText(it)) },
-                        modifier = Modifier.fillMaxWidth().dashedBorder(Forge.dashed, 10.dp).background(Forge.surface, Forge.inputShape).padding(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                            .dashedBorder(if (pasteFocused) Forge.accent else Forge.dashed, 10.dp)
+                            .background(Forge.surface, Forge.inputShape).padding(10.dp),
+                        interactionSource = pasteInteraction,
                         textStyle = MaterialTheme.typography.bodyMedium,
                         cursorBrush = SolidColor(Forge.accent),
                         minLines = 3, maxLines = 6,

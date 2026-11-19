@@ -10,6 +10,7 @@ import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.claimAndAwait
+import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.PairingCode
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.RelayEvent
@@ -28,7 +29,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 sealed interface PairingUi {
     data class Entering(val error: String? = null) : PairingUi
     data class Waiting(val name: String) : PairingUi
-    /** This device shows [code]; [request] is the device that entered it and waits for our answer. */
+    /**
+     * This device shows [code] until [expiresAtEpochMs] (this device's clock: the code's lifetime counted from when it
+     * arrived); [request] is the device that entered it and waits for our answer.
+     */
     data class Showing(
         val code: String,
         val expiresAtEpochMs: Long,
@@ -54,6 +58,8 @@ class PairingViewModel(
     private val onUnauthorized: suspend () -> Unit = {},
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Called each time this device pairs (on either side), so the throw targets can be reloaded. */
+    private val onPaired: () -> Unit = {},
 ) : ViewModel() {
     private val _state = MutableStateFlow<PairingUi>(PairingUi.Entering())
     val state: StateFlow<PairingUi> = _state.asStateFlow()
@@ -74,6 +80,7 @@ class PairingViewModel(
                 is ClaimOutcome.Paired -> {
                     rememberTargetIfNone(outcome.peer.deviceId)
                     _state.value = PairingUi.Paired(outcome.peer.name)
+                    onPaired()
                 }
                 is ClaimOutcome.Failed -> {
                     if (outcome.kind == RelayErrorKind.UNAUTHORIZED) resetAfterUnauthorized()
@@ -101,8 +108,9 @@ class PairingViewModel(
                 if (e.kind == RelayErrorKind.UNAUTHORIZED) resetAfterUnauthorized()
                 return@launch
             }
-            _state.value = PairingUi.Showing(created.code, created.expiresAtEpochMs)
-            val remaining = (created.expiresAtEpochMs - clock()).coerceAtLeast(0)
+            // Count down from the moment the code arrived (like the desktop), so a skewed phone clock can't shorten it.
+            val remaining = Limits.PAIRING_TTL_MS
+            _state.value = PairingUi.Showing(created.code, clock() + remaining)
             // Events are collected only while the code shows; running out of time ends the collection.
             var failed = false
             val finished = withTimeoutOrNull(remaining) {
@@ -152,8 +160,11 @@ class PairingViewModel(
                 job?.cancel()
                 rememberTargetIfNone(request.deviceId)
                 _state.value = PairingUi.Paired(request.name)
-            } else {
-                _state.updateShowing(s) { it.copy(request = null, error = null) }
+                onPaired()
+            } else if (_state.value.let { it is PairingUi.Showing && it.code == s.code }) {
+                // The claim used the code up, so a rejected request leaves it dead: show a fresh one.
+                answerJob = null // this job; showCode must not cancel it mid-way
+                showCode()
             }
         }
     }

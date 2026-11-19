@@ -88,7 +88,7 @@ The PC app is a tray app for Windows 10/11 (x64), packaged as an MSI.
 
 1. Get the MSI: download the `mjolnir-msi` artifact from the latest `windows` CI run, or build it on Windows with `./gradlew :desktop:packageMsi` (output in `desktop/build/compose/binaries/main/msi/`). To bake a default relay URL into the build, add `-Pmjolnir.relayUrl=https://<app>.fly.dev`.
 2. Run the MSI. It installs for the current user only (no admin rights needed) and adds Mjolnir to the Start menu.
-3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray; click it to open *Send to phone…*. The tray menu also has *Pair a device…*, *Paired devices…*, *Open received files* and *Settings…*.
+3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray; click it to open *Send to device…*. The tray menu also has *Pair a device…*, *Paired devices…*, *Open received files* and *Settings…*.
 4. Received files are saved to `Downloads\Mjolnir` (changeable in Settings). Tick *Start Mjolnir when I sign in to Windows* in Settings to start it automatically.
 
 Mjolnir adds itself to Explorer's *Send to* menu (right-click files or folders → *Send to* → *Mjolnir*; on Windows 11 it is under *Show more options*). The selection opens in the Send window of the running Mjolnir, or starts it. Untick *Show Mjolnir in Explorer's Send to menu* in Settings to remove the entry.

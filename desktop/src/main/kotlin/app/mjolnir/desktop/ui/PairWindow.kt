@@ -5,9 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.rememberCoroutineScope
 import app.mjolnir.client.ClaimOutcome
 import kotlinx.coroutines.launch
@@ -24,11 +22,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.painter.Painter
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.rememberWindowState
 import app.mjolnir.client.Messages
@@ -89,6 +84,9 @@ fun PairWindow(c: AppController, icon: Painter, onClose: () -> Unit) {
             if (remaining <= 0) break
             delay(250)
         }
+    }
+    LaunchedEffect(Unit) {
+        c.codeUsedUp.collect { generation++ } // a rejected request used the code up: get a fresh one
     }
     LaunchedEffect(Unit) {
         c.pairedWith.collect {

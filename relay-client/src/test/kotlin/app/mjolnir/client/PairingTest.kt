@@ -20,7 +20,7 @@ import kotlinx.coroutines.test.runTest
 class PairingTest {
     private val owner = Peer("owner", "Pixel 8", DeviceKind.PHONE)
     private fun fake() = FakeRelayApi().apply { onClaim = { app.mjolnir.protocol.ClaimResponse("pair-1", owner) } }
-    private fun failing(kind: RelayErrorKind) = fake().apply { onClaim = { throw RelayException(kind, "x") } }
+    private fun failing(kind: RelayErrorKind, message: String = "x") = fake().apply { onClaim = { throw RelayException(kind, message) } }
 
     @Test fun badFormat() = runTest {
         val r = claimAndAwait(fake(), "12", {})
@@ -41,7 +41,14 @@ class PairingTest {
     @Test fun ownCode() = runTest {
         assertEquals(
             ClaimOutcome.Failed("That's this device's own code. Enter it on the other device."),
-            claimAndAwait(failing(RelayErrorKind.INVALID), "ABC234", {}),
+            claimAndAwait(failing(RelayErrorKind.INVALID, "own_code"), "ABC234", {}),
+        )
+    }
+
+    @Test fun otherInvalidIsNotOwnCode() = runTest {
+        assertEquals(
+            ClaimOutcome.Failed("Code not found or expired. Get a new code on the other device."),
+            claimAndAwait(failing(RelayErrorKind.INVALID, "HTTP 400"), "ABC234", {}),
         )
     }
 

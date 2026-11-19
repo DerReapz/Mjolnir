@@ -3,7 +3,12 @@ package app.mjolnir.android.ui
 import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
@@ -104,7 +109,10 @@ fun ThrowScreen(
     // accelerometer fallback starts when the screen is visible).
     val detector = remember { ThrowDetector(state.sensitivity) }
     LaunchedEffect(state.sensitivity) { detector.sensitivity = state.sensitivity }
-    LaunchedEffect(Unit) { vm.refreshSensitivity() } // entering the screen: Settings may have changed it
+    LaunchedEffect(Unit) { // entering the screen: Settings may have changed the sensitivity, Devices the pairings
+        vm.refreshSensitivity()
+        vm.refreshTargets()
+    }
     val currentVm by rememberUpdatedState(vm)
     val sensor = remember {
         lateinit var s: FlickSensor
@@ -253,8 +261,18 @@ internal fun OutgoingCard(title: String, status: OutgoingStatus, onSendNow: () -
             Text(title, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, maxLines = 1)
             if (status.waitingForWifi && !status.running) TextButton(onClick = onSendNow) { Text("Send now") }
         }
-        Box(Modifier.fillMaxWidth().height(6.dp).background(Forge.Border, RoundedCornerShape(3.dp))) {
-            Box(Modifier.fillMaxWidth((status.progressPct ?: 0).coerceIn(0, 100) / 100f).height(6.dp).background(Forge.Accent, RoundedCornerShape(3.dp)))
+        val pct = status.progressPct
+        if (status.running && pct == null) {
+            // Sending, but no percentage yet: an indeterminate bar. The label below carries the status for TalkBack.
+            LinearProgressIndicator(
+                Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).clearAndSetSemantics {},
+                color = Forge.Accent, trackColor = Forge.Border, strokeCap = StrokeCap.Round, gapSize = 0.dp,
+            )
+        } else {
+            // Queued or waiting for Wi-Fi shows an empty track.
+            Box(Modifier.fillMaxWidth().height(6.dp).background(Forge.Border, RoundedCornerShape(3.dp)).clearAndSetSemantics {}) {
+                Box(Modifier.fillMaxWidth((pct ?: 0).coerceIn(0, 100) / 100f).height(6.dp).background(Forge.Accent, RoundedCornerShape(3.dp)))
+            }
         }
         Text(status.label, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1)
     }
@@ -272,7 +290,10 @@ private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: 
     val current = state.targets.find { it.deviceId == state.targetId } ?: state.targets.first()
     Box {
         TargetCard(current.name, kindLabel(current), onClick = { open = true })
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+        DropdownMenu(
+            expanded = open, onDismissRequest = { open = false },
+            containerColor = Forge.Surface, border = BorderStroke(1.dp, Forge.Border),
+        ) {
             for (device in state.targets) {
                 DropdownMenuItem(text = { Text("${device.name} (${kindLabel(device)})") }, onClick = { vm.selectTarget(device.deviceId); open = false })
             }
@@ -344,11 +365,11 @@ internal fun TrayCard(title: String, subtitle: String?, checked: Boolean, onTogg
             .heightIn(min = 56.dp)
             .background(Forge.Surface, RoundedCornerShape(12.dp))
             .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onToggle)
+            .toggleable(value = checked, role = Role.Checkbox, onValueChange = { onToggle() }) // one target for TalkBack
             .padding(horizontal = 4.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = checked, onCheckedChange = { onToggle() })
+        Checkbox(checked = checked, onCheckedChange = null)
         Column(Modifier.weight(1f).padding(start = 4.dp, end = 8.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis)
             subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis) }

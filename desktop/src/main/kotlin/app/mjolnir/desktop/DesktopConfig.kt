@@ -10,6 +10,7 @@ data class DesktopConfig(
     val deviceId: String? = null,
     val token: String? = null,
     val deviceName: String,
+    /** The last device sent to (PC or phone); the persisted key keeps its old name. */
     val lastPhoneId: String? = null,
     val launchAtLogin: Boolean = false,
     val saveDir: String? = null,

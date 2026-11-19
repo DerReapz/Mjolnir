@@ -79,6 +79,42 @@ class AppControllerTest {
         scope.cancel()
     }
 
+    // accepting with no target yet makes the new device the target; an existing target is kept
+    @Test fun acceptRemembersTheNewDeviceOnlyWhenNoTarget() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, scope) = controller(fake)
+        assertNull(c.config.value.lastPhoneId)
+        val req = RelayEvent.PairRequested("pair-1", phone)
+        c.onPairRequested(req)
+        c.answerPairRequest(req, accept = true); runCurrent()
+        assertEquals("ph", c.config.value.lastPhoneId)
+
+        val other = Peer("ph2", "Pixel 6", DeviceKind.PHONE)
+        val req2 = RelayEvent.PairRequested("pair-2", other)
+        c.onPairRequested(req2)
+        c.answerPairRequest(req2, accept = true); runCurrent()
+        assertEquals("ph", c.config.value.lastPhoneId)
+        scope.cancel()
+    }
+
+    // the claim used the code up, so a reject asks the pair window for a fresh one; an accept does not
+    @Test fun rejectAsksForAFreshCode() = runTest {
+        val fake = FakeRelayApi()
+        val (c, scope) = controller(fake)
+        var fresh = 0
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.codeUsedUp.collect { fresh++ } }
+        val req = RelayEvent.PairRequested("pair-1", phone)
+        c.onPairRequested(req)
+        c.answerPairRequest(req, accept = false); runCurrent()
+        assertEquals(listOf("pair-1"), fake.rejected)
+        assertEquals(1, fresh)
+        val req2 = RelayEvent.PairRequested("pair-2", phone)
+        c.onPairRequested(req2)
+        c.answerPairRequest(req2, accept = true); runCurrent()
+        assertEquals(1, fresh)
+        scope.cancel()
+    }
+
     // changing the relay runs in the controller's scope, clears credentials and registers on the new relay
     @Test fun changeRelayReRegistersOnNewRelay() = runTest {
         val fake = FakeRelayApi(); val urls = mutableListOf<String>()

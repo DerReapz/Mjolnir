@@ -25,7 +25,7 @@ class SendToShortcutTest {
             listOf(
                 "powershell", "-NoProfile", "-NonInteractive", "-Command",
                 "\$s=(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk.path}');\$s.TargetPath='$exe';" +
-                    "\$s.IconLocation='$exe,0';\$s.Description='Send to a phone with Mjolnir';\$s.Save()",
+                    "\$s.IconLocation='$exe,0';\$s.Description='Send to a device with Mjolnir';\$s.Save()",
             ),
             createSendToShortcutCommand(lnk, exe),
         )

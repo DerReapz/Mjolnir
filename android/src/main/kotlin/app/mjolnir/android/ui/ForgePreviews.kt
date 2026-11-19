@@ -37,6 +37,7 @@ private fun ThrowPreview() = Forged {
         TrayCard("report.pdf", "File · 2.4 MB", checked = false, onToggle = {})
         SectionLabel("On the way", Modifier.padding(top = 8.dp))
         OutgoingCard("12 files to Laptop", OutgoingStatus(running = true, progressPct = 45, currentName = "IMG_2041.jpg", waitingForWifi = false), onSendNow = {})
+        OutgoingCard("report.pdf to Laptop", OutgoingStatus(running = true, progressPct = null, currentName = null, waitingForWifi = false), onSendNow = {})
     }
     HammerDisc("Hold & flick to throw", enabled = true, armed = false, restAlpha = 1f, Modifier.padding(top = 16.dp))
 }
