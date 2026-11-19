@@ -11,7 +11,7 @@ Every automated test passes (server, relay-client, desktop, Android unit tests, 
 The step-by-step lists are in the plan (`docs/superpowers/plans/2026-11-18-mjolnir.md`):
 - **Windows tray app:** Task 13, Step 7 (14 checks)
 - **Explorer *Send to*:** Task 14, Step 5 (4 checks)
-- **Phone throw screen:** Task 16, Step 5 (12 checks); item 11 is confirmed in Task 19
+- **Phone throw screen:** Task 18, Step 5 (12 checks); item 11 is confirmed in Task 19
 - **Phone background throwing / Wi-Fi rule:** Task 19, Step 5 (6 checks)
 - **Phone receiving:** Task 20, Step 5 (7 checks)
 
