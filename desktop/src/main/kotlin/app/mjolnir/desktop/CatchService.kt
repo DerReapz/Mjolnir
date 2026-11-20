@@ -15,6 +15,8 @@ class CatchService(
     private val onConnected: suspend () -> Unit = {},
     /** True as soon as the events stream says it is connected, false when it drops or this service stops. */
     private val onConnectionChange: (Boolean) -> Unit = {},
+    /** Runs when the relay says [deviceId] is no longer paired (before the peer list is refreshed). */
+    private val onUnpaired: (deviceId: String) -> Unit = {},
 ) {
     /** Collects relay events until cancelled; RelayException(UNAUTHORIZED) and any drain failure propagate. */
     suspend fun run() {
@@ -32,7 +34,8 @@ class CatchService(
                 is RelayEvent.Disconnected -> onConnectionChange(false)
                 is RelayEvent.DeliveryArrived -> drain()
                 is RelayEvent.PairRequested -> onPairRequest(event)
-                is RelayEvent.Paired, is RelayEvent.Unpaired -> onPeersChanged()
+                is RelayEvent.Paired -> onPeersChanged()
+                is RelayEvent.Unpaired -> { onUnpaired(event.deviceId); onPeersChanged() }
             }
         }
     }

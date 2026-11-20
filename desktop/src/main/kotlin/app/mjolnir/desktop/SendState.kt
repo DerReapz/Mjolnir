@@ -27,8 +27,13 @@ data class SendState(
     val lastUsedId: String? = null,
     /** Key of the row shown in the preview: a URL or a top-level path (see [uploadUnitKey]). */
     val selectedRow: String? = null,
+    /** True while [AppController.sendSelected] runs; a second send is refused until it ends. */
+    val sending: Boolean = false,
 ) {
-    val groups: List<DestinationGroup> get() = groupDestinations(targets, lastUsedId)
+    val groups: List<DestinationGroup> get() = groups { it.name }
+
+    /** [targets] grouped and ordered by the name [nameOf] shows (the nickname, when there is one). */
+    fun groups(nameOf: (Peer) -> String): List<DestinationGroup> = groupDestinations(targets, lastUsedId, nameOf)
 
     fun selectRow(key: String): SendState = copy(selectedRow = key)
 

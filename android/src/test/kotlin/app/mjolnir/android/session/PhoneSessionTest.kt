@@ -46,4 +46,10 @@ class PhoneSessionTest {
         assertEquals(api.registerResult.token, config.read().token)
         assertEquals(1, api.registerCalls.size)
     }
+
+    @Test fun resetTellsTheAppSoItCanForgetPairingsNicknames() = runTest {
+        var resets = 0
+        PhoneSession(api, config(), onReset = { resets++ }).reset()
+        assertEquals(1, resets)
+    }
 }

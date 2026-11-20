@@ -88,8 +88,8 @@ The PC app is a tray app for Windows 10/11 (x64), packaged as an MSI.
 
 1. Get the MSI: download the `mjolnir-msi` artifact from the latest `windows` CI run, or build it on Windows with `./gradlew :desktop:packageMsi` (output in `desktop/build/compose/binaries/main/msi/`). To bake a default relay URL into the build, add `-Pmjolnir.relayUrl=https://<app>.fly.dev`.
 2. Run the MSI. It installs for the current user only (no admin rights needed) and adds Mjolnir to the Start menu.
-3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray. Double-click it, or choose *Open Mjolnir* from its menu, to open the main window.
-4. The tray menu is: *Open Mjolnir*, *Send to device…*, *Send clipboard to {name}*, *Open received files*, *Quit Mjolnir*.
+3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray. Click it (or double-click), or choose *Open Mjolnir* from its menu, to open the main window.
+4. The tray menu has *Open Mjolnir*, *Send to device…*, *Open received files* and *Quit Mjolnir*; *Send clipboard to {name}* joins it once you have sent to a device. Starting Mjolnir from the Start menu (also when it is already running) opens the main window; signing in to Windows starts it in the tray only.
 
 ### The main window
 
@@ -124,4 +124,4 @@ Settings and state live in `%APPDATA%\Mjolnir` (`config.json`, `seen.json`, `out
 .\scripts\fake-phone.ps1 -Inbox
 ```
 
-The hammer icon is the author's own artwork; `scripts/make-icons.py` generates the tray and app icons from it.
+The hammer icon is supplied by the project owner; `scripts/make-icons.py` generates the tray and app icons from it.

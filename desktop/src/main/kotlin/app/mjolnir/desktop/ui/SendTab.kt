@@ -89,7 +89,8 @@ private fun queueRows(state: SendState): List<QueueRow> =
 fun SendTabContent(
     state: SendState,
     nicknameOf: (Peer) -> String,
-    onState: (SendState) -> Unit,
+    /** Applies a change to the controller's current queue (not to the snapshot this was composed from). */
+    onUpdate: ((SendState) -> SendState) -> Unit,
     previews: Map<String, ItemPreview> = emptyMap(),
     sending: Boolean = false,
     onAddFiles: () -> Unit = {},
@@ -116,7 +117,7 @@ fun SendTabContent(
         ) {
             ForgeSectionLabel("Send to")
             if (state.targets.isEmpty()) ForgeTextButton("Pair a device…", onClick = onPair)
-            state.groups.forEach { group ->
+            state.groups(nicknameOf).forEach { group ->
                 group.title?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted)) }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     group.peers.forEach { peer ->
@@ -124,7 +125,7 @@ fun SendTabContent(
                         Column(
                             Modifier.widthIn(min = 170.dp, max = 260.dp).heightIn(min = 52.dp).clip(Forge.inputShape)
                                 .forgeCard(peer.deviceId == state.targetId)
-                                .clickable { onState(state.selectTarget(peer.deviceId)) }.padding(horizontal = 12.dp, vertical = 8.dp),
+                                .clickable { onUpdate { it.selectTarget(peer.deviceId) } }.padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.Center,
                         ) {
                             Text(nicknameOf(peer), style = TextStyle(fontFamily = ForgeFonts.inter600, fontSize = 14.sp, color = Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -153,11 +154,11 @@ fun SendTabContent(
                         QueueRowView(
                             row, previewFor(row), selected = row.key == state.selectedRow, checked = row.key in state.selected,
                             expanded = row.key in expanded,
-                            onSelect = { onState(state.selectRow(row.key)) },
-                            onCheck = { onState(state.toggle(row.key)) },
+                            onSelect = { onUpdate { it.selectRow(row.key) } },
+                            onCheck = { onUpdate { it.toggle(row.key) } },
                             onToggleExpanded = { expanded = if (row.key in expanded) expanded - row.key else expanded + row.key },
                             onRemove = (row as? QueueRow.UnitRow)?.let { unit ->
-                                { onState(unit.files.fold(state) { s, f -> s.removeFile(f.path) }.copy(notice = null)) }
+                                { onUpdate { cur -> unit.files.fold(cur) { s, f -> s.removeFile(f.path) }.copy(notice = null) } }
                             },
                         )
                     }

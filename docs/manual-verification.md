@@ -24,7 +24,7 @@ Needs two devices of each kind where noted (use a second PC or phone, or the fak
 - **Leaving the view:** leave the Show a code view on the phone, then enter its code from another device; no dialog appears and the entering side eventually reports the code expired.
 
 ## Extra points the code reviews asked to confirm on a device
-- **Start at sign-in:** the Run-key value is stored *quoted* (`"C:\…\Mjolnir.exe"`) so paths with spaces launch.
+- **Start at sign-in:** the Run-key value is stored *quoted* (`"C:\…\Mjolnir.exe" --background`) so paths with spaces launch; `--background` keeps the window closed at sign-in, while the Start menu shortcut (no flag) opens it, also when Mjolnir is already running.
 - **PC sleep:** after the PC sleeps and wakes, tabs thrown while it slept open on their own within about a minute (OkHttp ping + heartbeat).
 - **Share + rotate:** share a large file to the phone and rotate it during the import; the file still lands in the tray.
 - **Hammer animation:** the flying hammer starts exactly where the button's hammer is, and flies off the top of the screen.
@@ -35,8 +35,8 @@ Needs two devices of each kind where noted (use a second PC or phone, or the fak
 
 ## Main window
 Real-desktop checks that automated tests could not cover (Windows PC with a paired phone or the fake phone).
-- **Tray double-click:** double-clicking the tray icon opens the main window; so does *Open Mjolnir* in the tray menu.
-- **Tray menu:** it contains exactly *Open Mjolnir*, *Send to device…*, *Send clipboard to {name}*, *Open received files*, *Quit Mjolnir*.
+- **Tray click:** clicking (or double-clicking) the tray icon opens the main window; so does *Open Mjolnir* in the tray menu.
+- **Tray menu:** it contains *Open Mjolnir*, *Send to device…*, *Open received files* and *Quit Mjolnir*. *Send clipboard to {name}* appears between *Send to device…* and *Open received files* only once a device has been sent to.
 - **Close hides:** closing the window hides it to the tray and Mjolnir keeps receiving. With *Keep running in the tray when I close this window* off, closing quits Mjolnir.
 - **Paste and drop:** Ctrl+V pastes and drag-and-drop works anywhere in the window (not only on the drop area), for links, files and images.
 - **Second launch:** launching Mjolnir again, or Explorer *Send to* → *Mjolnir*, brings the existing window to the front on the Send tab with the items already added.

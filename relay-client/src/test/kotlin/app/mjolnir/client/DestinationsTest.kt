@@ -19,4 +19,10 @@ class DestinationsTest {
         val groups = groupDestinations(listOf(p("1", "Zed"), p("2", "bob"), p("3", "Amy")), "1")
         assertEquals(listOf("1", "3", "2"), groups.single().peers.map { it.deviceId })
     }
+
+    @Test fun sortsByTheShownNameWhenGiven() {
+        val shown = mapOf("1" to "Zed", "2" to "Amy", "3" to "Bob") // nicknames; real names sort the other way
+        val groups = groupDestinations(listOf(p("1", "Aaa"), p("2", "Bbb"), p("3", "Ccc")), null) { shown.getValue(it.deviceId) }
+        assertEquals(listOf("2", "3", "1"), groups.single().peers.map { it.deviceId })
+    }
 }

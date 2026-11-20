@@ -28,9 +28,9 @@ import androidx.compose.ui.window.Notification
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.rememberDialogState
 import androidx.compose.ui.window.rememberTrayState
-import app.mjolnir.desktop.ALREADY_RUNNING
 import app.mjolnir.desktop.AppController
 import app.mjolnir.desktop.MainTab
+import app.mjolnir.desktop.showWindowAtStart
 import app.mjolnir.protocol.RelayEvent
 import java.io.File
 import javax.imageio.ImageIO
@@ -43,7 +43,7 @@ fun loadIcon(): Painter {
 }
 
 @Composable
-fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = emptyFlow(), onQuit: () -> Unit) {
+fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = emptyFlow(), background: Boolean = false, onQuit: () -> Unit) {
     val trayState = rememberTrayState()
     val config by c.config.collectAsState()
     val peers by c.peers.collectAsState()
@@ -52,9 +52,9 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     val pairRequest by c.pairRequest.collectAsState()
     val icon = remember { loadIcon() }
 
-    // First run without a relay address: open straight on Settings.
+    // First run without a relay address: open straight on Settings. A Start menu launch shows the window; sign-in ([background]) stays in the tray.
     val needsRelay = remember { RelayUrls.normalize(config.relayUrl) == null }
-    var showMain by remember { mutableStateOf(needsRelay) }
+    var showMain by remember { mutableStateOf(showWindowAtStart(background, needsRelay)) }
     var mainTab by remember { mutableStateOf(if (needsRelay) MainTab.SETTINGS else MainTab.SEND) }
 
     LaunchedEffect(Unit) {
@@ -66,11 +66,7 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     // Paths from Explorer's *Send to* (this launch or a later one): the controller queues them and asks for the window.
     LaunchedEffect(Unit) {
         incoming.collect { paths ->
-            if (paths.isEmpty()) {
-                c.notify(ALREADY_RUNNING) // launched again with nothing to send
-            } else {
-                c.handOff(paths.map(::File))
-            }
+            c.onLaunchedAgain(paths.map(::File), mainTab) // launched again: with files, queue them; with none, show the window
         }
     }
 

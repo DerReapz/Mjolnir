@@ -63,7 +63,7 @@ class DesktopCatcher(
         }
         val now = System.currentTimeMillis()
         val entries = items.mapIndexed { i, (kind, title, target) ->
-            ReceivedEntry("${d.id}:$i", d.from.deviceId, displayName(d.from), now, kind, title, target)
+            ReceivedEntry("${d.id}:$i", d.from.deviceId, d.from.name, now, kind, title, target)
         }
         try {
             history.add(entries)

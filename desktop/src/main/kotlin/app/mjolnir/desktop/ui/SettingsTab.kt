@@ -62,7 +62,7 @@ fun relayFieldMessage(input: String, current: String, attempted: Boolean): Strin
     val normalized = RelayUrls.normalize(input)
     return when {
         normalized == null -> if (attempted || input.isNotBlank()) USE_HTTPS else null
-        current.isNotBlank() && normalized != current -> RELAY_CHANGE_WARNING
+        current.isNotBlank() && normalized != RelayUrls.normalize(current) -> RELAY_CHANGE_WARNING
         else -> null
     }
 }

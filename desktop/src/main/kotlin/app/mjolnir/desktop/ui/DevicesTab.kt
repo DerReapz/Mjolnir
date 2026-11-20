@@ -81,7 +81,7 @@ fun DevicesTab(c: AppController, openPairing: Boolean = false, onPairingOpened: 
 
     Box(Modifier.fillMaxSize()) {
         DevicesTabContent(
-            groups = groupDestinations(peers, config.lastPhoneId), nicknames = nicknames,
+            groups = groupDestinations(peers, config.lastPhoneId) { nicknames.nicknameOr(it.deviceId, it.name) }, nicknames = nicknames,
             onRename = { renaming = it }, onUnpair = { c.startUnpair(it) }, onPair = { pairing = true },
             pairPanel = if (pairing) ({ PairPanel(c, onClose = { pairing = false }) }) else null,
         )
@@ -118,7 +118,7 @@ fun DevicesTabContent(
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             for (group in groups) {
                 group.title?.let { title -> item(key = "group:${group.key}") { ForgeSectionLabel(title) } }
-                items(group.peers, key = { it.deviceId }) { peer ->
+                items(group.peers, key = { "${group.key}:${it.deviceId}" }) { peer ->
                     val nickname = nicknames[peer.deviceId]
                     Row(
                         Modifier.fillMaxWidth().heightIn(min = 64.dp).forgeCard(selected = false).padding(horizontal = 14.dp, vertical = 8.dp),

@@ -95,7 +95,7 @@ class AppContainer(context: Context) {
     val api: RelayApi = SwitchingRelayApi(::currentClient)
 
     /** The one registration guard for the whole app. */
-    val session = PhoneSession(api, config)
+    val session = PhoneSession(api, config, onReset = nicknames::clear)
 
     /** Call after the relay URL was written to [config]; the next call builds a client for the new address. */
     fun invalidateRelayClient() = synchronized(clientLock) { cachedUrl = null }

@@ -92,7 +92,6 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
     val nicknames by c.nicknames.changes.collectAsState()
     val relayStatus by c.relayStatus.collectAsState()
     var pairOnOpen by remember { mutableStateOf(false) } // the Send tab's *Pair a device* opens Devices with pairing started
-    var sending by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val previews = remember { mutableStateMapOf<String, ItemPreview>() }
 
@@ -127,9 +126,10 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
         object : DragAndDropTarget {
             override fun onDrop(event: DragAndDropEvent): Boolean = when (val data = event.dragData()) {
                 is DragData.FilesList -> {
+                    onTab(MainTab.SEND) // the queue is on the Send tab: show where the drop went
                     addFiles(data.readFiles().mapNotNull { runCatching { File(URI(it)) }.getOrNull() }); true
                 }
-                is DragData.Text -> { addText(data.readText()); true }
+                is DragData.Text -> { onTab(MainTab.SEND); addText(data.readText()); true }
                 else -> false
             }
         }
@@ -159,8 +159,8 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
                             state = send,
                             nicknameOf = { peer -> nicknames.nicknameOr(peer.deviceId, peer.name) }, // reads the flow so renames recompose
                             previews = previews,
-                            sending = sending,
-                            onState = { next -> c.updateSend { next } },
+                            sending = send.sending,
+                            onUpdate = c::updateSend,
                             onAddFiles = {
                                 val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
                                 dialog.isVisible = true
@@ -171,11 +171,7 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
                                 if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) addFiles(listOf(chooser.selectedFile))
                             },
                             onPair = { pairOnOpen = true; onTab(MainTab.DEVICES) },
-                            onSend = {
-                                sending = true
-                                // Runs in the controller's scope, so closing this window cannot cancel it.
-                                c.sendSelected().invokeOnCompletion { sending = false }
-                            },
+                            onSend = { c.sendSelected() }, // runs in the controller's scope, so closing this window cannot cancel it
                             onOpen = ::openPreview,
                             onShowInFolder = ::showPreviewInFolder,
                         )

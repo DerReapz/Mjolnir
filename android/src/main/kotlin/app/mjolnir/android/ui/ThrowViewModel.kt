@@ -43,8 +43,12 @@ sealed interface ThrowPhase {
 data class ThrowUiState(
     val tray: List<TrayItem> = emptyList(),
     val selected: Set<String> = emptySet(),
-    /** Paired devices, each carrying the name to show (the nickname when one is set). */
+    /** Paired devices with their real names; show them through [nameOf] (the nickname when one is set). */
     val targets: List<Peer> = emptyList(),
+    /** Private nicknames by device id. */
+    val nicknames: Map<String, String> = emptyMap(),
+    /** The device thrown to last (remembered in settings); it leads the selector. Not the current selection, so tapping does not reshuffle. */
+    val lastUsedId: String? = null,
     val targetId: String? = null,
     val phase: ThrowPhase = ThrowPhase.Idle,
     val notice: String? = null,
@@ -52,7 +56,11 @@ data class ThrowUiState(
     val sensitivity: Sensitivity = Sensitivity.MEDIUM,
 ) {
     /** [targets] grouped for the selector; a single group has no title. */
-    val groups: List<DestinationGroup> get() = groupDestinations(targets, targetId)
+    val groups: List<DestinationGroup> get() = groupDestinations(targets, lastUsedId, ::nameOf)
+
+    /** The name to show for [peer]: its nickname, else its real name. */
+    fun nameOf(peer: Peer): String = nicknames[peer.deviceId] ?: peer.name
+
     val canThrow: Boolean get() = targetId != null && selected.isNotEmpty() && phase == ThrowPhase.Idle
 }
 
@@ -73,8 +81,6 @@ class ThrowViewModel(
 ) : ViewModel() {
     private val _state = MutableStateFlow(ThrowUiState())
 
-    /** Paired devices with their real names; [ThrowUiState.targets] shows them under their nicknames. */
-    private var peers: List<Peer> = emptyList()
     val state: StateFlow<ThrowUiState> = _state.asStateFlow()
 
     /** Serializes store writes so they land in the order they were made. */
@@ -89,7 +95,7 @@ class ThrowViewModel(
 
     init {
         viewModelScope.launch {
-            nicknames.changes.collect { _state.update { s -> s.copy(targets = shown(peers)) } }
+            nicknames.changes.collect { shown -> _state.update { s -> s.copy(nicknames = shown) } }
         }
         viewModelScope.launch {
             val stored = try {
@@ -184,8 +190,6 @@ class ThrowViewModel(
         }
     }
 
-    private fun shown(peers: List<Peer>) = peers.map { it.copy(name = nicknames.displayName(it)) }
-
     /** Loads every paired device (PC or phone) and picks the target: current, remembered, or the first. */
     fun refreshTargets() {
         viewModelScope.launch {
@@ -199,11 +203,10 @@ class ThrowViewModel(
             } catch (e: IOException) {
                 null
             }
-            this@ThrowViewModel.peers = peers
             val ids = peers.mapTo(HashSet()) { it.deviceId }
             _state.update { s ->
                 val target = s.targetId?.takeIf { it in ids } ?: remembered?.takeIf { it in ids } ?: peers.firstOrNull()?.deviceId
-                s.copy(targets = shown(peers), targetId = target)
+                s.copy(targets = peers, targetId = target, lastUsedId = remembered)
             }
         }
     }
@@ -267,6 +270,7 @@ class ThrowViewModel(
     private suspend fun throwSelected() {
         val s = _state.value
         val pc = s.targets.find { it.deviceId == s.targetId } ?: return
+        val shown = s.nameOf(pc) // for messages; the queued item keeps the real name (pc.name)
         val chosen = s.tray.filter { it.id in s.selected }
         val links = chosen.filterIsInstance<TrayItem.Link>()
         val fileItems = chosen.filter { it !is TrayItem.Link }
@@ -277,7 +281,7 @@ class ThrowViewModel(
             val outcome = sendInBatches(api, pc.deviceId, links.map { it.tab })
             val sentUrls = outcome.sentTabs.mapTo(HashSet()) { it.url }
             links.filter { it.tab.url in sentUrls }.mapTo(gone) { it.id }
-            if (outcome.sentTabs.isNotEmpty()) parts += Messages.thrown(outcome.sentTabs.size, 0, pc.name)
+            if (outcome.sentTabs.isNotEmpty()) parts += Messages.thrown(outcome.sentTabs.size, 0, shown)
             outcome.error?.let { error ->
                 if (error.kind == RelayErrorKind.UNAUTHORIZED) {
                     parts += Messages.RESET
@@ -289,7 +293,7 @@ class ThrowViewModel(
                         // Registering again failed; the app registers on its next start.
                     }
                 } else {
-                    parts += Messages.notThrown(Messages.failureReason(error.kind, pc.name))
+                    parts += Messages.notThrown(Messages.failureReason(error.kind, shown))
                 }
             }
         }
@@ -299,7 +303,7 @@ class ThrowViewModel(
             var enqueueFailed = false
             for (group in groupForOutbox(fileItems)) {
                 val uploads = group.flatMap { it.toUploads() }
-                val item = OutgoingFiles(UUID.randomUUID().toString(), pc.deviceId, peers.find { it.deviceId == pc.deviceId }?.name ?: pc.name, uploads,
+                val item = OutgoingFiles(UUID.randomUUID().toString(), pc.deviceId, pc.name, uploads,
                     createdAtEpochMs = System.currentTimeMillis())
                 try {
                     withContext(io) { outbox.enqueue(item) }
@@ -311,7 +315,7 @@ class ThrowViewModel(
                 group.mapTo(gone) { it.id }
                 queuedFiles += uploads.size
             }
-            if (queuedFiles > 0) parts += Messages.queued(queuedFiles, pc.name)
+            if (queuedFiles > 0) parts += Messages.queued(queuedFiles, shown)
             if (enqueueFailed) parts += Messages.notThrown("this phone couldn't queue the files")
         }
 

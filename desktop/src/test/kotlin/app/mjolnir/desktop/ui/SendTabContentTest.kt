@@ -44,12 +44,12 @@ class SendTabContentTest {
     }
 
     @Test fun sendButtonNamesTarget() = runComposeUiTest {
-        setContent { MjolnirTheme { SendTabContent(queued(), nicknameOf = { it.name }, previews = mapOf(photo.path to photoPreview), onState = {}) } }
+        setContent { MjolnirTheme { SendTabContent(queued(), nicknameOf = { it.name }, previews = mapOf(photo.path to photoPreview), onUpdate = {}) } }
         onNodeWithText("Send to Samsung Fold 3").assertIsEnabled()
     }
 
     @Test fun disabledWithNothingSelected() = runComposeUiTest {
-        setContent { MjolnirTheme { SendTabContent(queued(selected = false), nicknameOf = { it.name }, onState = {}) } }
+        setContent { MjolnirTheme { SendTabContent(queued(selected = false), nicknameOf = { it.name }, onUpdate = {}) } }
         onNodeWithText("Send to Samsung Fold 3").assertIsNotEnabled()
         assertEquals(Forge.muted, onNodeWithText("Send to Samsung Fold 3", useUnmergedTree = true).layout().layoutInput.style.color)
     }
@@ -59,7 +59,7 @@ class SendTabContentTest {
         val detail = detailLine(photoPreview)
         setContent {
             MjolnirTheme {
-                SendTabContent(state, nicknameOf = { it.name }, previews = mapOf(photo.path to photoPreview), onState = { state = it })
+                SendTabContent(state, nicknameOf = { it.name }, previews = mapOf(photo.path to photoPreview), onUpdate = { change -> state = change(state) })
             }
         }
         onAllNodesWithText(detail).assertCountEquals(1) // the row's own detail line
@@ -67,14 +67,29 @@ class SendTabContentTest {
         onAllNodesWithText(detail).assertCountEquals(2) // plus the preview panel
     }
 
+    // a click applies to the queue as it is now, not to the snapshot the row was composed from
+    @Test fun clickKeepsAConcurrentChangeToTheQueue() = runComposeUiTest {
+        val composedFrom = queued()
+        var owner = composedFrom // what the controller holds
+        setContent {
+            MjolnirTheme {
+                SendTabContent(composedFrom, nicknameOf = { it.name }, previews = mapOf(photo.path to photoPreview), onUpdate = { change -> owner = change(owner) })
+            }
+        }
+        owner = owner.withText("https://later.example") // changes after composition, e.g. a drop
+        onNodeWithText("IMG_2041.jpg").performClick()
+        assertEquals(listOf("https://later.example"), owner.links)
+        assertEquals("/photos/IMG_2041.jpg", owner.selectedRow)
+    }
+
     @Test fun singleGroupHeadingHidden() = runComposeUiTest {
-        setContent { MjolnirTheme { SendTabContent(queued(), nicknameOf = { it.name }, onState = {}) } }
+        setContent { MjolnirTheme { SendTabContent(queued(), nicknameOf = { it.name }, onUpdate = {}) } }
         onAllNodesWithText("My devices", ignoreCase = true).assertCountEquals(0)
     }
 
     @Test fun cardsEllipsizeLongNames() = runComposeUiTest {
         val long = "N".repeat(40)
-        setContent { MjolnirTheme { SendTabContent(queued(), nicknameOf = { long }, onState = {}) } }
+        setContent { MjolnirTheme { SendTabContent(queued(), nicknameOf = { long }, onUpdate = {}) } }
         // The card title and the button both carry the name; the card is the one with a layout result of one line.
         val lines = onAllNodesWithText(long, useUnmergedTree = true).fetchSemanticsNodes().map { n ->
             val out = mutableListOf<TextLayoutResult>()

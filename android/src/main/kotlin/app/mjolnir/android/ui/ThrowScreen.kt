@@ -199,7 +199,7 @@ fun ThrowScreen(
                 if (state.outgoing.isNotEmpty()) {
                     item(key = "on-the-way") { SectionLabel("On the way", Modifier.padding(top = 8.dp)) }
                     items(state.outgoing, key = { "out-" + it.id }) { item ->
-                        OutgoingRow(item, state.targets.find { it.deviceId == item.to }?.name ?: item.toName, onFinished = { vm.refreshOutgoing() }, onSendNow = {
+                        OutgoingRow(item, state.targets.find { it.deviceId == item.to }?.let(state::nameOf) ?: state.nicknames[item.to] ?: item.toName, onFinished = { vm.refreshOutgoing() }, onSendNow = {
                             scope.launch(Dispatchers.IO) { sendNow(context, item.id) }
                         })
                     }
@@ -289,7 +289,7 @@ private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: 
     var open by remember { mutableStateOf(false) }
     val current = state.targets.find { it.deviceId == state.targetId } ?: state.targets.first()
     Box {
-        TargetCard(current.name, kindLabel(current), onClick = { open = true })
+        TargetCard(state.nameOf(current), kindLabel(current), onClick = { open = true })
         DropdownMenu(
             expanded = open, onDismissRequest = { open = false },
             containerColor = Forge.Surface, border = BorderStroke(1.dp, Forge.Border),
@@ -298,7 +298,7 @@ private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: 
                 group.title?.let { Text(it, Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = Forge.Muted) }
                 for (device in group.peers) {
                     DropdownMenuItem(
-                        text = { Text("${device.name} (${kindLabel(device)})", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        text = { Text("${state.nameOf(device)} (${kindLabel(device)})", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         onClick = { vm.selectTarget(device.deviceId); open = false },
                     )
                 }

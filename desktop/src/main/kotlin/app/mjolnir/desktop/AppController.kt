@@ -210,6 +210,7 @@ class AppController(
                     afterDrain = { cleanStagingFolder(api) },
                     onConnected = { kickOutbox() },
                     onConnectionChange = { connected.value = it },
+                    onUnpaired = ::onUnpairedByPeer,
                 ).run()
                 delay(RETRY_DELAY_MS) // the events flow ended (client closed): start over
             } catch (e: CancellationException) {
@@ -257,6 +258,7 @@ class AppController(
         if (store.read().token != rejectedToken) return@withLock true
         try {
             _config.value = reRegister(store, api)
+            nicknames.clear() // the new registration has no pairings
             setPeers(emptyList())
             notify(Messages.RESET)
             true
@@ -323,6 +325,7 @@ class AppController(
         if (api() == null) return
         val token = store.read().token
         val name = displayName(item.files)
+        val to = nicknames.get(item.to) ?: item.toName // the outbox keeps the real name; a nickname may have changed since
         val result = try {
             outbox.process(item.id) { done, total ->
                 val pct = if (total <= 0) 100 else (done * 100 / total).toInt()
@@ -332,10 +335,10 @@ class AppController(
             _tooltip.value = TOOLTIP_IDLE
         }
         when (result) {
-            is OutboxResult.Done -> notify(Messages.sent(0, item.files.size, item.toName))
+            is OutboxResult.Done -> notify(Messages.sent(0, item.files.size, to))
             is OutboxResult.Retry -> scheduleRetry()
             is OutboxResult.Failed -> {
-                notify(Messages.notSent(result.message ?: Messages.failureReason(result.kind, item.toName)))
+                notify(Messages.notSent(result.message ?: Messages.failureReason(result.kind, to)))
                 if (result.kind == RelayErrorKind.UNAUTHORIZED) recoverUnauthorized(token)
             }
         }
@@ -354,46 +357,39 @@ class AppController(
     // ---- actions ------------------------------------------------------------------------------------------------
 
     /**
-     * Sends in [scope], so closing the window cannot cancel it. [deliver] gets the result and returns false when its
-     * window is gone; the result is then shown as a tray notification instead.
-     */
-    fun startSend(target: Peer, tabs: List<Tab>, files: List<LocalUpload>, deliver: (SendResult) -> Boolean): Job =
-        scope.launch {
-            val result = try {
-                send(target, tabs, files)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) { // a local failure, e.g. writing outbox.json
-                SendResult(Messages.notSent(Messages.failureReason(RelayErrorKind.SERVER, target.name)), emptyList(), false)
-            }
-            if (!deliver(result)) notify(result.message)
-        }
-
-    /**
      * Sends the checked links and all files of the queue to the chosen target, in [scope]. Afterwards the sent links
      * and files leave the queue; unchecked links stay.
      */
     fun sendSelected(): Job {
-        val s = _send.value
-        val target = s.target
+        var started: SendState? = null
+        _send.update { s ->
+            // Atomic with the flag, so two clicks cannot both start (the lambda may rerun: always reassign).
+            started = if (s.sending || s.target == null || !s.canSend) null else s
+            if (started != null) s.copy(sending = true) else s
+        }
+        val s = started ?: return Job().apply { complete() }
+        val target = s.target!!
         val tabs = s.tabs()
         val files = s.selectedFiles
         return scope.launch {
-            if (target == null || !s.canSend) return@launch
-            val r = try {
-                send(target, tabs, files)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) { // a local failure, e.g. writing outbox.json
-                SendResult(Messages.notSent(Messages.failureReason(RelayErrorKind.SERVER, target.name)), emptyList(), false)
+            try {
+                val r = try {
+                    send(target, tabs, files)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) { // a local failure, e.g. writing outbox.json
+                    SendResult(Messages.notSent(Messages.failureReason(RelayErrorKind.SERVER, nicknames.displayName(target))), emptyList(), false)
+                }
+                val sentUrls = r.sentTabs.map { it.url }.toSet()
+                updateSend { cur ->
+                    val kept = if (r.filesQueued) cur.copy(files = cur.files - files.toSet(), selected = cur.selected - files.mapTo(HashSet()) { uploadUnitKey(it) }) else cur
+                    kept.withoutLinks(sentUrls).withoutStaleRow().copy(notice = r.message)
+                }
+                // Only the Send tab shows the notice itself; any other tab, or no window, gets a tray notification.
+                if (!(mainWindowVisible && mainWindowTab == MainTab.SEND)) notify(r.message)
+            } finally {
+                updateSend { it.copy(sending = false) }
             }
-            val sentUrls = r.sentTabs.map { it.url }.toSet()
-            updateSend { cur ->
-                val kept = if (r.filesQueued) cur.copy(files = cur.files - files.toSet(), selected = cur.selected - files.mapTo(HashSet()) { uploadUnitKey(it) }) else cur
-                kept.withoutLinks(sentUrls).withoutStaleRow().copy(notice = r.message)
-            }
-            // Only the Send tab shows the notice itself; any other tab, or no window, gets a tray notification.
-            if (!(mainWindowVisible && mainWindowTab == MainTab.SEND)) notify(r.message)
         }
     }
 
@@ -405,6 +401,15 @@ class AppController(
             (if (last != null) s.selectTarget(last) else s).withScanned(scan)
         }
         openWindow(MainTab.SEND)
+    }
+
+    /**
+     * A later launch (Start menu, or *Send to*): with [paths], queues them; with none, just shows the window on [lastTab].
+     * Returns the queueing job, or null when there was nothing to queue.
+     */
+    fun onLaunchedAgain(paths: List<File>, lastTab: MainTab): Job? {
+        if (paths.isEmpty()) { openWindow(lastTab); return null }
+        return handOff(paths)
     }
 
     /** Sends links now and queues files; returns the message to show. */
@@ -424,7 +429,7 @@ class AppController(
         if (files.isNotEmpty()) {
             val now = System.currentTimeMillis()
             for (group in groupForSending(files)) {
-                outbox.enqueue(OutgoingFiles(UUID.randomUUID().toString(), target.deviceId, shown, group, createdAtEpochMs = now))
+                outbox.enqueue(OutgoingFiles(UUID.randomUUID().toString(), target.deviceId, target.name, group, createdAtEpochMs = now))
             }
             parts += Messages.queued(files.size, shown)
             kickOutbox()
@@ -544,6 +549,9 @@ class AppController(
         if (_pairedWith.subscriptionCount.value > 0) _pairedWith.emit(name) else notify("Paired with $name")
     }
 
+    /** The other device unpaired from this one: its nickname goes with the pairing. */
+    internal fun onUnpairedByPeer(deviceId: String) = nicknames.remove(deviceId)
+
     fun startUnpair(peer: Peer): Job = scope.launch { unpair(peer) }
 
     suspend fun unpair(peer: Peer) {
@@ -567,6 +575,7 @@ class AppController(
         serviceSwitch.withLock { serviceJob?.cancelAndJoin(); serviceJob = null }
         connected.value = false
         updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null) }
+        nicknames.clear() // every pairing is gone
         setPeers(emptyList())
         restartService()
     }

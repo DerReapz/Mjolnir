@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 
 class SettingsDraftTest {
     private val draft = SettingsDraft(
-        relayUrl = "https://relay.example.com", deviceName = "PC", saveDir = "C:\\save",
+        relayUrl = "https://relay.example.com", deviceName = "PC", saveDir = "",
         openLinksOnArrival = true, launchAtLogin = false, sendToMenu = true, keepInTray = true,
     )
 
@@ -37,5 +37,13 @@ class SettingsDraftTest {
         val config = DesktopConfig(relayUrl = "https://a.example", deviceName = "Desk", openLinksOnArrival = false, keepInTray = false, launchAtLogin = true, sendToMenu = false)
         val d = config.toDraft()
         assertEquals(SettingsDraft("https://a.example", "Desk", config.saveDirPath().absolutePath, false, true, false, false), d)
+    }
+
+    @Test fun saveRejectsUnwritableFolder(@org.junit.jupiter.api.io.TempDir dir: java.io.File) {
+        val file = java.io.File(dir, "plain.txt").apply { writeText("x") }
+        assertEquals(SAVE_FOLDER_UNUSABLE, draft.copy(saveDir = file.path).validate()) // a file, not a folder
+        assertEquals(SAVE_FOLDER_UNUSABLE, draft.copy(saveDir = java.io.File(file, "sub").path).validate()) // cannot be created under a file
+        assertNull(draft.copy(saveDir = java.io.File(dir, "new/inner").path).validate()) // created on demand
+        assertNull(draft.copy(saveDir = "  ").validate()) // blank means the default
     }
 }

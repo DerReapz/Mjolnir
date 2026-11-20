@@ -2,7 +2,6 @@ package app.mjolnir.desktop
 
 import androidx.compose.ui.window.application
 import app.mjolnir.desktop.ui.TrayApp
-import java.io.File
 import javax.swing.JOptionPane
 import kotlin.system.exitProcess
 
@@ -14,8 +13,8 @@ private var instanceLock: AutoCloseable? = null
 
 fun main(args: Array<String>) {
     // Absolute here, so a running instance with another working directory resolves them the same way.
-    val paths = args.filter { it.isNotBlank() }.map { File(it).absolutePath }
-    val primary = when (val startup = InstanceChannel.start(appDataDir(), paths)) {
+    val launch = parseLaunchArgs(args)
+    val primary = when (val startup = InstanceChannel.start(appDataDir(), launch.paths)) {
         is Startup.Primary -> startup
         Startup.Forwarded -> exitProcess(0)
         Startup.Failed -> {
@@ -30,7 +29,7 @@ fun main(args: Array<String>) {
     controller.start()
     controller.ensureSendToShortcut()
     application(exitProcessOnExit = true) {
-        TrayApp(controller, primary.incoming, onQuit = {
+        TrayApp(controller, primary.incoming, background = launch.background, onQuit = {
             controller.shutdown()
             instanceLock?.close() // idempotent; the shutdown hook covers other exits
             exitApplication()

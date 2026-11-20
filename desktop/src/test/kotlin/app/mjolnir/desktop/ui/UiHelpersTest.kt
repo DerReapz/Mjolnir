@@ -25,6 +25,7 @@ class UiHelpersTest {
         assertNull(relayFieldMessage("https://a.example/", "https://a.example", attempted = false))
         assertEquals("Changing the relay unpairs all devices.", relayFieldMessage("https://b.example", "https://a.example", false))
         assertNull(relayFieldMessage("https://b.example", "", false))
+        assertNull(relayFieldMessage("https://a.example", "https://a.example/", false)) // same address as stored (raw, unnormalised)
     }
 
     @Test fun deviceNames() {

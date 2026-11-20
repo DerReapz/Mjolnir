@@ -30,6 +30,8 @@ suspend fun resetQuietly(session: PhoneSession) {
 /** Registers this phone with the relay (once) and re-registers after a reset. */
 class PhoneSession(private val api: RelayApi, private val config: JsonFileStore<PhoneConfig>,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** Runs when the registration is reset (relay change, or the relay forgot this phone): its pairings are gone. */
+    private val onReset: () -> Unit = {},
 ) {
     private val lock = Mutex()
 
@@ -41,6 +43,7 @@ class PhoneSession(private val api: RelayApi, private val config: JsonFileStore<
     /** Forgets the credentials and the chosen PC, then registers again. */
     suspend fun reset(): PhoneConfig = lock.withLock {
         withContext(io) { config.update { it.copy(deviceId = null, token = null, targetPcId = null) } }
+        onReset()
         registerLocked()
     }
 

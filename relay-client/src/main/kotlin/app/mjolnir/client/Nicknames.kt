@@ -29,5 +29,10 @@ class Nicknames(private val store: JsonFileStore<Map<String, String>>) {
         state.value = store.update { it - deviceId }
     }
 
+    /** Forgets every nickname (the pairings they belonged to are gone, e.g. after a relay change). */
+    fun clear() {
+        state.value = store.update { emptyMap() }
+    }
+
     fun displayName(peer: Peer): String = get(peer.deviceId) ?: peer.name
 }

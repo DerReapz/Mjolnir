@@ -164,18 +164,6 @@ class AppControllerTest {
         scope.cancel()
     }
 
-    // a send whose window has closed reports through a tray notification
-    @Test fun sendResultBecomesNotificationWhenWindowIsGone() = runTest {
-        val fake = FakeRelayApi()
-        val (c, scope) = controller(fake)
-        val notes = notes(c)
-        c.startSend(phone, listOf(Tab("https://a.com")), emptyList()) { false }; runCurrent()
-        assertEquals(1, fake.sent.size)
-        assertEquals(listOf("Sent 1 tab to Pixel 8"), notes)
-        assertEquals("ph", c.config.value.lastPhoneId)
-        scope.cancel()
-    }
-
     // a file that cannot be read says so instead of blaming the relay
     @Test fun unreadableFileNotificationNamesTheFile() = runTest {
         val fake = FakeRelayApi()
@@ -445,6 +433,74 @@ class AppControllerTest {
         assertEquals("Desk", c.config.value.deviceName)
         assertEquals("https://b.example", c.config.value.relayUrl)
         assertEquals("Desk", fake.registerCalls.last().first) // registered anew under the new name
+        scope.cancel()
+    }
+
+    // ---- final review fixes ------------------------------------------------------------------------------------
+
+    @Test fun secondLaunchWithoutPathsOpensTheWindowOnTheLastTab() = runTest {
+        val (c, scope) = controller(FakeRelayApi())
+        val opened = mutableListOf<MainTab>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.openRequests.collect { opened += it } }
+        c.onLaunchedAgain(emptyList(), MainTab.RECEIVED)?.join()
+        assertEquals(listOf(MainTab.RECEIVED), opened)
+        assertTrue(c.send.value.files.isEmpty())
+        scope.cancel()
+    }
+
+    @Test fun secondLaunchWithPathsQueuesThemOnTheSendTab() = runTest {
+        val (c, scope) = controller(FakeRelayApi())
+        val opened = mutableListOf<MainTab>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.openRequests.collect { opened += it } }
+        c.onLaunchedAgain(listOf(File(dir, "one.txt").apply { writeText("1") }), MainTab.RECEIVED)?.join()
+        assertEquals(listOf(MainTab.SEND), opened)
+        assertEquals(1, c.send.value.files.size)
+        scope.cancel()
+    }
+
+    @Test fun aSendInFlightBlocksASecondOne() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val gate = CompletableDeferred<Unit>()
+        val api = object : RelayApi by fake {
+            override suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String>): SendResponse { gate.await(); return fake.send(to, tabs, fileIds) }
+        }
+        val (c, scope) = controller(api)
+        c.refreshPeers()
+        c.updateSend { it.withTargets(listOf(phone), null).withText("https://a.com") }
+        val first = c.sendSelected(); runCurrent()
+        assertTrue(c.send.value.sending)
+        c.sendSelected().join() // ignored while the first runs
+        gate.complete(Unit); first.join()
+        assertEquals(1, fake.sent.size)
+        assertFalse(c.send.value.sending)
+        scope.cancel()
+    }
+
+    @Test fun remoteUnpairRemovesTheNickname() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, scope) = controller(fake)
+        c.nicknames.set("ph", "Dad's phone")
+        c.onUnpairedByPeer("ph")
+        assertNull(c.nicknames.get("ph"))
+        scope.cancel()
+    }
+
+    @Test fun changingRelayClearsAllNicknames() = runTest {
+        val (c, scope) = controller(FakeRelayApi())
+        c.nicknames.set("ph", "Dad's phone")
+        c.changeRelay("https://b.example"); runCurrent()
+        assertTrue(c.nicknames.changes.value.isEmpty())
+        scope.cancel()
+    }
+
+    @Test fun queuedFilesKeepTheRealNameAndNotifyWithTheNickname() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, scope) = controller(fake)
+        c.nicknames.set("ph", "Dad's phone")
+        val f = File(dir, "a.txt").apply { writeText("a") }
+        val up = LocalUpload(f.absolutePath, "a.txt", "text/plain", 1)
+        assertTrue("Dad's phone" in c.send(phone, emptyList(), listOf(up)).message)
+        assertTrue("\"toName\":\"Pixel 8\"" in File(dir, "outbox.json").readText(), File(dir, "outbox.json").readText())
         scope.cancel()
     }
 }

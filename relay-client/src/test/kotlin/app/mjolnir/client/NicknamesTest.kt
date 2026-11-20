@@ -58,4 +58,13 @@ class NicknamesTest {
         n.remove("d1")
         assertEquals(emptyMap(), n.changes.value)
     }
+
+    @Test fun clearRemovesEveryNickname() {
+        val n = nicknames()
+        n.set("d1", "a"); n.set("d2", "b")
+        n.clear()
+        assertNull(n.get("d1"))
+        assertEquals(emptyMap(), n.changes.value)
+        assertEquals(emptyMap(), nicknames().changes.value) // persisted
+    }
 }

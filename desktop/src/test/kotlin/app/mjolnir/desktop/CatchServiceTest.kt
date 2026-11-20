@@ -90,4 +90,12 @@ class CatchServiceTest {
         api.events.emit(RelayEvent.Connected); runCurrent()
         assertEquals(listOf(true, false, true), states); job.cancel()
     }
+    // an Unpaired event tells the app which device went away
+    @Test fun reportsWhoUnpaired() = runTest {
+        val api = FakeRelayApi(); val gone = mutableListOf<String>()
+        val svc = CatchService(api, InboxDrainer(api, MemorySeen()) {}, {}, {}, onUnpaired = { gone += it })
+        val job = launch { svc.run() }; runCurrent()
+        api.events.emit(RelayEvent.Paired(phone)); api.events.emit(RelayEvent.Unpaired("ph")); runCurrent()
+        assertEquals(listOf("ph"), gone); job.cancel()
+    }
 }

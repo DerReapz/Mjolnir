@@ -74,34 +74,40 @@ class ThrowViewModelTest {
 
     private fun throwNow() { vm.onHoldStart(); vm.onFlick() }
 
-    @Test fun targetsShowNickname() = runTest {
+    @Test fun targetsKeepRealNamesAndShowNicknames() = runTest {
         nicknames.set("pc1", "Work PC")
         vm.refreshTargets(); advanceUntilIdle()
-        assertEquals(listOf("Work PC", "Laptop", "Other phone"), vm.state.value.targets.map { it.name })
-        assertEquals("pc1", vm.state.value.targetId)
+        val st = vm.state.value
+        assertEquals(listOf("DESKTOP-4F2K", "Laptop", "Other phone"), st.targets.map { it.name }) // no nickname in a Peer
+        assertEquals(listOf("Work PC", "Laptop", "Other phone"), st.targets.map { st.nameOf(it) })
+        assertEquals("pc1", st.targetId)
     }
 
-    @Test fun renameUpdatesTargetsWithoutRefresh() = runTest {
+    @Test fun renameUpdatesShownNamesWithoutRefresh() = runTest {
         vm.refreshTargets(); advanceUntilIdle()
         nicknames.set("pc2", "Couch laptop"); advanceUntilIdle()
-        assertEquals(listOf("DESKTOP-4F2K", "Couch laptop", "Other phone"), vm.state.value.targets.map { it.name })
+        assertEquals(listOf("DESKTOP-4F2K", "Couch laptop", "Other phone"), vm.state.value.let { st -> st.targets.map { st.nameOf(it) } })
         nicknames.remove("pc2"); advanceUntilIdle()
-        assertEquals("Laptop", vm.state.value.targets[1].name)
+        assertEquals("Laptop", vm.state.value.let { it.nameOf(it.targets[1]) })
     }
 
     @Test fun queuedFilesKeepTheRealDeviceName() = runTest {
         nicknames.set("pc1", "Work PC")
         vm.addShared(listOf(f)); vm.refreshTargets(); advanceUntilIdle(); vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
         assertEquals("DESKTOP-4F2K", outbox.pending().single().toName)
+        assertTrue("Work PC" in vm.state.value.notice.orEmpty()) // the message says the nickname
     }
 
-    @Test fun groupsSingleGroupNoTitle() = runTest {
+    @Test fun groupsSortByShownNameWithRememberedDeviceFirst() = runTest {
         nicknames.set("ph", "Aaa")
+        configStore.write(configStore.read().copy(targetPcId = "pc2"))
         vm.refreshTargets(); advanceUntilIdle()
         val groups = vm.state.value.groups
         assertEquals(1, groups.size)
         assertNull(groups.single().title)
-        assertEquals(listOf("pc1", "ph", "pc2"), groups.single().peers.map { it.deviceId }.let { it }) // last used first, then by shown name
+        assertEquals(listOf("pc2", "ph", "pc1"), groups.single().peers.map { it.deviceId }) // remembered first, then by shown name
+        vm.selectTarget("pc1"); advanceUntilIdle()
+        assertEquals("pc2", vm.state.value.groups.single().peers.first().deviceId) // selecting does not reshuffle the list
     }
 
     @Test fun sharedItemsLandInTrayAndAreSelected() = runTest {

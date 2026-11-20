@@ -94,6 +94,15 @@ class DesktopCatcherTest {
         assertTrue(e.all { it.fromDeviceId == "ph" && it.fromName == "Pixel 8" })
     }
 
+    // the history keeps the device's real name; the nickname is looked up when it is shown
+    @Test fun historyStoresTheRealNameNotTheNickname(@TempDir dir: File) = runTest {
+        nameOf = { "Dad's phone" }
+        val api = FakeRelayApi(); val ref = api.putBlob("f1", "report.pdf", "pdf".toByteArray())
+        catcher(api, dir).handle(d(emptyList(), listOf(ref)))
+        assertEquals("Pixel 8", history.entries.value.single().fromName)
+        assertEquals(listOf("Caught 1 file from Dad's phone"), notes)
+    }
+
     @Test fun recordsPlainFile(@TempDir dir: File) = runTest {
         val api = FakeRelayApi(); val ref = api.putBlob("f1", "report.pdf", "pdf".toByteArray())
         catcher(api, dir).handle(d(emptyList(), listOf(ref)))
