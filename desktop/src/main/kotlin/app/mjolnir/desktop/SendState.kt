@@ -82,13 +82,14 @@ data class SendState(
     /** Drops [urls] from the pasted text and the link list; the check marks of the remaining links are kept. */
     fun withoutLinks(urls: Set<String>): SendState {
         if (urls.isEmpty()) return this
-        // Drop whole tokens only (a sent URL that prefixes another link must not damage it); prose and lines stay.
-        val text = text.lines()
-            .map { line -> line.split(Regex("\\s+")).filter { it.isNotEmpty() && it.trimEnd('.', ',', ';', ':', '!', '?', ')') !in urls }.joinToString(" ") }
-            .filter { it.isNotEmpty() }
-            .joinToString("\n")
+        // Drop the sent URLs as whole tokens, using extractUrls' own trimming rules (quotes, brackets, balanced parens),
+        // so they are not found again later. Lines without a sent URL stay exactly as typed.
+        val kept = text.split("\n").mapNotNull { line ->
+            if (extractUrls(line).none { it in urls }) return@mapNotNull line
+            line.split(Regex("\\s+")).mapNotNull { token -> withoutSent(token, urls) }.joinToString(" ").ifEmpty { null }
+        }.joinToString("\n")
         val left = links - urls
-        return copy(text = text, links = left, selected = selected - urls)
+        return copy(text = kept, links = left, selected = selected - urls)
     }
 
     fun toggle(url: String): SendState = copy(selected = if (url in selected) selected - url else selected + url)
@@ -179,4 +180,13 @@ fun groupForSending(files: List<LocalUpload>, max: Int = Limits.MAX_FILES_PER_SE
         if (fits != null) fits += unit else groups += unit.toMutableList()
     }
     return groups
+}
+
+private const val DROPPABLE = "\"'<>[](){}.,;:!?"
+
+/** [token] without its sent URLs; null when nothing but quotes, brackets or punctuation is left. */
+private fun withoutSent(token: String, urls: Set<String>): String? {
+    var t = token
+    for (u in extractUrls(token)) if (u in urls) t = t.replaceFirst(u, "")
+    return if (t != token && t.all { it in DROPPABLE }) null else t
 }

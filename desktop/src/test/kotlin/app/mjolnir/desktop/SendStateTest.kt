@@ -4,6 +4,7 @@ import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Tab
+import app.mjolnir.protocol.extractUrls
 import java.io.File
 import java.io.RandomAccessFile
 import kotlin.test.*
@@ -151,6 +152,30 @@ class SameNameFoldersTest {
         val after = SendState().withText("see https://a.com and https://a.com/page").withoutLinks(setOf("https://a.com"))
         assertEquals("see and https://a.com/page", after.text)
         assertEquals(listOf("https://a.com/page"), after.links)
+    }
+
+    @Test fun sentLinkWithBalancedParensRemovedFromText() {
+        val u = "https://en.wikipedia.org/wiki/Foo_(bar)"
+        val s = SendState().withText("read $u. ok")
+        assertEquals(listOf(u), s.links)
+        val after = s.withoutLinks(setOf(u))
+        assertEquals("read ok", after.text)
+        assertTrue(after.links.isEmpty() && extractUrls(after.text).isEmpty())
+    }
+
+    @Test fun sentQuotedOrBracketedLinkRemovedFromText() {
+        for ((open, close) in listOf("\"" to "\"", "<" to ">", "[" to "]")) {
+            val s = SendState().withText("go ${open}https://a.com/x$close now")
+            val after = s.withoutLinks(setOf("https://a.com/x"))
+            assertEquals("go now", after.text, open)
+            assertTrue(extractUrls(after.text).isEmpty(), open)
+        }
+    }
+
+    @Test fun untouchedLinesKeepWhitespace() {
+        val text = "  indented   note\n\nhttps://a.com\nkeep  https://b.com/y  "
+        val after = SendState().withText(text).withoutLinks(setOf("https://a.com"))
+        assertEquals("  indented   note\n\nkeep  https://b.com/y  ", after.text)
     }
 
     @Test fun uncheckedFileMeansCannotSend() {
