@@ -192,4 +192,33 @@ class AppControllerTest {
         assertEquals("Couldn't get a code: no connection.", couldntGetCode("no connection"))
         assertEquals("Couldn't answer the request: the relay had a problem.", couldntAnswer("the relay had a problem"))
     }
+
+    @Test fun queueSurvivesWindowClose() = runTest {
+        val (c, _) = controller(FakeRelayApi())
+        c.updateSend { it.withText("https://a.com") }
+        c.openWindow(); c.openWindow()
+        assertEquals(listOf("https://a.com"), c.send.value.links)
+    }
+
+    @Test fun sendSelectedKeepsUnchecked() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, _) = controller(fake)
+        c.refreshPeers()
+        c.updateSend { it.withTargets(listOf(phone), null).withText("https://a.com https://b.com").toggle("https://b.com") }
+        c.sendSelected().join()
+        assertEquals(listOf("https://b.com"), c.send.value.links)
+        assertTrue(c.send.value.selected.isEmpty())
+    }
+
+    @Test fun handOffOpensSendTabOnce() = runTest {
+        val (c, _) = controller(FakeRelayApi())
+        val opened = mutableListOf<MainTab>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.openRequests.collect { opened += it } }
+        val f1 = File(dir, "one.txt").apply { writeText("1") }
+        val f2 = File(dir, "two.txt").apply { writeText("2") }
+        c.handOff(listOf(f1)).join()
+        c.handOff(listOf(f2)).join()
+        assertEquals(listOf(MainTab.SEND, MainTab.SEND), opened)
+        assertEquals(2, c.send.value.files.size)
+    }
 }

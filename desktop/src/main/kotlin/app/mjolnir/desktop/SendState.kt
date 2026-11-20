@@ -1,7 +1,9 @@
 package app.mjolnir.desktop
 
+import app.mjolnir.client.DestinationGroup
 import app.mjolnir.client.LocalUpload
 import app.mjolnir.client.Messages
+import app.mjolnir.client.groupDestinations
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
@@ -21,7 +23,21 @@ data class SendState(
     val targetId: String? = null,
     val files: List<LocalUpload> = emptyList(),
     val notice: String? = null,
+    /** The destination used last; sorts first in [groups]. */
+    val lastUsedId: String? = null,
+    /** Key of the row shown in the preview: a URL or a top-level path (see [uploadUnitKey]). */
+    val selectedRow: String? = null,
 ) {
+    val groups: List<DestinationGroup> get() = groupDestinations(targets, lastUsedId)
+
+    fun selectRow(key: String): SendState = copy(selectedRow = key)
+
+    /** E.g. `3 of 4 selected · 1.4 GB`: queued links and top-level files/folders (files are always selected). */
+    val summary: String get() {
+        val units = files.groupBy(::uploadUnitKey).size
+        return "${selected.size + units} of ${links.size + units} selected · ${Messages.size(files.sumOf { it.sizeBytes })}"
+    }
+
     /**
      * Files become one upload each (relativePath = name); folders are walked. Duplicates (same path) are skipped,
      * files over MAX_FILE_BYTES are left out, and a folder over MAX_FILES_PER_SEND files is refused whole.
@@ -58,13 +74,21 @@ data class SendState(
         return copy(text = text, links = links, selected = links.toSet())
     }
 
+    /** Drops [urls] from the pasted text and the link list; the check marks of the remaining links are kept. */
+    fun withoutLinks(urls: Set<String>): SendState {
+        if (urls.isEmpty()) return this
+        val text = urls.fold(text) { t, u -> t.replace(u, "") }.lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
+        val left = extractUrls(text)
+        return copy(text = text, links = left, selected = selected.intersect(left.toSet()))
+    }
+
     fun toggle(url: String): SendState = copy(selected = if (url in selected) selected - url else selected + url)
 
     /** Target: the current or [lastTargetId] if still paired, else the first paired device (PC or phone), else null. */
     fun withTargets(peers: List<Peer>, lastTargetId: String?): SendState {
         val ids = peers.map { it.deviceId }
         val target = targetId?.takeIf { it in ids } ?: lastTargetId?.takeIf { it in ids } ?: ids.firstOrNull()
-        return copy(targets = peers, targetId = target)
+        return copy(targets = peers, targetId = target, lastUsedId = lastTargetId)
     }
 
     fun selectTarget(id: String): SendState = if (targets.any { it.deviceId == id }) copy(targetId = id) else this

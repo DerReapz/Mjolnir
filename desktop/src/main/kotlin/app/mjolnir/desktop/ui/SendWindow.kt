@@ -33,7 +33,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -66,12 +65,9 @@ import java.awt.FileDialog
 import java.awt.Frame
 import java.io.File
 import java.net.URI
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.withContext
 import javax.swing.JFileChooser
-import javax.swing.SwingUtilities
 import kotlinx.coroutines.launch
 
 /** Files shown together: a top folder (all its files) or one loose file. */
@@ -87,34 +83,22 @@ fun fileGroups(files: List<LocalUpload>): List<FileGroup> =
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
-fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<File>>, onPair: () -> Unit, onClose: () -> Unit) {
+fun SendWindow(c: AppController, icon: Painter, onPair: () -> Unit, onClose: () -> Unit) {
     val peers by c.peers.collectAsState()
     val config by c.config.collectAsState()
-    var state by remember { mutableStateOf(SendState().withTargets(peers, config.lastPhoneId)) }
+    val state by c.send.collectAsState() // the queue is owned by the controller and outlives this window
     var sending by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val open = remember { AtomicBoolean(true) }
-    DisposableEffect(Unit) { onDispose { open.set(false) } }
     // Walking folders and probing types reads the disk: never on the UI thread.
     fun addFiles(files: List<File>) {
         if (files.isEmpty()) return
         scope.launch {
             val scan = withContext(Dispatchers.IO) { scanFiles(files) }
-            state = state.withScanned(scan)
+            c.updateSend { it.withScanned(scan) }
         }
     }
 
     LaunchedEffect(Unit) { c.refreshPeers() }
-    LaunchedEffect(peers) { state = state.withTargets(peers, config.lastPhoneId) }
-
-    fun applySendResult(r: app.mjolnir.desktop.SendResult, tabs: List<app.mjolnir.protocol.Tab>, files: List<LocalUpload>) {
-        val sentUrls = r.sentTabs.map { it.url }.toSet()
-        var next = state
-        if (r.filesQueued) next = next.copy(files = next.files - files.toSet())
-        next = if (sentUrls.isNotEmpty() && sentUrls.size == tabs.size) next.withText("") else next.copy(selected = next.selected - sentUrls)
-        state = next.copy(notice = r.message)
-        sending = false
-    }
 
     val dropTarget = remember {
         object : DragAndDropTarget {
@@ -124,7 +108,7 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
                     addFiles(files); true
                 }
                 is DragData.Text -> {
-                    state = state.withText(listOf(state.text, data.readText()).filter { it.isNotBlank() }.joinToString("\n")); true
+                    c.updateSend { it.withText(listOf(it.text, data.readText()).filter { t -> t.isNotBlank() }.joinToString("\n")) }; true
                 }
                 else -> false
             }
@@ -133,13 +117,9 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
 
     Window(onCloseRequest = onClose, state = rememberWindowState(size = DpSize(760.dp, 560.dp)), title = "Send to device", icon = icon) {
         val awtWindow = window
-        // Explorer's *Send to*: add the paths (scanned off the UI thread), aim at the last target, and come to the front.
+        // Explorer's *Send to* (queued by the controller): come to the front.
         LaunchedEffect(Unit) {
-            for (files in handoff) {
-                c.config.value.lastPhoneId?.let { state = state.selectTarget(it) }
-                addFiles(files)
-                bringToFront(awtWindow)
-            }
+            c.openRequests.collect { bringToFront(awtWindow) }
         }
         MjolnirTheme {
             SendContent(
@@ -147,7 +127,7 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
                 lastTargetId = config.lastPhoneId,
                 sending = sending,
                 modifier = Modifier.dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget),
-                onState = { state = it },
+                onState = { next -> c.updateSend { next } },
                 onAddFiles = {
                     val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
                     dialog.isVisible = true
@@ -162,16 +142,9 @@ fun SendWindow(c: AppController, icon: Painter, handoff: ReceiveChannel<List<Fil
                 },
                 onPair = onPair,
                 onSend = {
-                    val target = state.target ?: return@SendContent
-                    val tabs = state.tabs(); val files = state.files
                     sending = true
-                    // The send runs in the controller's scope, so closing this window cannot cancel it;
-                    // if the window is gone by then, the result becomes a tray notification.
-                    c.startSend(target, tabs, files) { r ->
-                        if (!open.get()) return@startSend false
-                        SwingUtilities.invokeLater { applySendResult(r, tabs, files) }
-                        true
-                    }
+                    // Runs in the controller's scope, so closing this window cannot cancel it.
+                    c.sendSelected().invokeOnCompletion { sending = false }
                 },
             )
         }

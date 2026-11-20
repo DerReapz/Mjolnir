@@ -108,4 +108,27 @@ class SameNameFoldersTest {
         assertEquals(5, walkFolderLimited(f, 5)!!.size)
         assertEquals("F has too many files (max 1000)", scanFiles(listOf(f), maxFiles = 3).single().refusal)
     }
+
+    @Test fun summaryCountsSelectedAndSize() {
+        val mb = 1024L * 1024
+        val s = SendState().withText("https://a.com https://b.com").toggle("https://b.com").copy(
+            files = listOf(
+                app.mjolnir.client.LocalUpload("/x/Photos/a", "Photos/a", "x/y", 3 * mb),
+                app.mjolnir.client.LocalUpload("/x/Photos/b", "Photos/b", "x/y", 2 * mb),
+                app.mjolnir.client.LocalUpload("/y/c.txt", "c.txt", "x/y", 1 * mb),
+            ),
+        )
+        assertEquals("3 of 4 selected · 6 MB", s.summary)
+    }
+
+    @Test fun selectRowSetsPreviewKey() {
+        assertEquals("https://a.com", SendState().selectRow("https://a.com").selectedRow)
+    }
+
+    @Test fun groupsFollowTargetsAndLastUsed() {
+        val a = Peer("a", "Alpha", DeviceKind.PC); val b = Peer("b", "Beta", DeviceKind.PHONE)
+        val s = SendState().withTargets(listOf(a, b), "b")
+        assertEquals("b", s.lastUsedId)
+        assertEquals(listOf(b, a), s.groups.single().peers)
+    }
 }

@@ -33,7 +33,6 @@ import app.mjolnir.desktop.AppController
 import app.mjolnir.protocol.RelayEvent
 import java.io.File
 import javax.imageio.ImageIO
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 
@@ -59,15 +58,16 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     LaunchedEffect(Unit) {
         c.notifications.collect { trayState.sendNotification(Notification("Mjolnir", it)) }
     }
-    // Paths from Explorer's *Send to* (this launch or a later one), waiting for the Send window to take them.
-    val handoff = remember { Channel<List<File>>(Channel.UNLIMITED) }
+    LaunchedEffect(Unit) {
+        c.openRequests.collect { showSend = true }
+    }
+    // Paths from Explorer's *Send to* (this launch or a later one): the controller queues them and asks for the window.
     LaunchedEffect(Unit) {
         incoming.collect { paths ->
             if (paths.isEmpty()) {
                 c.notify(ALREADY_RUNNING) // launched again with nothing to send
             } else {
-                handoff.trySend(paths.map(::File))
-                showSend = true
+                c.handOff(paths.map(::File))
             }
         }
     }
@@ -88,7 +88,7 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
         Item("Quit Mjolnir", onClick = onQuit)
     })
 
-    if (showSend) SendWindow(c, icon, handoff, onPair = { showPair = true }, onClose = { showSend = false })
+    if (showSend) SendWindow(c, icon, onPair = { showPair = true }, onClose = { showSend = false })
     if (showPair) PairWindow(c, icon, onClose = { showPair = false })
     if (showDevices) DevicesWindow(c, icon, onPair = { showPair = true }, onClose = { showDevices = false })
     if (showSettings) SettingsWindow(c, icon, onClose = { showSettings = false })

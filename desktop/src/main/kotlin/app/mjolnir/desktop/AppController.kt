@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -51,6 +52,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
+
+/** Tabs of the main window; `GUEST` is unused until the guest-room plan. */
+enum class MainTab { SEND, GUEST, RECEIVED, DEVICES, SETTINGS }
 
 private const val RETRY_DELAY_MS = 30_000L
 const val TOOLTIP_IDLE = "Mjolnir"
@@ -71,6 +75,24 @@ class AppController(
 
     private val _peers = MutableStateFlow<List<Peer>>(emptyList())
     val peers: StateFlow<List<Peer>> = _peers.asStateFlow()
+
+    private val _send = MutableStateFlow(SendState())
+    /** The send queue lives here, not in a window, so closing the window keeps it. */
+    val send: StateFlow<SendState> = _send.asStateFlow()
+
+    fun updateSend(change: (SendState) -> SendState) {
+        _send.update(change)
+    }
+
+    private val _openRequests = MutableSharedFlow<MainTab>(extraBufferCapacity = 4)
+    /** Asks the UI to show the main window on a tab. */
+    val openRequests: SharedFlow<MainTab> = _openRequests
+
+    fun openWindow(tab: MainTab = MainTab.SEND) {
+        _openRequests.tryEmit(tab)
+    }
+
+    private fun syncTargets() = _send.update { it.withTargets(_peers.value, _config.value.lastPhoneId) }
 
     private val _tooltip = MutableStateFlow(TOOLTIP_IDLE)
     val tooltip: StateFlow<String> = _tooltip.asStateFlow()
@@ -124,7 +146,7 @@ class AppController(
     }
 
     private fun updateConfig(change: (DesktopConfig) -> DesktopConfig): DesktopConfig =
-        store.update(change).also { _config.value = it }
+        store.update(change).also { _config.value = it; syncTargets() }
 
     // ---- service ------------------------------------------------------------------------------------------------
 
@@ -201,7 +223,7 @@ class AppController(
         if (store.read().token != rejectedToken) return@withLock true
         try {
             _config.value = reRegister(store, api)
-            _peers.value = emptyList()
+            setPeers(emptyList())
             notify(Messages.RESET)
             true
         } catch (e: CancellationException) {
@@ -217,11 +239,16 @@ class AppController(
         restartService()
     }
 
+    private fun setPeers(peers: List<Peer>) {
+        _peers.value = peers
+        syncTargets()
+    }
+
     suspend fun refreshPeers() {
         val api = api() ?: return
         val token = store.read().token
         try {
-            _peers.value = api.peers()
+            setPeers(api.peers())
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
@@ -307,6 +334,43 @@ class AppController(
             }
             if (!deliver(result)) notify(result.message)
         }
+
+    /**
+     * Sends the checked links and all files of the queue to the chosen target, in [scope]. Afterwards the sent links
+     * and files leave the queue; unchecked links stay.
+     */
+    fun sendSelected(): Job {
+        val s = _send.value
+        val target = s.target
+        val tabs = s.tabs()
+        val files = s.files
+        return scope.launch {
+            if (target == null || !s.canSend) return@launch
+            val r = try {
+                send(target, tabs, files)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) { // a local failure, e.g. writing outbox.json
+                SendResult(Messages.notSent(Messages.failureReason(RelayErrorKind.SERVER, target.name)), emptyList(), false)
+            }
+            val sentUrls = r.sentTabs.map { it.url }.toSet()
+            updateSend { cur ->
+                val kept = if (r.filesQueued) cur.copy(files = cur.files - files.toSet()) else cur
+                kept.withoutLinks(sentUrls).copy(notice = r.message)
+            }
+            notify(r.message)
+        }
+    }
+
+    /** Explorer's *Send to* / a second launch: queues [paths] (scanned off the UI thread), aims at the last target, shows the Send tab. */
+    fun handOff(paths: List<File>): Job = scope.launch {
+        val scan = withContext(Dispatchers.IO) { scanFiles(paths) }
+        updateSend { s ->
+            val last = _config.value.lastPhoneId
+            (if (last != null) s.selectTarget(last) else s).withScanned(scan)
+        }
+        openWindow(MainTab.SEND)
+    }
 
     /** Sends links now and queues files; returns the message to show. */
     suspend fun send(target: Peer, tabs: List<Tab>, files: List<LocalUpload>): SendResult {
@@ -464,7 +528,7 @@ class AppController(
             if (url == _config.value.relayUrl) return@withLock
             serviceSwitch.withLock { serviceJob?.cancelAndJoin(); serviceJob = null }
             updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null) }
-            _peers.value = emptyList()
+            setPeers(emptyList())
             restartService()
         }
     }
