@@ -32,3 +32,17 @@ Needs two devices of each kind where noted (use a second PC or phone, or the fak
 - **Long names:** a file named with ~100 CJK characters or emoji saves on the phone.
 - **Android 14+:** the "Receiving…" / "Throwing…" progress notification appears while large files transfer.
 - **Icons:** the tray icon is visible on both dark and light taskbars; the launcher icon looks right with themed icons on (Android 13+).
+
+## Main window
+Real-desktop checks that automated tests could not cover (Windows PC with a paired phone or the fake phone).
+- **Tray double-click:** double-clicking the tray icon opens the main window; so does *Open Mjolnir* in the tray menu.
+- **Tray menu:** it contains exactly *Open Mjolnir*, *Send to device…*, *Send clipboard to {name}*, *Open received files*, *Quit Mjolnir*.
+- **Close hides:** closing the window hides it to the tray and Mjolnir keeps receiving. With *Keep running in the tray when I close this window* off, closing quits Mjolnir.
+- **Paste and drop:** Ctrl+V pastes and drag-and-drop works anywhere in the window (not only on the drop area), for links, files and images.
+- **Second launch:** launching Mjolnir again, or Explorer *Send to* → *Mjolnir*, brings the existing window to the front on the Send tab with the items already added.
+- **Photo preview:** the Send preview shows a photo's dimensions.
+- **Status:** the sidebar shows *Relay connected*; disconnect the network and it changes to *Connecting…*, then back to *Relay connected* when the network returns.
+- **Test button:** in Settings → Connection, *Test* with a bad address fails within 5 s; with the right address it reports success.
+- **Rename on the PC:** Devices → *Rename…* updates the Send cards and notifications; the new name survives a restart.
+- **Rename on the phone:** the phone's Devices → Rename updates the phone's throw target selector.
+- **Received tab:** it lists the last 100 items, newest first.

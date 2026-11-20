@@ -42,14 +42,14 @@ Run these from the `server/` directory after `./gradlew :server:buildFatJar` (th
 
 1. `fly launch --copy-config --no-deploy` uses the included `fly.toml`. Pick a unique app name when asked.
 2. `fly volumes create data --size 3` creates the persistent volume mounted at `/data`. It must hold the storage cap (2 GB by default) plus room for the database, so 3 GB is the minimum for the defaults. If you raise `MJOLNIR_MAX_STORAGE_MB`, make the volume bigger.
-3. Optional push: put the Firebase service-account JSON on the volume and point the relay at it:
+3. `fly deploy --ha=false` builds the image and starts the relay on a single machine (the relay keeps its data in one SQLite file, so it must never run on two). Check `https://<app>.fly.dev/health`.
+4. Optional push (needs the running machine, so do it after the first deploy): put the Firebase service-account JSON on the volume and point the relay at it:
    ```
    fly ssh console -C "mkdir -p /data/secrets"
    fly ssh sftp shell      # then: put service-account.json /data/secrets/firebase.json
    fly secrets set GOOGLE_APPLICATION_CREDENTIALS=/data/secrets/firebase.json
    ```
-   Alternatively store the JSON itself as a secret and write it to a file at startup. Never commit the JSON.
-4. `fly deploy --ha=false` builds the image and starts the relay on a single machine (the relay keeps its data in one SQLite file, so it must never run on two). Check `https://<app>.fly.dev/health`.
+   Setting the secret restarts the relay. Alternatively store the JSON itself as a secret and write it to a file at startup. Never commit the JSON.
 
 Use the `https://<app>.fly.dev` address as the relay URL in the PC and phone apps. Relay URLs must be `https://` (plain `http://` only for localhost).
 
@@ -88,10 +88,25 @@ The PC app is a tray app for Windows 10/11 (x64), packaged as an MSI.
 
 1. Get the MSI: download the `mjolnir-msi` artifact from the latest `windows` CI run, or build it on Windows with `./gradlew :desktop:packageMsi` (output in `desktop/build/compose/binaries/main/msi/`). To bake a default relay URL into the build, add `-Pmjolnir.relayUrl=https://<app>.fly.dev`.
 2. Run the MSI. It installs for the current user only (no admin rights needed) and adds Mjolnir to the Start menu.
-3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray; click it to open *Send to device…*. The tray menu also has *Pair a device…*, *Paired devices…*, *Open received files* and *Settings…*.
-4. Received files are saved to `Downloads\Mjolnir` (changeable in Settings). Tick *Start Mjolnir when I sign in to Windows* in Settings to start it automatically.
+3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray. Double-click it, or choose *Open Mjolnir* from its menu, to open the main window.
+4. The tray menu is: *Open Mjolnir*, *Send to device…*, *Send clipboard to {name}*, *Open received files*, *Quit Mjolnir*.
 
-Mjolnir adds itself to Explorer's *Send to* menu (right-click files or folders → *Send to* → *Mjolnir*; on Windows 11 it is under *Show more options*). The selection opens in the Send window of the running Mjolnir, or starts it. Untick *Show Mjolnir in Explorer's Send to menu* in Settings to remove the entry.
+### The main window
+
+The sidebar has four tabs (a Guest room tab is hidden until a later feature):
+
+- **Send:** pick a device, then paste (Ctrl+V) or drag links and files anywhere in the window. Photos preview with their dimensions.
+- **Received:** the last 100 items you received.
+- **Devices:** paired devices, *Pair a device…*, and *Rename…* to give a device a nickname on this PC. The phone has its own nicknames under Devices → Rename. A nickname shows on the Send cards and in notifications.
+- **Settings:**
+  - *Connection:* relay address, live status and a *Test* button.
+  - *This PC:* device name.
+  - *Receiving:* save folder (default `Downloads\Mjolnir`) and *Open received links in my browser straight away*.
+  - *Windows:* *Start Mjolnir when I sign in to Windows*, *Show Mjolnir in Explorer's Send to menu*, and *Keep running in the tray when I close this window*.
+
+Closing the window hides it to the tray; with *Keep running in the tray when I close this window* off, closing it quits Mjolnir.
+
+Mjolnir adds itself to Explorer's *Send to* menu (right-click files or folders → *Send to* → *Mjolnir*; on Windows 11 it is under *Show more options*). The selection opens on the Send tab of the running Mjolnir's window (brought to the front), or starts it. Untick *Show Mjolnir in Explorer's Send to menu* in Settings to remove the entry.
 
 **Uninstalling** leaves the *Send to* shortcut behind: untick *Show Mjolnir in Explorer's Send to menu* in Settings first, or delete `%APPDATA%\Microsoft\Windows\SendTo\Mjolnir.lnk` afterwards. Also untick *Start Mjolnir when I sign in to Windows* before uninstalling, or its sign-in entry (a `Run` registry value) stays behind.
 
@@ -109,4 +124,4 @@ Settings and state live in `%APPDATA%\Mjolnir` (`config.json`, `seen.json`, `out
 .\scripts\fake-phone.ps1 -Inbox
 ```
 
-The tray icon is the Material Symbols "hardware" glyph (Apache License 2.0).
+The hammer icon is the author's own artwork; `scripts/make-icons.py` generates the tray and app icons from it.
