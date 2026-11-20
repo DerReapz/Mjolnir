@@ -1,6 +1,7 @@
 package app.mjolnir.server
 
 import app.mjolnir.protocol.DeviceKind
+import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.FileRef
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.MjolnirJson
@@ -21,6 +22,8 @@ data class PairingRow(
     val claimerId: String?,
     val state: PairingState,
     val expiresAtMs: Long,
+    val kind: CodeKind = CodeKind.PAIRING,
+    val spaceId: String? = null,
 )
 
 data class DeliveryRow(
@@ -30,7 +33,11 @@ data class DeliveryRow(
     val tabs: List<Tab>,
     val sentAtMs: Long,
     val files: List<FileRef> = emptyList(),
+    val spaceId: String? = null,
+    val spaceName: String? = null,
 )
+
+data class SpaceRow(val id: String, val name: String, val adminId: String, val createdAtMs: Long)
 
 data class UploadRow(
     val id: String,
@@ -108,7 +115,27 @@ class Store(jdbcUrl: String) {
                     acked_at INTEGER NULL)"""
             )
             it.executeUpdate("CREATE INDEX IF NOT EXISTS files_delivery ON files(delivery_id)")
+            it.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS spaces(
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    admin_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL)"""
+            )
+            it.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS space_members(
+                    space_id TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    joined_at INTEGER NOT NULL,
+                    PRIMARY KEY(space_id, device_id))"""
+            )
+            it.executeUpdate("CREATE INDEX IF NOT EXISTS space_members_device ON space_members(device_id)")
         }
+        addColumnIfMissing("devices", "last_seen", "INTEGER NOT NULL DEFAULT 0")
+        addColumnIfMissing("pairings", "kind", "TEXT NOT NULL DEFAULT 'PAIRING'")
+        addColumnIfMissing("pairings", "space_id", "TEXT NULL")
+        addColumnIfMissing("deliveries", "space_id", "TEXT NULL")
+        addColumnIfMissing("deliveries", "space_name", "TEXT NULL")
         // Databases created before tombstones existed lack acked_at.
         val hasAckedAt = conn.createStatement().use { st ->
             st.executeQuery("PRAGMA table_info(files)").use { rs ->
@@ -120,10 +147,25 @@ class Store(jdbcUrl: String) {
         if (!hasAckedAt) conn.createStatement().use { it.executeUpdate("ALTER TABLE files ADD COLUMN acked_at INTEGER NULL") }
     }
 
+    /** Additive upgrade for relays whose database predates [column]. */
+    private fun addColumnIfMissing(table: String, column: String, definition: String) {
+        val present = conn.createStatement().use { st ->
+            st.executeQuery("PRAGMA table_info($table)").use { rs ->
+                var found = false
+                while (rs.next()) if (rs.getString("name") == column) found = true
+                found
+            }
+        }
+        if (!present) conn.createStatement().use { it.executeUpdate("ALTER TABLE $table ADD COLUMN $column $definition") }
+    }
+
     private fun ResultSet.toPairing() = PairingRow(
         getString("id"), getString("code"), getString("owner_id"), getString("claimer_id"),
         PairingState.valueOf(getString("state")), getLong("expires_at"),
+        CodeKind.valueOf(getString("kind")), getString("space_id"),
     )
+
+    private fun ResultSet.toSpace() = SpaceRow(getString("id"), getString("name"), getString("admin_id"), getLong("created_at"))
 
     private fun ResultSet.toDevice() =
         DeviceRow(getString("id"), getString("name"), DeviceKind.valueOf(getString("kind")), getString("push_token"))
@@ -167,15 +209,24 @@ class Store(jdbcUrl: String) {
         }
     }
 
+    /** Replaces only the owner's previous PENDING code of the same [kind] and [spaceId]. */
     @Synchronized
-    fun createPairing(ownerId: String, code: String, nowMs: Long): PairingRow {
-        conn.prepareStatement("DELETE FROM pairings WHERE owner_id=? AND state IN ('PENDING','CLAIMED')").use {
-            it.setString(1, ownerId); it.executeUpdate()
+    fun createPairing(
+        ownerId: String, code: String, nowMs: Long,
+        kind: CodeKind = CodeKind.PAIRING, spaceId: String? = null,
+    ): PairingRow {
+        conn.prepareStatement(
+            "DELETE FROM pairings WHERE owner_id=? AND state='PENDING' AND kind=? AND space_id IS ?"
+        ).use {
+            it.setString(1, ownerId); it.setString(2, kind.name); it.setString(3, spaceId); it.executeUpdate()
         }
-        val row = PairingRow(newId(), code, ownerId, null, PairingState.PENDING, nowMs + Limits.PAIRING_TTL_MS)
-        conn.prepareStatement("INSERT INTO pairings(id,code,owner_id,claimer_id,state,expires_at) VALUES(?,?,?,NULL,?,?)").use {
+        val row = PairingRow(newId(), code, ownerId, null, PairingState.PENDING, nowMs + Limits.PAIRING_TTL_MS, kind, spaceId)
+        conn.prepareStatement(
+            "INSERT INTO pairings(id,code,owner_id,claimer_id,state,expires_at,kind,space_id) VALUES(?,?,?,NULL,?,?,?,?)"
+        ).use {
             it.setString(1, row.id); it.setString(2, row.code); it.setString(3, ownerId)
             it.setString(4, row.state.name); it.setLong(5, row.expiresAtMs)
+            it.setString(6, kind.name); it.setString(7, spaceId)
             it.executeUpdate()
         }
         return row
@@ -267,11 +318,117 @@ class Store(jdbcUrl: String) {
         return Resolved.WON
     }
 
+    @Synchronized
+    fun createSpace(adminId: String, name: String, nowMs: Long): SpaceRow = transaction {
+        val row = SpaceRow(newId(), name, adminId, nowMs)
+        conn.prepareStatement("INSERT INTO spaces(id,name,admin_id,created_at) VALUES(?,?,?,?)").use {
+            it.setString(1, row.id); it.setString(2, name); it.setString(3, adminId); it.setLong(4, nowMs)
+            it.executeUpdate()
+        }
+        addMember(row.id, adminId, nowMs)
+        row
+    }
+
+    @Synchronized
+    fun space(id: String): SpaceRow? =
+        conn.prepareStatement("SELECT * FROM spaces WHERE id=?").use {
+            it.setString(1, id)
+            it.executeQuery().use { rs -> if (rs.next()) rs.toSpace() else null }
+        }
+
+    @Synchronized
+    fun spacesOf(deviceId: String): List<SpaceRow> =
+        conn.prepareStatement(
+            """SELECT s.* FROM spaces s JOIN space_members m ON m.space_id=s.id
+               WHERE m.device_id=? ORDER BY m.joined_at, s.id"""
+        ).use {
+            it.setString(1, deviceId)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toSpace()) } }
+        }
+
+    /** Members of [spaceId], earliest joiner first. */
+    @Synchronized
+    fun members(spaceId: String): List<DeviceRow> =
+        conn.prepareStatement(
+            """SELECT d.* FROM devices d JOIN space_members m ON m.device_id=d.id
+               WHERE m.space_id=? ORDER BY m.joined_at, d.id"""
+        ).use {
+            it.setString(1, spaceId)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toDevice()) } }
+        }
+
+    @Synchronized
+    fun addMember(spaceId: String, deviceId: String, nowMs: Long) {
+        conn.prepareStatement("INSERT OR IGNORE INTO space_members(space_id,device_id,joined_at) VALUES(?,?,?)").use {
+            it.setString(1, spaceId); it.setString(2, deviceId); it.setLong(3, nowMs); it.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    fun removeMember(spaceId: String, deviceId: String): Boolean =
+        conn.prepareStatement("DELETE FROM space_members WHERE space_id=? AND device_id=?").use {
+            it.setString(1, spaceId); it.setString(2, deviceId); it.executeUpdate() > 0
+        }
+
+    @Synchronized
+    fun renameSpace(id: String, name: String) {
+        conn.prepareStatement("UPDATE spaces SET name=? WHERE id=?").use {
+            it.setString(1, name); it.setString(2, id); it.executeUpdate()
+        }
+    }
+
+    /** Deletes the space, its memberships and its invite codes; returns the member ids to notify. */
+    @Synchronized
+    fun deleteSpace(id: String): List<String> = transaction {
+        val ids = members(id).map { it.id }
+        conn.prepareStatement("DELETE FROM space_members WHERE space_id=?").use { it.setString(1, id); it.executeUpdate() }
+        conn.prepareStatement("DELETE FROM pairings WHERE space_id=?").use { it.setString(1, id); it.executeUpdate() }
+        conn.prepareStatement("DELETE FROM spaces WHERE id=?").use { it.setString(1, id); it.executeUpdate() }
+        ids
+    }
+
+    /** One UPDATE guarded by the current admin, so of two racing transfers exactly one wins. */
+    @Synchronized
+    fun transferAdmin(spaceId: String, fromId: String, toId: String): Boolean =
+        conn.prepareStatement("UPDATE spaces SET admin_id=? WHERE id=? AND admin_id=?").use {
+            it.setString(1, toId); it.setString(2, spaceId); it.setString(3, fromId); it.executeUpdate() > 0
+        }
+
+    @Synchronized
+    fun shareSpace(a: String, b: String, spaceId: String): Boolean =
+        conn.prepareStatement(
+            "SELECT COUNT(*) FROM space_members WHERE space_id=? AND device_id IN (?,?)"
+        ).use {
+            it.setString(1, spaceId); it.setString(2, a); it.setString(3, b)
+            it.executeQuery().use { rs -> rs.next(); rs.getInt(1) == if (a == b) 1 else 2 }
+        }
+
+    /** Writes only when more than 60 s have passed since the last write. */
+    @Synchronized
+    fun touchLastSeen(deviceId: String, nowMs: Long) {
+        conn.prepareStatement("UPDATE devices SET last_seen=? WHERE id=? AND ?-last_seen>60000").use {
+            it.setLong(1, nowMs); it.setString(2, deviceId); it.setLong(3, nowMs); it.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    fun lastSeen(deviceId: String): Long =
+        conn.prepareStatement("SELECT last_seen FROM devices WHERE id=?").use {
+            it.setString(1, deviceId)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+        }
+
     private val tabsSerializer = ListSerializer(Tab.serializer())
 
     @Synchronized
-    fun createDelivery(fromId: String, toId: String, tabs: List<Tab>, nowMs: Long, id: String = newId()): String {
-        conn.prepareStatement("INSERT INTO deliveries(id,from_id,to_id,tabs_json,sent_at) VALUES(?,?,?,?,?)").use {
+    fun createDelivery(
+        fromId: String, toId: String, tabs: List<Tab>, nowMs: Long, id: String = newId(),
+        spaceId: String? = null, spaceName: String? = null,
+    ): String {
+        conn.prepareStatement(
+            "INSERT INTO deliveries(id,from_id,to_id,tabs_json,sent_at,space_id,space_name) VALUES(?,?,?,?,?,?,?)"
+        ).use {
+            it.setString(6, spaceId); it.setString(7, spaceName)
             it.setString(1, id); it.setString(2, fromId); it.setString(3, toId)
             it.setString(4, MjolnirJson.encodeToString(tabsSerializer, tabs)); it.setLong(5, nowMs)
             it.executeUpdate()
@@ -290,6 +447,7 @@ class Store(jdbcUrl: String) {
                         DeliveryRow(
                             rs.getString("id"), rs.getString("from_id"), rs.getString("to_id"),
                             MjolnirJson.decodeFromString(tabsSerializer, rs.getString("tabs_json")), rs.getLong("sent_at"),
+                            spaceId = rs.getString("space_id"), spaceName = rs.getString("space_name"),
                         )
                     )
                 }
@@ -477,7 +635,7 @@ class Store(jdbcUrl: String) {
     /** Row count of one of the relay's tables; for tests and diagnostics. */
     @Synchronized
     fun rowCount(table: String): Int {
-        require(table in setOf("devices", "pairings", "links", "deliveries", "uploads", "files")) { "unknown table" }
+        require(table in setOf("devices", "pairings", "links", "deliveries", "uploads", "files", "spaces", "space_members")) { "unknown table" }
         return conn.createStatement().use { st -> st.executeQuery("SELECT COUNT(*) FROM $table").use { rs -> rs.next(); rs.getInt(1) } }
     }
 
