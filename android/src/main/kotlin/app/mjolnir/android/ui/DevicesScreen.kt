@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -113,8 +114,8 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Mod
                             if (nickname != null) Text(peer.name, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(if (peer.kind == DeviceKind.PC) "PC" else "Phone", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
                         }
-                        TextButton(onClick = { renaming = peer }) { Text("Rename") }
-                        TextButton(onClick = { confirm = peer }) { Text("Unpair") }
+                        TextButton(onClick = { renaming = peer }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Rename") }
+                        TextButton(onClick = { confirm = peer }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Unpair") }
                     }
                 }
             }
@@ -126,6 +127,7 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Mod
         RenameDialog(
             shownName = state.nicknames[peer.deviceId] ?: peer.name,
             initial = state.nicknames[peer.deviceId].orEmpty(),
+            realName = peer.name,
             onSave = { vm.rename(peer.deviceId, it); renaming = null },
             onCancel = { renaming = null },
         )
@@ -142,16 +144,28 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Mod
 }
 
 @Composable
-private fun RenameDialog(shownName: String, initial: String, onSave: (String) -> Unit, onCancel: () -> Unit) {
+private fun RenameDialog(shownName: String, initial: String, realName: String, onSave: (String) -> Unit, onCancel: () -> Unit) {
     var text by rememberSaveable { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onCancel,
         title = { Text("Rename $shownName", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        text = { OutlinedTextField(shape = FieldShape, colors = forgeFieldColors(), value = text, onValueChange = { text = it }, singleLine = true) },
+        text = {
+            OutlinedTextField(
+                shape = FieldShape,
+                colors = forgeFieldColors(),
+                value = text,
+                onValueChange = { text = it.take(MAX_NICKNAME_CHARS) },
+                placeholder = { Text(realName) },
+                supportingText = { Text("Only you see this name, on this phone. Leave it empty to use the device's own name.") },
+                singleLine = true,
+            )
+        },
         confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Save") } },
         dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
     )
 }
+
+private const val MAX_NICKNAME_CHARS = 40
 
 private enum class PairMode { CHOOSE, ENTER, SHOW }
 

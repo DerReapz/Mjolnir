@@ -47,7 +47,7 @@ private fun ThrowPreview() = Forged {
 private fun CaughtPreview() = Forged {
     val now = System.currentTimeMillis()
     Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        CaughtRow(CaughtItem(tab = Tab("https://example.com", "Example"), fromName = "DESKTOP-4F2K", caughtAtEpochMs = now - 120_000), now) {}
+        CaughtRow(CaughtItem(tab = Tab("https://example.com", "Example"), fromName = "DESKTOP-4F2K", caughtAtEpochMs = now - 120_000), "DESKTOP-4F2K", now) {}
     }
 }
 

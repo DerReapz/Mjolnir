@@ -72,6 +72,9 @@ class ThrowViewModel(
     private val onUnauthorized: suspend () -> Unit = {},
 ) : ViewModel() {
     private val _state = MutableStateFlow(ThrowUiState())
+
+    /** Paired devices with their real names; [ThrowUiState.targets] shows them under their nicknames. */
+    private var peers: List<Peer> = emptyList()
     val state: StateFlow<ThrowUiState> = _state.asStateFlow()
 
     /** Serializes store writes so they land in the order they were made. */
@@ -85,6 +88,9 @@ class ThrowViewModel(
     private val everWritten = HashSet<String>()
 
     init {
+        viewModelScope.launch {
+            nicknames.changes.collect { _state.update { s -> s.copy(targets = shown(peers)) } }
+        }
         viewModelScope.launch {
             val stored = try {
                 withContext(io) { tray.read() }
@@ -178,6 +184,8 @@ class ThrowViewModel(
         }
     }
 
+    private fun shown(peers: List<Peer>) = peers.map { it.copy(name = nicknames.displayName(it)) }
+
     /** Loads every paired device (PC or phone) and picks the target: current, remembered, or the first. */
     fun refreshTargets() {
         viewModelScope.launch {
@@ -191,10 +199,11 @@ class ThrowViewModel(
             } catch (e: IOException) {
                 null
             }
+            this@ThrowViewModel.peers = peers
             val ids = peers.mapTo(HashSet()) { it.deviceId }
             _state.update { s ->
                 val target = s.targetId?.takeIf { it in ids } ?: remembered?.takeIf { it in ids } ?: peers.firstOrNull()?.deviceId
-                s.copy(targets = peers.map { it.copy(name = nicknames.displayName(it)) }, targetId = target)
+                s.copy(targets = shown(peers), targetId = target)
             }
         }
     }
@@ -290,7 +299,7 @@ class ThrowViewModel(
             var enqueueFailed = false
             for (group in groupForOutbox(fileItems)) {
                 val uploads = group.flatMap { it.toUploads() }
-                val item = OutgoingFiles(UUID.randomUUID().toString(), pc.deviceId, pc.name, uploads,
+                val item = OutgoingFiles(UUID.randomUUID().toString(), pc.deviceId, peers.find { it.deviceId == pc.deviceId }?.name ?: pc.name, uploads,
                     createdAtEpochMs = System.currentTimeMillis())
                 try {
                     withContext(io) { outbox.enqueue(item) }

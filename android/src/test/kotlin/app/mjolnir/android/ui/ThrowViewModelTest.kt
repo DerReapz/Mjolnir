@@ -81,6 +81,20 @@ class ThrowViewModelTest {
         assertEquals("pc1", vm.state.value.targetId)
     }
 
+    @Test fun renameUpdatesTargetsWithoutRefresh() = runTest {
+        vm.refreshTargets(); advanceUntilIdle()
+        nicknames.set("pc2", "Couch laptop"); advanceUntilIdle()
+        assertEquals(listOf("DESKTOP-4F2K", "Couch laptop", "Other phone"), vm.state.value.targets.map { it.name })
+        nicknames.remove("pc2"); advanceUntilIdle()
+        assertEquals("Laptop", vm.state.value.targets[1].name)
+    }
+
+    @Test fun queuedFilesKeepTheRealDeviceName() = runTest {
+        nicknames.set("pc1", "Work PC")
+        vm.addShared(listOf(f)); vm.refreshTargets(); advanceUntilIdle(); vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
+        assertEquals("DESKTOP-4F2K", outbox.pending().single().toName)
+    }
+
     @Test fun groupsSingleGroupNoTitle() = runTest {
         nicknames.set("ph", "Aaa")
         vm.refreshTargets(); advanceUntilIdle()

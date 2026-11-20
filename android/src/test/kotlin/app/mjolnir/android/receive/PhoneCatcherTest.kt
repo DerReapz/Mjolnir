@@ -51,6 +51,8 @@ class PhoneCatcherTest {
             displayName = { if (it.deviceId == "pc1") "Work PC" else it.name })
         named.handle(Delivery("d1", pc, listOf(Tab("https://a.com")), 0))
         assertEquals(listOf("Caught 1 tab from Work PC"), notes)
+        assertEquals(listOf("pc1"), store.read().map { it.fromDeviceId })
+        assertEquals(listOf("DESKTOP-4F2K"), store.read().map { it.fromName })
     }
 
     @Test fun savesLooseFileAndNotifies() = runTest {

@@ -74,12 +74,12 @@ class PhoneCatcher(
         val items = buildList {
             val folders = published.filter { it.first.folder != null }.groupBy { it.first.folder!!.substringBefore('/') }
             for ((name, files) in folders) {
-                add(CaughtItem(folder = SavedFolder(name, files.size, files.sumOf { it.second.sizeBytes }), fromName = d.from.name, caughtAtEpochMs = at))
+                add(CaughtItem(folder = SavedFolder(name, files.size, files.sumOf { it.second.sizeBytes }), fromName = d.from.name, caughtAtEpochMs = at, fromDeviceId = d.from.deviceId))
             }
             for ((target, saved) in published) {
-                if (target.folder == null) add(CaughtItem(file = saved, fromName = d.from.name, caughtAtEpochMs = at))
+                if (target.folder == null) add(CaughtItem(file = saved, fromName = d.from.name, caughtAtEpochMs = at, fromDeviceId = d.from.deviceId))
             }
-            for (tab in tabs) add(CaughtItem(tab = tab, fromName = d.from.name, caughtAtEpochMs = at))
+            for (tab in tabs) add(CaughtItem(tab = tab, fromName = d.from.name, caughtAtEpochMs = at, fromDeviceId = d.from.deviceId))
         }
         if (items.isEmpty()) return
         try {

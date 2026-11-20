@@ -31,6 +31,7 @@ import app.mjolnir.android.receive.openFile
 import app.mjolnir.android.receive.openTabs
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.Messages
+import app.mjolnir.client.Nicknames
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
@@ -45,7 +46,11 @@ class CaughtViewModel(
     private val caught: JsonFileStore<List<CaughtItem>>,
     changes: Flow<Long>,
     private val io: CoroutineDispatcher,
+    nicknames: Nicknames,
 ) : ViewModel() {
+    /** Current nicknames, so a rename shows in the list at once. */
+    val nicknames: StateFlow<Map<String, String>> = nicknames.changes
+
     private val _items = MutableStateFlow<List<CaughtItem>>(emptyList())
     val items: StateFlow<List<CaughtItem>> = _items.asStateFlow()
 
@@ -76,6 +81,7 @@ class CaughtViewModel(
 @Composable
 fun CaughtScreen(vm: CaughtViewModel, modifier: Modifier = Modifier) {
     val items by vm.items.collectAsState()
+    val nicknames by vm.nicknames.collectAsState()
     val context = LocalContext.current
     val tabs = items.mapNotNull { it.tab }
 
@@ -90,7 +96,7 @@ fun CaughtScreen(vm: CaughtViewModel, modifier: Modifier = Modifier) {
             val now = System.currentTimeMillis()
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 itemsIndexed(items) { _, item ->
-                    CaughtRow(item, now) {
+                    CaughtRow(item, caughtFrom(item, nicknames), now) {
                         when {
                             item.tab != null -> openTabs(context, listOf(item.tab))
                             item.file != null -> openFile(context, item.file)
@@ -104,7 +110,7 @@ fun CaughtScreen(vm: CaughtViewModel, modifier: Modifier = Modifier) {
 }
 
 @Composable
-internal fun CaughtRow(item: CaughtItem, now: Long, onClick: () -> Unit) {
+internal fun CaughtRow(item: CaughtItem, from: String, now: Long, onClick: () -> Unit) {
     val (glyph, title, detail) = when {
         item.tab != null -> Triple("🔗", item.tab.title ?: item.tab.url, if (item.tab.title != null) item.tab.url else null)
         item.file != null -> Triple("📄", item.file.name, Messages.size(item.file.sizeBytes))
@@ -120,10 +126,14 @@ internal fun CaughtRow(item: CaughtItem, now: Long, onClick: () -> Unit) {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Text(
-                "from ${item.fromName} · $ago",
+                "from $from · $ago",
                 style = MaterialTheme.typography.bodySmall,
                 color = Forge.Muted,
             )
         }
     }
 }
+
+/** The sender as shown: its nickname now, else the name it had when caught. */
+internal fun caughtFrom(item: CaughtItem, nicknames: Map<String, String>): String =
+    item.fromDeviceId?.let { nicknames[it] } ?: item.fromName

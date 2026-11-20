@@ -19,4 +19,6 @@ data class CaughtItem(
     val folder: SavedFolder? = null,
     val fromName: String,
     val caughtAtEpochMs: Long,
+    /** The sender's device id, so its nickname is looked up when shown; null for items saved before it was kept. */
+    val fromDeviceId: String? = null,
 )

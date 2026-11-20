@@ -72,7 +72,7 @@ class MainActivity : ComponentActivity() {
                     val throwing = throwVm
                     PairingViewModel(c.api, c.config, onUnauthorized = { session.reset() }, onPaired = { throwing.refreshTargets() })
                 }
-                CaughtViewModel::class.java -> CaughtViewModel(c.caught, c.caughtChanged, Dispatchers.IO)
+                CaughtViewModel::class.java -> CaughtViewModel(c.caught, c.caughtChanged, Dispatchers.IO, c.nicknames)
                 SettingsViewModel::class.java -> SettingsViewModel(c.api, c.config, session, onRelayUrlChanged = c::invalidateRelayClient)
                 else -> error("Unknown ViewModel $modelClass")
             } as T
