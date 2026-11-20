@@ -40,8 +40,8 @@ class SpacesStoreTest {
         val a = device(); val b = device(); val o = device()
         val s = store.createSpace(a.id, "Home", 10)
         store.addMember(s.id, b.id, 20)
-        assertTrue(store.removeMember(s.id, b.id))
-        assertFalse(store.removeMember(s.id, b.id))
+        assertEquals(Store.Removed.REMOVED, store.removeMember(s.id, b.id, a.id))
+        assertEquals(Store.Removed.NOT_MEMBER, store.removeMember(s.id, b.id, a.id))
         assertEquals(listOf(a.id), store.members(s.id).map { it.id })
         assertFalse(store.shareSpace(a.id, b.id, s.id))
         assertFalse(store.shareSpace(a.id, o.id, s.id))
@@ -52,7 +52,7 @@ class SpacesStoreTest {
         val a = device(); val b = device()
         val s = store.createSpace(a.id, "Home", 10)
         store.addMember(s.id, b.id, 20)
-        assertEquals(setOf(a.id, b.id), store.deleteSpace(s.id).toSet())
+        assertEquals(setOf(a.id, b.id), store.deleteSpace(s.id, a.id)!!.toSet())
         assertNull(store.space(s.id))
         assertTrue(store.members(s.id).isEmpty())
         assertTrue(store.spacesOf(a.id).isEmpty())
@@ -61,7 +61,7 @@ class SpacesStoreTest {
     @Test fun renameSpace() {
         val a = device()
         val s = store.createSpace(a.id, "Home", 10)
-        store.renameSpace(s.id, "Office")
+        assertTrue(store.renameSpace(s.id, a.id, "Office"))
         assertEquals("Office", store.space(s.id)?.name)
     }
 
@@ -137,5 +137,38 @@ class SpacesStoreTest {
         assertEquals(100_000L, store.lastSeen(a.id))
         store.touchLastSeen(a.id, 160_001)
         assertEquals(160_001L, store.lastSeen(a.id))
+    }
+
+    // Interleaving: the route read "B is a plain member" and "A is admin", then A's transfer lands first.
+    @Test fun leaveAfterBecomingAdminIsRefused() {
+        val a = device(); val b = device()
+        val s = store.createSpace(a.id, "Home", 10)
+        store.addMember(s.id, b.id, 20)
+        assertTrue(store.transferAdmin(s.id, a.id, b.id))
+        assertEquals(Store.Removed.ADMIN_MUST_TRANSFER, store.removeMember(s.id, b.id, b.id))
+        assertEquals(Store.Removed.ADMIN_MUST_TRANSFER, store.removeMember(s.id, b.id, a.id))
+        assertEquals(listOf(a.id, b.id), store.members(s.id).map { it.id })
+    }
+
+    // Interleaving: the route saw the target as a member, then the target left before the transfer.
+    @Test fun transferToDepartedMemberIsRefused() {
+        val a = device(); val b = device()
+        val s = store.createSpace(a.id, "Home", 10)
+        store.addMember(s.id, b.id, 20)
+        assertEquals(Store.Removed.REMOVED, store.removeMember(s.id, b.id, b.id))
+        assertFalse(store.transferAdmin(s.id, a.id, b.id))
+        assertEquals(a.id, store.space(s.id)!!.adminId)
+    }
+
+    @Test fun formerAdminCannotRenameDeleteOrRemove() {
+        val a = device(); val b = device(); val c = device()
+        val s = store.createSpace(a.id, "Home", 10)
+        store.addMember(s.id, b.id, 20); store.addMember(s.id, c.id, 30)
+        assertTrue(store.transferAdmin(s.id, a.id, b.id)) // lands after A's checks passed
+        assertFalse(store.renameSpace(s.id, a.id, "Mine"))
+        assertEquals(Store.Removed.NOT_ADMIN, store.removeMember(s.id, c.id, a.id))
+        assertNull(store.deleteSpace(s.id, a.id))
+        assertEquals("Home", store.space(s.id)!!.name)
+        assertEquals(3, store.members(s.id).size)
     }
 }

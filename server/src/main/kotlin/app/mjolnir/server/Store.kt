@@ -303,7 +303,7 @@ class Store(jdbcUrl: String) {
         }
     }
 
-    enum class Resolved { NOT_FOUND, FORBIDDEN, WON, ALREADY_ACCEPTED, FULL }
+    enum class Resolved { NOT_FOUND, FORBIDDEN, WON, ALREADY_ACCEPTED, FULL, SPACE_LIMIT }
 
     /**
      * One atomic CLAIMED -> ACCEPTED/REJECTED transition by the owner. Accepting a PAIRING links the two devices;
@@ -311,7 +311,9 @@ class Store(jdbcUrl: String) {
      * room (FULL, with the pairing left CLAIMED).
      */
     @Synchronized
-    fun resolvePairing(id: String, deviceId: String, accept: Boolean, nowMs: Long, maxMembers: Int = Int.MAX_VALUE): Resolved = transaction {
+    fun resolvePairing(id: String, deviceId: String, accept: Boolean, nowMs: Long,
+        maxMembers: Int = Int.MAX_VALUE, maxSpaces: Int = Int.MAX_VALUE,
+    ): Resolved = transaction {
         val row = pairing(id)
         if (row == null || (row.ownerId != deviceId && row.claimerId != deviceId)) return@transaction Resolved.NOT_FOUND
         if (row.ownerId != deviceId) return@transaction Resolved.FORBIDDEN
@@ -326,7 +328,11 @@ class Store(jdbcUrl: String) {
         if (invite) {
             val space = row.spaceId?.let { space(it) }
             if (space == null || space.adminId != row.ownerId) return@transaction Resolved.NOT_FOUND
+            // A vanished device can neither be added nor approve anything.
+            if (device(claimerId) == null || device(row.ownerId) == null) return@transaction Resolved.NOT_FOUND
             if (accept) {
+                // guest check added by guest-room plan
+                if (spacesOf(claimerId).size >= maxSpaces) return@transaction Resolved.SPACE_LIMIT
                 if (members(space.id).size >= maxMembers) return@transaction Resolved.FULL
                 addMember(space.id, claimerId, nowMs)
             }
@@ -383,22 +389,35 @@ class Store(jdbcUrl: String) {
         }
     }
 
+    enum class Removed { REMOVED, NOT_MEMBER, NOT_ADMIN, ADMIN_MUST_TRANSFER }
+
+    /**
+     * Removes [deviceId] on behalf of [actingId]: a device may remove itself, the admin may remove others.
+     * The admin can never be removed, so a space always keeps an admin who is a member. Checked and written
+     * under one lock, so a transfer racing a leave cannot orphan the admin seat.
+     */
     @Synchronized
-    fun removeMember(spaceId: String, deviceId: String): Boolean =
-        conn.prepareStatement("DELETE FROM space_members WHERE space_id=? AND device_id=?").use {
+    fun removeMember(spaceId: String, deviceId: String, actingId: String): Removed {
+        val space = space(spaceId) ?: return Removed.NOT_MEMBER
+        if (deviceId == space.adminId) return Removed.ADMIN_MUST_TRANSFER
+        if (actingId != deviceId && actingId != space.adminId) return Removed.NOT_ADMIN
+        val removed = conn.prepareStatement("DELETE FROM space_members WHERE space_id=? AND device_id=?").use {
             it.setString(1, spaceId); it.setString(2, deviceId); it.executeUpdate() > 0
         }
-
-    @Synchronized
-    fun renameSpace(id: String, name: String) {
-        conn.prepareStatement("UPDATE spaces SET name=? WHERE id=?").use {
-            it.setString(1, name); it.setString(2, id); it.executeUpdate()
-        }
+        return if (removed) Removed.REMOVED else Removed.NOT_MEMBER
     }
 
-    /** Deletes the space, its memberships and its invite codes; returns the member ids to notify. */
+    /** Renames only when [actingId] is the current admin; false otherwise. */
     @Synchronized
-    fun deleteSpace(id: String): List<String> = transaction {
+    fun renameSpace(id: String, actingId: String, name: String): Boolean =
+        conn.prepareStatement("UPDATE spaces SET name=? WHERE id=? AND admin_id=?").use {
+            it.setString(1, name); it.setString(2, id); it.setString(3, actingId); it.executeUpdate() > 0
+        }
+
+    /** Deletes the space, its memberships and its invite codes when [actingId] is the admin; returns the member ids to notify, or null. */
+    @Synchronized
+    fun deleteSpace(id: String, actingId: String): List<String>? = transaction {
+        if (space(id)?.adminId != actingId) return@transaction null
         val ids = members(id).map { it.id }
         conn.prepareStatement("DELETE FROM space_members WHERE space_id=?").use { it.setString(1, id); it.executeUpdate() }
         conn.prepareStatement("DELETE FROM pairings WHERE space_id=?").use { it.setString(1, id); it.executeUpdate() }
@@ -406,12 +425,24 @@ class Store(jdbcUrl: String) {
         ids
     }
 
-    /** One UPDATE guarded by the current admin, so of two racing transfers exactly one wins. */
+    /** One UPDATE guarded by the current admin and the target's membership, so of two racing transfers exactly one wins. */
     @Synchronized
     fun transferAdmin(spaceId: String, fromId: String, toId: String): Boolean =
-        conn.prepareStatement("UPDATE spaces SET admin_id=? WHERE id=? AND admin_id=?").use {
-            it.setString(1, toId); it.setString(2, spaceId); it.setString(3, fromId); it.executeUpdate() > 0
+        conn.prepareStatement(
+            """UPDATE spaces SET admin_id=? WHERE id=? AND admin_id=?
+               AND EXISTS(SELECT 1 FROM space_members WHERE space_id=? AND device_id=?)"""
+        ).use {
+            it.setString(1, toId); it.setString(2, spaceId); it.setString(3, fromId)
+            it.setString(4, spaceId); it.setString(5, toId)
+            it.executeUpdate() > 0
         }
+
+    /** Removes a device row; its pairings and memberships are left to the purge and the guards above. */
+    internal fun deleteDevice(id: String) {
+        synchronized(this) {
+            conn.prepareStatement("DELETE FROM devices WHERE id=?").use { it.setString(1, id); it.executeUpdate() }
+        }
+    }
 
     @Synchronized
     fun shareSpace(a: String, b: String, spaceId: String): Boolean =

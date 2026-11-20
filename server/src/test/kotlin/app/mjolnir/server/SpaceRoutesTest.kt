@@ -438,4 +438,47 @@ class SpaceRoutesTest {
     @Test fun spaceRoutesRequireAuth() = relayTest {
         assertEquals(HttpStatusCode.Unauthorized, client.get("/v1/spaces").status)
     }
+
+    @Test fun memberSelfLeaveNotifiesRemainingAndLeaver() = relayTest {
+        val a = register("A"); val b = register("B"); val c = register("C")
+        val s = createSpace(a); join(a, s, b); join(a, s, c)
+        withEvents(a) { val ea = this; withEvents(c) { val ec = this
+            assertEquals(HttpStatusCode.NoContent, client.delete("/v1/spaces/${s.id}/members/${c.deviceId}") { bearerAuth(c.token) }.status)
+            assertEquals(RelayEvent.SpaceChanged(s.id), ec.next())
+            assertEquals(RelayEvent.SpaceChanged(s.id), ea.next())
+        } }
+    }
+
+    @Test fun joinerSpaceLimitHoldsAtAccept() = relayTest(limits = RelayLimits(maxSpacesPerDevice = 2)) {
+        val a = register("A"); val b = register("B"); val j = register("J")
+        val s1 = createSpace(a, "1"); val s2 = createSpace(a, "2"); val s3 = createSpace(b, "3")
+        val c1 = claimInvite(j, inviteCode(a, s1.id)).body<ClaimResponse>()
+        val c2 = claimInvite(j, inviteCode(a, s2.id)).body<ClaimResponse>()
+        val c3 = claimInvite(j, inviteCode(b, s3.id)).body<ClaimResponse>()
+        assertEquals(HttpStatusCode.NoContent, accept(a, c1.pairingId))
+        assertEquals(HttpStatusCode.NoContent, accept(a, c2.pairingId))
+        val r = client.post("/v1/pairings/${c3.pairingId}/accept") { bearerAuth(b.token) }
+        assertEquals(HttpStatusCode.Conflict, r.status); assertEquals("space_limit", r.body<ErrorResponse>().error)
+        assertEquals(2, spaces(j).size)
+    }
+
+    @Test fun acceptInviteOfVanishedClaimerIsNotFound() = relayTest {
+        val a = register("A"); val j = register("J")
+        val s = createSpace(a)
+        val claim = claimInvite(j, inviteCode(a, s.id)).body<ClaimResponse>()
+        store.deleteDevice(j.deviceId)
+        assertEquals(HttpStatusCode.NotFound, accept(a, claim.pairingId))
+        assertEquals(1, spaces(a).single().members.size)
+    }
+
+    @Test fun spaceNamesRejectControlCharacters() = relayTest {
+        val a = register("A")
+        assertEquals(HttpStatusCode.BadRequest, createSpaceResponse(a, "Fri\nends").status)
+        assertEquals(HttpStatusCode.BadRequest, createSpaceResponse(a, "Fri\u0007ends").status)
+        val s = createSpace(a)
+        val r = client.patch("/v1/spaces/${s.id}") {
+            bearerAuth(a.token); contentType(ContentType.Application.Json); setBody(RenameSpaceRequest("a\tb"))
+        }
+        assertEquals(HttpStatusCode.BadRequest, r.status); assertEquals("invalid_name", r.body<ErrorResponse>().error)
+    }
 }

@@ -29,9 +29,9 @@ fun SpaceRow.toRef() = SpaceRef(id, name)
 fun Store.spaceView(row: SpaceRow): Space =
     Space(row.id, row.name, row.adminId, members(row.id).map { it.toPeer() }, lastSeen(row.adminId))
 
-/** Trimmed name, or null when empty or longer than the limit. */
+/** Trimmed name, or null when empty, too long or containing control characters (device names have no such rule; this one is stricter). */
 private fun validSpaceName(raw: String): String? =
-    raw.trim().takeIf { it.isNotEmpty() && it.length <= Limits.MAX_SPACE_NAME_LENGTH }
+    raw.trim().takeIf { it.isNotEmpty() && it.length <= Limits.MAX_SPACE_NAME_LENGTH && it.none(Char::isISOControl) }
 
 private suspend fun ApplicationCall.error(status: HttpStatusCode, code: String) = respond(status, ErrorResponse(code))
 
@@ -83,17 +83,18 @@ fun Route.spaceRoutes(deps: RelayDeps) {
         }
 
         patch("/v1/spaces/{id}") {
-            val (row, _) = call.adminSpace() ?: return@patch
+            val (row, me) = call.adminSpace() ?: return@patch
             val name = validSpaceName(call.receive<RenameSpaceRequest>().name)
                 ?: return@patch call.error(HttpStatusCode.BadRequest, "invalid_name")
-            store.renameSpace(row.id, name)
+            if (!store.renameSpace(row.id, me, name)) return@patch call.error(HttpStatusCode.Forbidden, "not_admin")
             emitSpaceChanged(deps, row.id)
             call.respond(store.spaceView(row.copy(name = name)))
         }
 
         delete("/v1/spaces/{id}") {
             val (row, me) = call.adminSpace() ?: return@delete
-            store.deleteSpace(row.id).filter { it != me }.forEach { deps.hub.emit(it, RelayEvent.SpaceDeleted(row.toRef())) }
+            val members = store.deleteSpace(row.id, me) ?: return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
+            members.filter { it != me }.forEach { deps.hub.emit(it, RelayEvent.SpaceDeleted(row.toRef())) }
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -106,9 +107,12 @@ fun Route.spaceRoutes(deps: RelayDeps) {
         delete("/v1/spaces/{id}/members/{deviceId}") {
             val (row, me) = call.memberSpace() ?: return@delete
             val target = call.parameters["deviceId"]!!
-            if (target != me && row.adminId != me) return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
-            if (target == row.adminId) return@delete call.error(HttpStatusCode.Conflict, "admin_must_transfer")
-            if (!store.removeMember(row.id, target)) return@delete call.error(HttpStatusCode.NotFound, "not_found")
+            when (store.removeMember(row.id, target, me)) {
+                Store.Removed.NOT_ADMIN -> return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
+                Store.Removed.ADMIN_MUST_TRANSFER -> return@delete call.error(HttpStatusCode.Conflict, "admin_must_transfer")
+                Store.Removed.NOT_MEMBER -> return@delete call.error(HttpStatusCode.NotFound, "not_found")
+                Store.Removed.REMOVED -> Unit
+            }
             emitSpaceChanged(deps, row.id, also = listOf(target))
             call.respond(HttpStatusCode.NoContent)
         }

@@ -63,6 +63,7 @@ fun Route.pairingRoutes(deps: RelayDeps) {
                 var space: SpaceRef? = null
                 if (open.kind == CodeKind.SPACE_INVITE) {
                     // The inviter must still administer the space: a transferred or deleted space voids its old invites.
+                    // guest check added by guest-room plan
                     val s = open.spaceId?.let { store.space(it) }
                     if (s == null || s.adminId != open.ownerId) return@post call.notFound()
                     space = s.toRef()
@@ -97,19 +98,20 @@ fun Route.pairingRoutes(deps: RelayDeps) {
         post("/v1/pairings/{id}/accept") {
             val me = call.me()
             val id = call.parameters["id"]!!
-            val result = store.resolvePairing(id, me.deviceId, accept = true, nowMs = deps.clock.nowMs(), maxMembers = deps.limits.maxMembersPerSpace)
+            val result = store.resolvePairing(id, me.deviceId, accept = true, nowMs = deps.clock.nowMs(), maxMembers = deps.limits.maxMembersPerSpace, maxSpaces = deps.limits.maxSpacesPerDevice)
             when (result) {
                 Store.Resolved.NOT_FOUND -> call.notFound()
                 Store.Resolved.FULL -> call.respond(HttpStatusCode.Conflict, ErrorResponse("member_limit"))
+                Store.Resolved.SPACE_LIMIT -> call.respond(HttpStatusCode.Conflict, ErrorResponse("space_limit"))
                 Store.Resolved.FORBIDDEN -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("forbidden"))
                 Store.Resolved.ALREADY_ACCEPTED -> call.respond(HttpStatusCode.NoContent)
                 Store.Resolved.WON -> {
                     val row = store.pairing(id)!!
-                    val owner = store.device(row.ownerId)!!
-                    val claimer = store.device(row.claimerId!!)!!
                     if (row.kind == CodeKind.SPACE_INVITE) {
                         emitSpaceChanged(deps, row.spaceId!!)
                     } else {
+                        val owner = store.device(row.ownerId) ?: return@post call.notFound()
+                        val claimer = store.device(row.claimerId!!) ?: return@post call.notFound()
                         hub.emit(owner.id, RelayEvent.Paired(claimer.toPeer()))
                         hub.emit(claimer.id, RelayEvent.Paired(owner.toPeer()))
                     }
@@ -121,7 +123,7 @@ fun Route.pairingRoutes(deps: RelayDeps) {
         post("/v1/pairings/{id}/reject") {
             val me = call.me()
             when (store.resolvePairing(call.parameters["id"]!!, me.deviceId, accept = false, nowMs = deps.clock.nowMs())) {
-                Store.Resolved.NOT_FOUND, Store.Resolved.ALREADY_ACCEPTED, Store.Resolved.FULL -> call.notFound()
+                Store.Resolved.NOT_FOUND, Store.Resolved.ALREADY_ACCEPTED, Store.Resolved.FULL, Store.Resolved.SPACE_LIMIT -> call.notFound()
                 Store.Resolved.FORBIDDEN -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("forbidden"))
                 Store.Resolved.WON -> call.respond(HttpStatusCode.NoContent)
             }
