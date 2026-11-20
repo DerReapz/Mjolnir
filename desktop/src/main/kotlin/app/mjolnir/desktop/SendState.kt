@@ -82,9 +82,12 @@ data class SendState(
     /** Drops [urls] from the pasted text and the link list; the check marks of the remaining links are kept. */
     fun withoutLinks(urls: Set<String>): SendState {
         if (urls.isEmpty()) return this
-        // Whole links only: a sent URL that prefixes another link must not damage it.
+        // Drop whole tokens only (a sent URL that prefixes another link must not damage it); prose and lines stay.
+        val text = text.lines()
+            .map { line -> line.split(Regex("\\s+")).filter { it.isNotEmpty() && it.trimEnd('.', ',', ';', ':', '!', '?', ')') !in urls }.joinToString(" ") }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n")
         val left = links - urls
-        val text = left.joinToString("\n")
         return copy(text = text, links = left, selected = selected - urls)
     }
 

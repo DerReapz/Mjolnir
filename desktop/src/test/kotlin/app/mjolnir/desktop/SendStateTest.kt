@@ -139,6 +139,20 @@ class SameNameFoldersTest {
         assertEquals("https://a.com/page", after.text)
     }
 
+    @Test fun sendKeepsProseAroundUnsentLinks() {
+        val s = SendState().withText("look https://a.com/x and note\nsecond line https://b.com").toggle("https://a.com/x")
+        val after = s.withoutLinks(setOf("https://b.com"))
+        assertEquals("look https://a.com/x and note\nsecond line", after.text)
+        assertEquals(listOf("https://a.com/x"), after.links)
+        assertTrue(after.selected.isEmpty())
+    }
+
+    @Test fun sendRemovesOnlySentTokenFromMixedLine() {
+        val after = SendState().withText("see https://a.com and https://a.com/page").withoutLinks(setOf("https://a.com"))
+        assertEquals("see and https://a.com/page", after.text)
+        assertEquals(listOf("https://a.com/page"), after.links)
+    }
+
     @Test fun uncheckedFileMeansCannotSend() {
         val peer = Peer("p", "P", DeviceKind.PC)
         val s = SendState().withTargets(listOf(peer), null).copy(files = listOf(upload("/x/a.txt", "a.txt")))
