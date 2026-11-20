@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.LocalUpload
 import app.mjolnir.client.Messages
+import app.mjolnir.client.destinationKey
 import app.mjolnir.desktop.ItemPreview
 import app.mjolnir.desktop.SendState
 import app.mjolnir.desktop.detailLine
@@ -118,14 +119,15 @@ fun SendTabContent(
             ForgeSectionLabel("Send to")
             if (state.targets.isEmpty()) ForgeTextButton("Pair a device…", onClick = onPair)
             state.groups(nicknameOf).forEach { group ->
-                group.title?.let { Text(it, style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted)) }
+                group.title?.let { ForgeSectionLabel(it) }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     group.peers.forEach { peer ->
                         val kind = if (peer.kind == DeviceKind.PHONE) "Phone" else "PC"
+                        // A device in two spaces has a card under each heading; the card clicked decides the space sent.
                         Column(
                             Modifier.widthIn(min = 170.dp, max = 260.dp).heightIn(min = 52.dp).clip(Forge.inputShape)
-                                .forgeCard(peer.deviceId == state.targetId)
-                                .clickable { onUpdate { it.selectTarget(peer.deviceId) } }.padding(horizontal = 12.dp, vertical = 8.dp),
+                                .forgeCard(state.isSelected(peer))
+                                .clickable { onUpdate { it.selectTarget(peer.destinationKey) } }.padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.Center,
                         ) {
                             Text(nicknameOf(peer), style = TextStyle(fontFamily = ForgeFonts.inter600, fontSize = 14.sp, color = Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)

@@ -18,6 +18,8 @@ data class ReceivedEntry(
     val kind: Kind,
     val title: String,
     val target: String,
+    /** The space the item arrived through, kept from the delivery; null for paired devices. */
+    val space: String? = null,
 )
 
 /** What this PC has received, newest first, kept to the last [cap] entries and persisted through [store]. */

@@ -1,8 +1,10 @@
 package app.mjolnir.desktop
 
 import app.mjolnir.client.DestinationGroup
+import app.mjolnir.client.DestinationKey
 import app.mjolnir.client.LocalUpload
 import app.mjolnir.client.Messages
+import app.mjolnir.client.destinationKey
 import app.mjolnir.client.groupDestinations
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
@@ -20,7 +22,8 @@ data class SendState(
     val links: List<String> = emptyList(),
     val selected: Set<String> = emptySet(),
     val targets: List<Peer> = emptyList(),
-    val targetId: String? = null,
+    /** The chosen card: a device in the context of one space (null: a paired device). */
+    val targetKey: DestinationKey? = null,
     val files: List<LocalUpload> = emptyList(),
     val notice: String? = null,
     /** The destination used last; sorts first in [groups]. */
@@ -103,23 +106,41 @@ data class SendState(
 
     fun toggle(url: String): SendState = copy(selected = if (url in selected) selected - url else selected + url)
 
-    /** Target: the current or [lastTargetId] if still paired, else the first paired device (PC or phone), else null. */
+    /** The chosen device; its cards under every heading are highlighted (see [isSelected]). */
+    val targetId: String? get() = targetKey?.deviceId
+
+    /**
+     * Target: the current card if still listed, else the card of [lastTargetId] (its *My devices* card when it has one),
+     * else the first card (PC or phone), else null.
+     */
     fun withTargets(peers: List<Peer>, lastTargetId: String?): SendState {
-        val ids = peers.map { it.deviceId }
-        val target = targetId?.takeIf { it in ids } ?: lastTargetId?.takeIf { it in ids } ?: ids.firstOrNull()
-        return copy(targets = peers, targetId = target, lastUsedId = lastTargetId)
+        val keys = peers.map { it.destinationKey }
+        val last = lastTargetId?.let { id -> keys.firstOrNull { it.deviceId == id && it.spaceId == null } ?: keys.firstOrNull { it.deviceId == id } }
+        val target = targetKey?.takeIf { it in keys } ?: last ?: keys.firstOrNull()
+        return copy(targets = peers, targetKey = target, lastUsedId = lastTargetId)
     }
 
-    fun selectTarget(id: String): SendState = if (targets.any { it.deviceId == id }) copy(targetId = id) else this
+    /** Selects the card [key] (a device under one heading); unknown cards change nothing. */
+    fun selectTarget(key: DestinationKey): SendState = if (targets.any { it.destinationKey == key }) copy(targetKey = key) else this
+
+    /** Selects [id]'s *My devices* card, else its first card. */
+    fun selectTarget(id: String): SendState {
+        val cards = targets.filter { it.deviceId == id }.map { it.destinationKey }
+        return (cards.firstOrNull { it.spaceId == null } ?: cards.firstOrNull())?.let(::selectTarget) ?: this
+    }
+
+    /** True for every card of the chosen device, whichever heading it sits under. */
+    fun isSelected(peer: Peer): Boolean = peer.deviceId == targetKey?.deviceId
 
     /** Files and folders whose row ([uploadUnitKey]) is checked. */
     val selectedFiles: List<LocalUpload> get() = files.filter { uploadUnitKey(it) in selected }
 
-    val canSend: Boolean get() = targetId != null && (links.any { it in selected } || selectedFiles.isNotEmpty())
+    val canSend: Boolean get() = targetKey != null && (links.any { it in selected } || selectedFiles.isNotEmpty())
 
     fun tabs(): List<Tab> = links.filter { it in selected }.map { Tab(it) }
 
-    val target: Peer? get() = targets.find { it.deviceId == targetId }
+    /** The chosen card's peer; its `space` is the space the send is made in. */
+    val target: Peer? get() = targets.find { it.destinationKey == targetKey }
 }
 
 /** One added file or folder after reading the disk: its uploads, or why it was refused. */

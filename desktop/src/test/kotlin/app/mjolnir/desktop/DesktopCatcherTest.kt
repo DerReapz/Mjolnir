@@ -123,4 +123,16 @@ class DesktopCatcherTest {
         catcher(FakeRelayApi(), dir).handle(d(listOf(Tab("https://a.com")), emptyList()))
         assertEquals(listOf("Caught 1 tab from Sam's phone"), notes)
     }
+
+    @Test fun labelIncludesSpace(@TempDir dir: File) = runTest {
+        val api = FakeRelayApi(); val ref = api.putBlob("f1", "report.pdf", "pdf".toByteArray())
+        val c = catcher(api, dir)
+        c.handle(Delivery("d1", phone, emptyList(), 0, listOf(ref), SpaceRef("s1", "Friends")))
+        assertEquals(listOf("Caught 1 file from Pixel 8 · Friends"), notes)
+        assertEquals("Friends", history.entries.value.single().space)
+        notes.clear()
+        c.handle(Delivery("d2", phone, listOf(Tab("https://a.com")), 0))
+        assertEquals(listOf("Caught 1 tab from Pixel 8"), notes) // paired deliveries carry no label
+        assertNull(history.entries.value.first { it.id.startsWith("d2") }.space)
+    }
 }

@@ -23,6 +23,8 @@ import app.mjolnir.desktop.SendState
 import app.mjolnir.desktop.detailLine
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.SpaceRef
+import app.mjolnir.client.DestinationKey
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -97,5 +99,21 @@ class SendTabContentTest {
             out.single().lineCount
         }
         assertEquals(listOf(1), lines)
+    }
+
+    // a device in two spaces has a card under each heading; clicking one picks that space, and both light up
+    @Test fun groupedHeadingsAndClickPicksTheCardsSpace() = runComposeUiTest {
+        val mine = Peer("pc", "Desk", DeviceKind.PC)
+        val inFriends = Peer("f", "Fred", DeviceKind.PC, SpaceRef("s1", "Friends"))
+        val inWork = Peer("f", "Fred", DeviceKind.PC, SpaceRef("s2", "Work"))
+        var state by mutableStateOf(SendState().withTargets(listOf(mine, inFriends, inWork), null))
+        setContent { MjolnirTheme { SendTabContent(state, nicknameOf = { it.name }, onUpdate = { change -> state = change(state) }) } }
+        onNodeWithText("MY DEVICES").assertExists() // 12 px uppercase headings
+        onNodeWithText("FRIENDS").assertExists()
+        onNodeWithText("WORK").assertExists()
+        onAllNodesWithText("Fred", useUnmergedTree = true).assertCountEquals(2)
+        onAllNodesWithText("Fred", useUnmergedTree = true)[1].performClick()
+        assertEquals(DestinationKey("f", "s2"), state.targetKey)
+        assertEquals(listOf(inFriends, inWork), state.targets.filter { state.isSelected(it) })
     }
 }

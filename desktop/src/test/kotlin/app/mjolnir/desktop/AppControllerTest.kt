@@ -503,4 +503,38 @@ class AppControllerTest {
         assertTrue("\"toName\":\"Pixel 8\"" in File(dir, "outbox.json").readText(), File(dir, "outbox.json").readText())
         scope.cancel()
     }
+
+    @Test fun sendFromASpaceCardCarriesThatSpace() = runTest {
+        val fred = Peer("f", "Fred", DeviceKind.PC, SpaceRef("s2", "Work"))
+        val fake = FakeRelayApi().apply { peers += listOf(Peer("f", "Fred", DeviceKind.PC, SpaceRef("s1", "Friends")), fred) }
+        val (c, scope) = controller(fake)
+        c.refreshPeers()
+        c.updateSend { it.selectTarget(DestinationKey("f", "s2")).withText("https://a.com") }
+        c.sendSelected().join()
+        assertEquals(listOf("s2"), fake.sent.map { it.spaceId })
+        assertEquals("f", c.config.value.lastPhoneId) // the persisted last-used stays the device id
+        scope.cancel()
+    }
+
+    @Test fun spaceDeletedEventNotifiesAndRefreshes() = runTest {
+        val fake = FakeRelayApi()
+        val (c, scope) = controller(fake)
+        val notes = notes(c)
+        c.onSpaceDeleted(SpaceRef("s1", "Friends")); runCurrent()
+        assertEquals(listOf("Friends was deleted."), notes)
+        scope.cancel()
+    }
+
+    @Test fun joinRequestForASpaceKeepsTheLastDeviceAndAcceptsOnce() = runTest {
+        val fake = FakeRelayApi()
+        val (c, scope) = controller(fake)
+        val notes = notes(c)
+        val req = RelayEvent.PairRequested("pair-1", phone, SpaceRef("s1", "Friends"))
+        c.onPairRequested(req)
+        c.answerPairRequest(req, accept = true); runCurrent()
+        assertEquals(listOf("pair-1"), fake.accepted)
+        assertNull(c.config.value.lastPhoneId) // joining a space is not a pairing
+        assertTrue(notes.isEmpty())
+        scope.cancel()
+    }
 }

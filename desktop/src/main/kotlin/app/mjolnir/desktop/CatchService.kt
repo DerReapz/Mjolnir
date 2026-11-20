@@ -17,6 +17,9 @@ class CatchService(
     private val onConnectionChange: (Boolean) -> Unit = {},
     /** Runs when the relay says [deviceId] is no longer paired (before the peer list is refreshed). */
     private val onUnpaired: (deviceId: String) -> Unit = {},
+    /** Runs when a space this device is in changed (members, name, admin) or was deleted; the peer list is refreshed after it. */
+    private val onSpaceChanged: (spaceId: String) -> Unit = {},
+    private val onSpaceDeleted: (RelayEvent.SpaceDeleted) -> Unit = {},
 ) {
     /** Collects relay events until cancelled; RelayException(UNAUTHORIZED) and any drain failure propagate. */
     suspend fun run() {
@@ -36,8 +39,8 @@ class CatchService(
                 is RelayEvent.PairRequested -> onPairRequest(event)
                 is RelayEvent.Paired -> onPeersChanged()
                 is RelayEvent.Unpaired -> { onUnpaired(event.deviceId); onPeersChanged() }
-                // The Spaces UI (S4) will handle these properly; until then a space change just refreshes the peer list.
-                is RelayEvent.SpaceChanged, is RelayEvent.SpaceDeleted -> onPeersChanged()
+                is RelayEvent.SpaceChanged -> { onSpaceChanged(event.spaceId); onPeersChanged() }
+                is RelayEvent.SpaceDeleted -> { onSpaceDeleted(event); onPeersChanged() }
             }
         }
     }

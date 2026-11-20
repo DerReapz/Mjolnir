@@ -18,6 +18,8 @@ import app.mjolnir.client.cleanStaging
 import app.mjolnir.client.sendInBatches
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.RelayEvent
+import app.mjolnir.protocol.SpaceRef
+import app.mjolnir.client.DestinationKey
 import app.mjolnir.protocol.Tab
 import app.mjolnir.protocol.extractUrls
 import app.mjolnir.protocol.topFolder
@@ -102,6 +104,13 @@ class AppController(
 
     private val _peers = MutableStateFlow<List<Peer>>(emptyList())
     val peers: StateFlow<List<Peer>> = _peers.asStateFlow()
+
+    /** Spaces this device is in: the list, invite code, join flow and admin actions. */
+    val spaces = SpacesController(
+        api = ::api, scope = scope,
+        onPeersAffected = { scope.launch { refreshAfterSpaceChange() } },
+        onUnauthorized = { scope.launch { recoverUnauthorized(store.read().token) } },
+    )
 
     private val _send = MutableStateFlow(SendState())
     /** The send queue lives here, not in a window, so closing the window keeps it. */
@@ -201,6 +210,7 @@ class AppController(
                 _config.value = ensureRegistered(store, api)
                 token = _config.value.token
                 refreshPeers()
+                spaces.refresh()
                 kickOutbox()
                 CatchService(
                     api,
@@ -211,6 +221,8 @@ class AppController(
                     onConnected = { kickOutbox() },
                     onConnectionChange = { connected.value = it },
                     onUnpaired = ::onUnpairedByPeer,
+                    onSpaceChanged = { spaces.refresh() },
+                    onSpaceDeleted = { onSpaceDeleted(it.space) },
                 ).run()
                 delay(RETRY_DELAY_MS) // the events flow ended (client closed): start over
             } catch (e: CancellationException) {
@@ -259,6 +271,7 @@ class AppController(
         try {
             _config.value = reRegister(store, api)
             nicknames.clear() // the new registration has no pairings
+            spaces.clear()
             setPeers(emptyList())
             notify(Messages.RESET)
             true
@@ -421,7 +434,7 @@ class AppController(
         var sentTabs = emptyList<Tab>()
         var error: RelayException? = null
         if (tabs.isNotEmpty()) {
-            val outcome = sendInBatches(api, target.deviceId, tabs)
+            val outcome = sendInBatches(api, target.deviceId, tabs, spaceId = target.space?.id)
             sentTabs = outcome.sentTabs
             error = outcome.error
             if (sentTabs.isNotEmpty()) parts += Messages.sent(sentTabs.size, 0, shown)
@@ -429,7 +442,7 @@ class AppController(
         if (files.isNotEmpty()) {
             val now = System.currentTimeMillis()
             for (group in groupForSending(files)) {
-                outbox.enqueue(OutgoingFiles(UUID.randomUUID().toString(), target.deviceId, target.name, group, createdAtEpochMs = now))
+                outbox.enqueue(OutgoingFiles(UUID.randomUUID().toString(), target.deviceId, target.name, group, createdAtEpochMs = now, spaceId = target.space?.id))
             }
             parts += Messages.queued(files.size, shown)
             kickOutbox()
@@ -446,7 +459,7 @@ class AppController(
     fun sendClipboard() {
         scope.launch {
             val targetId = _config.value.lastPhoneId ?: return@launch // the last target, PC or phone
-            val target = _peers.value.find { it.deviceId == targetId } ?: Peer(targetId, lastPhoneName(), app.mjolnir.protocol.DeviceKind.PC)
+            val target = _peers.value.run { find { it.deviceId == targetId && it.space == null } ?: find { it.deviceId == targetId } } ?: Peer(targetId, lastPhoneName(), app.mjolnir.protocol.DeviceKind.PC)
             val text = withContext(Dispatchers.Main) { clipboardText() }
             val urls = extractUrls(text ?: "")
             if (urls.isEmpty()) return@launch notify(Messages.NO_LINKS)
@@ -531,7 +544,7 @@ class AppController(
                 try {
                     api.rejectPairing(request.pairingId)
                 } finally {
-                    _codeUsedUp.tryEmit(Unit)
+                    codeUsedUp(request)
                 }
                 return
             }
@@ -539,8 +552,14 @@ class AppController(
             throw e
         } catch (e: RelayException) {
             // The dialog is gone, so a failed accept can't be retried; the claim used the code up.
-            if (accept && e.kind != RelayErrorKind.UNAUTHORIZED) _codeUsedUp.tryEmit(Unit)
+            if (accept && e.kind != RelayErrorKind.UNAUTHORIZED) codeUsedUp(request)
             notify(couldntAnswer(Messages.failureReason(e.kind, request.from.name)))
+            return
+        }
+        request.space?.let { space ->
+            // Joining a space is not a pairing: the joiner becomes a member, not the last-used device.
+            spaces.onJoinRequestHandled(space.id, accepted = true)
+            refreshAfterSpaceChange()
             return
         }
         if (_config.value.lastPhoneId == null) updateConfig { it.copy(lastPhoneId = request.from.deviceId) }
@@ -549,8 +568,29 @@ class AppController(
         if (_pairedWith.subscriptionCount.value > 0) _pairedWith.emit(name) else notify("Paired with $name")
     }
 
-    /** The other device unpaired from this one: its nickname goes with the pairing. */
-    internal fun onUnpairedByPeer(deviceId: String) = nicknames.remove(deviceId)
+    /** The request's code is used up without a joiner: the pair window, or the space's invite, shows a fresh one. */
+    private fun codeUsedUp(request: RelayEvent.PairRequested) {
+        val space = request.space
+        if (space == null) _codeUsedUp.tryEmit(Unit) else spaces.onJoinRequestHandled(space.id, accepted = false)
+    }
+
+    /** The other device unpaired from this one: its nickname goes with the pairing, unless a shared space still links you. */
+    internal fun onUnpairedByPeer(deviceId: String) {
+        if (_peers.value.none { it.deviceId == deviceId && it.space != null }) nicknames.remove(deviceId)
+    }
+
+    /** A space event: the peer list changed, and with it who still has a nickname worth keeping. */
+    internal fun onSpaceDeleted(space: SpaceRef) {
+        if (spaces.onSpaceDeleted(space)) notify("${space.name} was deleted.")
+        scope.launch { refreshAfterSpaceChange() }
+    }
+
+    /** Refreshes the peer list, then forgets nicknames of devices nothing links you to any more (no pairing, no shared space). */
+    private suspend fun refreshAfterSpaceChange() {
+        refreshPeers()
+        val linked = _peers.value.mapTo(HashSet()) { it.deviceId }
+        nicknames.changes.value.keys.filter { it !in linked }.forEach(nicknames::remove)
+    }
 
     fun startUnpair(peer: Peer): Job = scope.launch { unpair(peer) }
 
@@ -558,7 +598,7 @@ class AppController(
         val api = api() ?: return
         try {
             api.unpair(peer.deviceId)
-            nicknames.remove(peer.deviceId) // a nickname belongs to a pairing
+            onUnpairedByPeer(peer.deviceId) // a nickname belongs to a pairing
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
@@ -576,6 +616,7 @@ class AppController(
         connected.value = false
         updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null) }
         nicknames.clear() // every pairing is gone
+        spaces.clear()
         setPeers(emptyList())
         restartService()
     }

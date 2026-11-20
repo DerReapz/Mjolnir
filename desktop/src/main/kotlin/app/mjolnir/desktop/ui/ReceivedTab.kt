@@ -119,7 +119,7 @@ fun ReceivedTabContent(
                         Column(Modifier.weight(1f)) {
                             Text(e.title, style = TextStyle(fontFamily = ForgeFonts.inter500, fontSize = 14.sp, color = Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(
-                                "${nicknameOf(e)} · ${whenOf(e)}",
+                                listOfNotNull(nicknameOf(e), e.space, whenOf(e)).joinToString(" · "),
                                 style = TextStyle(fontFamily = ForgeFonts.inter400, fontSize = 12.sp, color = Forge.muted), maxLines = 1, overflow = TextOverflow.Ellipsis,
                             )
                         }

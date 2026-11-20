@@ -98,4 +98,17 @@ class CatchServiceTest {
         api.events.emit(RelayEvent.Paired(phone)); api.events.emit(RelayEvent.Unpaired("ph")); runCurrent()
         assertEquals(listOf("ph"), gone); job.cancel()
     }
+
+    // space events reach their callbacks and still refresh the peer list
+    @Test fun forwardsSpaceEvents() = runTest {
+        val api = FakeRelayApi(); val log = mutableListOf<String>()
+        val svc = CatchService(
+            api, InboxDrainer(api, MemorySeen()) {}, {}, { log += "peers" },
+            onSpaceChanged = { log += "changed $it" }, onSpaceDeleted = { log += "deleted ${it.space.name}" },
+        )
+        val job = launch { svc.run() }; runCurrent()
+        api.events.emit(RelayEvent.SpaceChanged("s1")); runCurrent()
+        api.events.emit(RelayEvent.SpaceDeleted(SpaceRef("s1", "Friends"))); runCurrent()
+        assertEquals(listOf("changed s1", "peers", "deleted Friends", "peers"), log); job.cancel()
+    }
 }

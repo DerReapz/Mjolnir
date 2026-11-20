@@ -1,8 +1,10 @@
 package app.mjolnir.desktop
 
+import app.mjolnir.client.DestinationKey
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.SpaceRef
 import app.mjolnir.protocol.Tab
 import app.mjolnir.protocol.extractUrls
 import java.io.File
@@ -24,6 +26,32 @@ class SendStateTest {
         assertEquals("pc1", s.targetId)
         assertEquals(pc, s.target)
         assertEquals("p1", s.selectTarget("p1").targetId)
+    }
+
+    private val mine = Peer("pc1", "Desk", DeviceKind.PC)
+    private val friendInFriends = Peer("f", "Fred", DeviceKind.PC, SpaceRef("s1", "Friends"))
+    private val friendInWork = Peer("f", "Fred", DeviceKind.PC, SpaceRef("s2", "Work"))
+
+    @Test fun selectingHighlightsAllCardsOfDevice() {
+        val s = SendState().withTargets(listOf(mine, friendInFriends, friendInWork), null).selectTarget(DestinationKey("f", "s2"))
+        assertEquals(DestinationKey("f", "s2"), s.targetKey)
+        assertEquals(listOf(friendInFriends, friendInWork), s.targets.filter { s.isSelected(it) })
+        assertFalse(s.isSelected(mine))
+    }
+
+    @Test fun sendCarriesClickedSpace() {
+        val base = SendState().withTargets(listOf(mine, friendInFriends, friendInWork), null)
+        assertEquals("s2", base.selectTarget(DestinationKey("f", "s2")).target?.space?.id)
+        assertEquals("s1", base.selectTarget(DestinationKey("f", "s1")).target?.space?.id)
+        assertNull(base.selectTarget(DestinationKey("pc1", null)).target?.space)
+        assertEquals(base, base.selectTarget(DestinationKey("f", "gone"))) // unknown card: unchanged
+    }
+
+    @Test fun lastUsedDeviceSelectsItsMyDevicesCardFirst() {
+        val paired = Peer("f", "Fred", DeviceKind.PC)
+        val s = SendState().withTargets(listOf(friendInFriends, paired), "f")
+        assertEquals(DestinationKey("f", null), s.targetKey)
+        assertEquals(DestinationKey("f", "s1"), SendState().withTargets(listOf(friendInFriends), "f").targetKey)
     }
 
     @Test fun targetDefaultsToLastPhoneIfStillPaired() {

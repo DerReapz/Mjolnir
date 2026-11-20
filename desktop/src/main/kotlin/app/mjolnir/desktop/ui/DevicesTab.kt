@@ -72,18 +72,45 @@ fun DevicesTab(c: AppController, openPairing: Boolean = false, onPairingOpened: 
     val peers by c.peers.collectAsState()
     val config by c.config.collectAsState()
     val nicknames by c.nicknames.changes.collectAsState()
+    val spaces by c.spaces.spaces.collectAsState()
+    val invite by c.spaces.invite.collectAsState()
+    val join by c.spaces.join.collectAsState()
+    val notice by c.spaces.notice.collectAsState()
     var pairing by remember { mutableStateOf(openPairing) }
     var renaming by remember { mutableStateOf<Peer?>(null) }
+    var spaceDialog by remember { mutableStateOf<SpaceDialog?>(null) }
     LaunchedEffect(Unit) {
         c.refreshPeers()
+        c.spaces.refresh()
         if (openPairing) onPairingOpened()
+    }
+    val actions = remember(c) {
+        SpacesActions(
+            onCreate = c.spaces::create, onJoin = { c.spaces.join(it) },
+            onInvite = { c.spaces.invite(it.id) }, onDismissInvite = c.spaces::dismissInvite,
+            onRemove = { space, member -> c.spaces.remove(space.id, member.deviceId) },
+            onLeave = { c.spaces.leave(it.id) }, onRename = { space, name -> c.spaces.rename(space.id, name) },
+            onDelete = { c.spaces.delete(it.id) }, onMakeAdmin = { space, member -> c.spaces.makeAdmin(space.id, member.deviceId) },
+            onTakeOver = { c.spaces.takeOver(it.id) },
+            onDismissNotice = c.spaces::dismissNotice, onDismissJoin = c.spaces::dismissJoin,
+        )
     }
 
     Box(Modifier.fillMaxSize()) {
         DevicesTabContent(
-            groups = groupDestinations(peers, config.lastPhoneId) { nicknames.nicknameOr(it.deviceId, it.name) }, nicknames = nicknames,
+            // Space members are not paired: they are listed in their space's card, not here (Unpair would not apply).
+            groups = groupDestinations(peers.filter { it.space == null }, config.lastPhoneId) { nicknames.nicknameOr(it.deviceId, it.name) }, nicknames = nicknames,
             onRename = { renaming = it }, onUnpair = { c.startUnpair(it) }, onPair = { pairing = true },
             pairPanel = if (pairing) ({ PairPanel(c, onClose = { pairing = false }) }) else null,
+            spacesSection = {
+                SpacesSection(
+                    spaces, selfId = config.deviceId, nicknameOf = { nicknames.nicknameOr(it.deviceId, it.name) },
+                    invite = invite, notice = notice, onDialog = {
+                        if (it == SpaceDialog.Join) c.spaces.dismissJoin()
+                        spaceDialog = it
+                    }, actions = actions,
+                )
+            },
         )
         renaming?.let { peer ->
             RenameDialog(
@@ -92,6 +119,7 @@ fun DevicesTab(c: AppController, openPairing: Boolean = false, onPairingOpened: 
                 onCancel = { renaming = null },
             )
         }
+        SpaceDialogHost(spaceDialog, join, actions, onClose = { spaceDialog = null })
     }
 }
 
@@ -104,6 +132,8 @@ fun DevicesTabContent(
     onUnpair: (Peer) -> Unit,
     onPair: () -> Unit,
     pairPanel: (@Composable () -> Unit)? = null,
+    /** The *Spaces* section ([SpacesSection]), shown after the paired devices. */
+    spacesSection: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -134,6 +164,7 @@ fun DevicesTabContent(
                     }
                 }
             }
+            spacesSection?.let { section -> item(key = "spaces") { section() } }
         }
     }
 }

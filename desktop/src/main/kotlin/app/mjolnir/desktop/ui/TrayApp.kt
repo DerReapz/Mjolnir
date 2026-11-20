@@ -94,7 +94,11 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     pairRequest?.let { PairRequestDialog(c, it, icon) }
 }
 
-/** `Pair with {name}?` — closing the dialog counts as Reject. */
+/** `Pair with {name}?`, or `{device} wants to join {space}` for a space invite. */
+internal fun pairRequestTitle(request: RelayEvent.PairRequested): String =
+    request.space?.let { "${request.from.name} wants to join ${it.name}" } ?: "Pair with ${request.from.name}?"
+
+/** The request dialog; closing it counts as Reject. */
 @Composable
 private fun PairRequestDialog(c: AppController, request: RelayEvent.PairRequested, icon: Painter) {
     // Answers run in the controller's scope: this dialog leaves the composition as soon as the request clears.
@@ -107,7 +111,7 @@ private fun PairRequestDialog(c: AppController, request: RelayEvent.PairRequeste
     ) {
         MjolnirTheme {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                Text("Pair with ${request.from.name}?", style = MaterialTheme.typography.titleMedium)
+                Text(pairRequestTitle(request), style = MaterialTheme.typography.titleMedium)
                 Row {
                     Spacer(Modifier.weight(1f))
                     ForgeSecondaryButton("Reject", onClick = { c.answerPairRequest(request, accept = false) })

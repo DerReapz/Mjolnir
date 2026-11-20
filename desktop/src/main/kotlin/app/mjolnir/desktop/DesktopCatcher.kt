@@ -42,7 +42,7 @@ class DesktopCatcher(
         if (tabsOpened > 0 || saved.isNotEmpty()) {
             // A failed notification must not fail the delivery: a redelivery would save the files again.
             try {
-                notify(Messages.caught(tabsOpened, saved.size, displayName(d.from)))
+                notify(Messages.caught(tabsOpened, saved.size, displayName(d.from), d.space?.name))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -63,7 +63,7 @@ class DesktopCatcher(
         }
         val now = System.currentTimeMillis()
         val entries = items.mapIndexed { i, (kind, title, target) ->
-            ReceivedEntry("${d.id}:$i", d.from.deviceId, d.from.name, now, kind, title, target)
+            ReceivedEntry("${d.id}:$i", d.from.deviceId, d.from.name, now, kind, title, target, d.space?.name)
         }
         try {
             history.add(entries)
