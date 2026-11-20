@@ -20,4 +20,19 @@ class DesktopConfigTest {
         val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
         assertTrue(json.decodeFromString(DesktopConfig.serializer(), """{"relayUrl":"","deviceName":"PC"}""").sendToMenu)
     }
+
+    @Test fun defaultsAreTrue() {
+        val c = DesktopConfig(relayUrl = "", deviceName = "PC")
+        assertTrue(c.openLinksOnArrival); assertTrue(c.keepInTray)
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val old = json.decodeFromString(DesktopConfig.serializer(), """{"relayUrl":"","deviceName":"PC"}""")
+        assertTrue(old.openLinksOnArrival); assertTrue(old.keepInTray)
+    }
+
+    @Test fun newFlagsRoundTrip() {
+        val json = kotlinx.serialization.json.Json
+        val c = DesktopConfig(relayUrl = "", deviceName = "PC", openLinksOnArrival = false, keepInTray = false)
+        val back = json.decodeFromString(DesktopConfig.serializer(), json.encodeToString(DesktopConfig.serializer(), c))
+        assertFalse(back.openLinksOnArrival); assertFalse(back.keepInTray)
+    }
 }

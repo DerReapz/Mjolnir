@@ -6,6 +6,7 @@ import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.LocalUpload
 import app.mjolnir.client.Messages
 import app.mjolnir.client.Outbox
+import app.mjolnir.client.Nicknames
 import app.mjolnir.client.OutboxResult
 import app.mjolnir.client.OutgoingFiles
 import app.mjolnir.client.RelayApi
@@ -48,6 +49,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 
 private const val RETRY_DELAY_MS = 30_000L
 const val TOOLTIP_IDLE = "Mjolnir"
@@ -61,6 +64,8 @@ class AppController(
 ) {
 
     private val store = JsonFileStore(File(dataDir, "config.json"), DesktopConfig.serializer(), ::defaultDesktopConfig)
+    val nicknames = Nicknames(JsonFileStore(File(dataDir, "nicknames.json"), MapSerializer(String.serializer(), String.serializer())) { emptyMap() })
+    val history = ReceivedHistory(JsonFileStore(File(dataDir, "received.json"), ListSerializer(ReceivedEntry.serializer())) { emptyList() })
     private val _config = MutableStateFlow(store.read())
     val config: StateFlow<DesktopConfig> = _config.asStateFlow()
 
@@ -169,6 +174,9 @@ class AppController(
         api, TabOpener(),
         saveDir = { _config.value.saveDirFile() },
         notify = { notify(it) },
+        history = history,
+        openLinks = { _config.value.openLinksOnArrival },
+        displayName = nicknames::displayName,
     )
 
     private suspend fun cleanStagingFolder(api: RelayApi) {

@@ -15,6 +15,8 @@ data class DesktopConfig(
     val launchAtLogin: Boolean = false,
     val saveDir: String? = null,
     val sendToMenu: Boolean = true,
+    val openLinksOnArrival: Boolean = true,
+    val keepInTray: Boolean = true,
 )
 
 /** The save folder: the configured one, else `%USERPROFILE%\Downloads\Mjolnir`; created on demand. */
