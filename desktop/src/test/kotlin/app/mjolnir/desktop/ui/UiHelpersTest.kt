@@ -1,7 +1,10 @@
 package app.mjolnir.desktop.ui
 
 import app.mjolnir.client.LocalUpload
+import app.mjolnir.desktop.ItemPreview
+import app.mjolnir.desktop.SendState
 import app.mjolnir.desktop.displayName
+import app.mjolnir.desktop.isValidDeviceName
 import app.mjolnir.desktop.openAt
 import java.io.File
 import kotlin.test.*
@@ -39,5 +42,14 @@ class UiHelpersTest {
     @Test fun openAtSkipsToOffset(@TempDir dir: File) {
         val f = File(dir, "a.txt").apply { writeText("hello") }
         assertEquals("llo", openAt(LocalUpload(f.path, "a.txt", "text/plain", 5), 2).use { it.readBytes().decodeToString() })
+    }
+
+    @Test fun previewsOfRemovedItemsAreEvicted() {
+        val a = up("a.txt"); val b = up("b.txt")
+        val previews = mutableMapOf<String, ItemPreview>(
+            a.path to ItemPreview.Missing("a.txt"), b.path to ItemPreview.Missing("b.txt"), "gone" to ItemPreview.Missing("gone"),
+        )
+        evictStalePreviews(previews, SendState(files = listOf(b)))
+        assertEquals(setOf(b.path), previews.keys)
     }
 }

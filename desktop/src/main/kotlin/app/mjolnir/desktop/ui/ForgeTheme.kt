@@ -7,13 +7,20 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CheckboxColors
@@ -29,10 +36,20 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.text.TextStyle
@@ -224,3 +241,49 @@ fun ForgeBodyText(text: String, muted: Boolean = false, modifier: Modifier = Mod
 @Composable
 fun ForgeCode(text: String) =
     Text(text, style = style(ForgeFonts.grotesk700, 48, 6.0).copy(color = Forge.accent))
+
+/** Single-line text input at the mockup's 40 px: dark field, 1 px border (accent while focused, red when [isError]), radius 10. */
+@Composable
+fun ForgeInput(
+    value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier,
+    placeholder: String = "", isError: Boolean = false, onEnter: (() -> Unit)? = null,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val border = when { isError -> Forge.error; focused -> Forge.accent; else -> Forge.border }
+    BasicTextField(
+        value = value, onValueChange = onValueChange, singleLine = true,
+        textStyle = style(ForgeFonts.inter400, 14).copy(color = Forge.text),
+        cursorBrush = SolidColor(Forge.accent),
+        modifier = modifier.onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { e ->
+            if (onEnter != null && e.type == KeyEventType.KeyDown && e.key == Key.Enter) { onEnter(); true } else false
+        },
+        decorationBox = { inner ->
+            Box(
+                Modifier.fillMaxWidth().heightIn(min = 40.dp).background(Forge.panel, Forge.inputShape)
+                    .border(1.dp, border, Forge.inputShape).padding(horizontal = 10.dp),
+                contentAlignment = Alignment.CenterStart,
+            ) {
+                if (value.isEmpty() && placeholder.isNotEmpty()) Text(placeholder, style = style(ForgeFonts.inter400, 14).copy(color = Forge.muted), maxLines = 1)
+                inner()
+            }
+        },
+    )
+}
+
+/** A dialog drawn over its tab: dimmed scrim (click dismisses) and a centred card. */
+@Composable
+fun ForgeModal(onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismiss),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.padding(24.dp).widthIn(max = 400.dp).fillMaxWidth().forgeCard(selected = false)
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {}) // clicks inside do not dismiss
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            content = content,
+        )
+    }
+}

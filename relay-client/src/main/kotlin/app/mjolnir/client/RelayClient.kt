@@ -366,6 +366,7 @@ class RelayClient(
                     }
                 }
             }
+            if (connected) emit(RelayEvent.Disconnected)
             if (connected && (System.nanoTime() - connectedAt) / 1_000_000 >= stableAfterMs) attempt = 0
             delay(reconnectDelayMs(attempt))
             attempt++

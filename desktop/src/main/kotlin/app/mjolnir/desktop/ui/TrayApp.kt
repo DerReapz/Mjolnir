@@ -47,21 +47,21 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     val trayState = rememberTrayState()
     val config by c.config.collectAsState()
     val peers by c.peers.collectAsState()
+    val nicknames by c.nicknames.changes.collectAsState()
     val tooltip by c.tooltip.collectAsState()
     val pairRequest by c.pairRequest.collectAsState()
     val icon = remember { loadIcon() }
 
-    var showMain by remember { mutableStateOf(false) }
-    var mainTab by remember { mutableStateOf(MainTab.SEND) }
-    var showPair by remember { mutableStateOf(false) }
-    var showDevices by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(RelayUrls.normalize(config.relayUrl) == null) }
+    // First run without a relay address: open straight on Settings.
+    val needsRelay = remember { RelayUrls.normalize(config.relayUrl) == null }
+    var showMain by remember { mutableStateOf(needsRelay) }
+    var mainTab by remember { mutableStateOf(if (needsRelay) MainTab.SETTINGS else MainTab.SEND) }
 
     LaunchedEffect(Unit) {
         c.notifications.collect { trayState.sendNotification(Notification("Mjolnir", it)) }
     }
     LaunchedEffect(Unit) {
-        c.openRequests.collect { showMain = true; mainTab = MainTab.SEND } // other tabs arrive with the next task
+        c.openRequests.collect { tab -> showMain = true; mainTab = if (tab == MainTab.GUEST) MainTab.SEND else tab }
     }
     // Paths from Explorer's *Send to* (this launch or a later one): the controller queues them and asks for the window.
     LaunchedEffect(Unit) {
@@ -79,14 +79,10 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
         Item("Send to device…", onClick = { c.openWindow(MainTab.SEND) })
         val lastPhoneId = config.lastPhoneId
         if (lastPhoneId != null) {
-            val name = peers.find { it.deviceId == lastPhoneId }?.name ?: "device"
+            val name = peers.find { it.deviceId == lastPhoneId }?.let { nicknames[it.deviceId] ?: it.name } ?: "device"
             Item("Send clipboard to $name", onClick = { c.sendClipboard() })
         }
         Item("Open received files", onClick = { c.openReceivedFiles() })
-        Separator()
-        Item("Pair a device…", onClick = { showPair = true })
-        Item("Paired devices…", onClick = { showDevices = true })
-        Item("Settings…", onClick = { showSettings = true })
         Separator()
         Item("Quit Mjolnir", onClick = onQuit)
     })
@@ -94,23 +90,11 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     if (showMain) {
         MainWindow(
             c, mainTab,
-            // Received, Devices and Settings are built in the next task; until then they open the existing windows.
-            onTab = { tab ->
-                when (tab) {
-                    MainTab.SEND -> mainTab = tab
-                    MainTab.DEVICES -> showDevices = true
-                    MainTab.SETTINGS -> showSettings = true
-                    MainTab.RECEIVED -> c.openReceivedFiles()
-                    MainTab.GUEST -> {}
-                }
-            },
+            onTab = { mainTab = it },
             onClose = { if (config.keepInTray) showMain = false else onQuit() },
             icon = icon,
         )
     }
-    if (showPair) PairWindow(c, icon, onClose = { showPair = false })
-    if (showDevices) DevicesWindow(c, icon, onPair = { showPair = true }, onClose = { showDevices = false })
-    if (showSettings) SettingsWindow(c, icon, onClose = { showSettings = false })
     pairRequest?.let { PairRequestDialog(c, it, icon) }
 }
 

@@ -13,12 +13,23 @@ class CatchService(
     private val afterDrain: suspend () -> Unit = {},
     /** Runs after the drain that follows each (re)connect; should return quickly (launch long work elsewhere). */
     private val onConnected: suspend () -> Unit = {},
+    /** True as soon as the events stream says it is connected, false when it drops or this service stops. */
+    private val onConnectionChange: (Boolean) -> Unit = {},
 ) {
     /** Collects relay events until cancelled; RelayException(UNAUTHORIZED) and any drain failure propagate. */
     suspend fun run() {
+        try {
+            collect()
+        } finally {
+            onConnectionChange(false)
+        }
+    }
+
+    private suspend fun collect() {
         api.events().collect { event ->
             when (event) {
-                is RelayEvent.Connected -> { drain(); onConnected() }
+                is RelayEvent.Connected -> { onConnectionChange(true); drain(); onConnected() }
+                is RelayEvent.Disconnected -> onConnectionChange(false)
                 is RelayEvent.DeliveryArrived -> drain()
                 is RelayEvent.PairRequested -> onPairRequest(event)
                 is RelayEvent.Paired, is RelayEvent.Unpaired -> onPeersChanged()

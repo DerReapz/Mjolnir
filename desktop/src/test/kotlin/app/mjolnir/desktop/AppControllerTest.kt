@@ -23,12 +23,14 @@ class AppControllerTest {
     private val phone = Peer("ph", "Pixel 8", DeviceKind.PHONE)
     @TempDir lateinit var dir: File
 
-    private fun TestScope.controller(api: RelayApi, urls: MutableList<String> = mutableListOf()): Pair<AppController, CoroutineScope> {
-        File(dir, "config.json").writeText(
-            """{"relayUrl":"https://a.example","deviceId":"old-id","token":"old-token","deviceName":"PC","saveDir":"${File(dir, "save").path.replace("\\", "\\\\")}"}"""
-        )
+    private fun TestScope.controller(
+        api: RelayApi, urls: MutableList<String> = mutableListOf(),
+        launchAtLogin: (Boolean) -> Boolean = { false }, sendTo: (Boolean) -> Boolean = { false },
+        config: String = """{"relayUrl":"https://a.example","deviceId":"old-id","token":"old-token","deviceName":"PC","saveDir":"${File(dir, "save").path.replace("\\", "\\\\")}"}""",
+    ): Pair<AppController, CoroutineScope> {
+        File(dir, "config.json").writeText(config)
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-        return AppController(dir, scope) { url, _ -> urls += url; api } to scope
+        return AppController(dir, scope, launchAtLoginSetter = launchAtLogin, sendToSetter = sendTo) { url, _ -> urls += url; api } to scope
     }
 
     private fun TestScope.notes(c: AppController): MutableList<String> {
@@ -257,5 +259,161 @@ class AppControllerTest {
         c.updateSend { it.withTargets(listOf(phone), null).withText("https://a.com").selectRow("https://a.com") }
         c.sendSelected().join()
         assertNull(c.send.value.selectedRow)
+    }
+    // ---- M5 ----------------------------------------------------------------------------------------------------
+
+    @Test fun saveAppliesAllFields() = runTest {
+        val fake = FakeRelayApi()
+        val launched = mutableListOf<Boolean>(); val sendTos = mutableListOf<Boolean>()
+        val (c, scope) = controller(fake, launchAtLogin = { launched += it; true }, sendTo = { sendTos += it; true })
+        val draft = SettingsDraft(
+            relayUrl = "https://b.example/", deviceName = " Desk ", saveDir = File(dir, "elsewhere").path,
+            openLinksOnArrival = false, launchAtLogin = true, sendToMenu = false, keepInTray = false,
+        )
+        var result: String? = "unset"
+        c.saveSettings(draft) { result = it }.join(); runCurrent()
+        assertNull(result)
+        val cfg = c.config.value
+        assertEquals("https://b.example", cfg.relayUrl)
+        assertEquals("Desk", cfg.deviceName)
+        assertEquals(File(dir, "elsewhere").path, cfg.saveDir)
+        assertFalse(cfg.openLinksOnArrival); assertFalse(cfg.keepInTray)
+        assertTrue(cfg.launchAtLogin); assertFalse(cfg.sendToMenu)
+        assertEquals(listOf(true), launched); assertEquals(listOf(false), sendTos)
+        assertEquals("tok-1", cfg.token) // the relay switch registered anew
+        assertEquals("Desk", fake.registerCalls.last().first) // under the new name
+        scope.cancel()
+    }
+
+    @Test fun saveLeavesUnchangedOsSettingsAlone() = runTest {
+        val (c, scope) = controller(
+            FakeRelayApi(), launchAtLogin = { fail("not touched") }, sendTo = { fail("not touched") },
+            config = """{"relayUrl":"https://a.example","deviceId":"d","token":"t","deviceName":"PC"}""",
+        )
+        val draft = c.config.value.toDraft().copy(deviceName = "Desk")
+        assertNull(c.applySettings(draft))
+        assertEquals("Desk", c.config.value.deviceName)
+        assertNull(c.config.value.saveDir) // the shown default is not stored as a custom folder
+        scope.cancel()
+    }
+
+    @Test fun saveRejectsAnInvalidDraftWithoutChangingAnything() = runTest {
+        val (c, scope) = controller(FakeRelayApi())
+        val before = c.config.value
+        assertEquals(USE_HTTPS, c.applySettings(before.toDraft().copy(relayUrl = "http://x.example.com")))
+        assertEquals(NAME_REQUIRED, c.applySettings(before.toDraft().copy(deviceName = " ")))
+        assertEquals(before, c.config.value)
+        scope.cancel()
+    }
+
+    @Test fun saveReportsAnOsSettingThatFailed() = runTest {
+        val (c, scope) = controller(FakeRelayApi(), launchAtLogin = { false })
+        val error = c.applySettings(c.config.value.toDraft().copy(launchAtLogin = true))
+        assertNotNull(error)
+        assertFalse(c.config.value.launchAtLogin)
+        scope.cancel()
+    }
+
+    @Test fun unpairRemovesNickname() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, scope) = controller(fake)
+        c.refreshPeers()
+        c.nicknames.set("ph", "Dad's phone")
+        c.unpair(phone)
+        assertEquals(listOf("ph"), fake.unpaired)
+        assertNull(c.nicknames.get("ph"))
+        scope.cancel()
+    }
+
+    @Test fun failedUnpairKeepsNickname() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val api = object : RelayApi by fake {
+            override suspend fun unpair(deviceId: String) = throw RelayException(RelayErrorKind.NETWORK, "offline")
+        }
+        val (c, scope) = controller(api)
+        c.nicknames.set("ph", "Dad's phone")
+        c.unpair(phone)
+        assertEquals("Dad's phone", c.nicknames.get("ph"))
+        scope.cancel()
+    }
+
+    @Test fun renameNicknameUpdatesSendCards() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, scope) = controller(fake)
+        c.refreshPeers()
+        val peer = c.send.value.groups.single().peers.single()
+        assertEquals("Pixel 8", c.nicknames.displayName(peer))
+        c.nicknames.set("ph", "Dad's phone")
+        assertEquals("Dad's phone", c.nicknames.displayName(c.send.value.groups.single().peers.single()))
+        c.nicknames.set("ph", "")
+        assertEquals("Pixel 8", c.nicknames.displayName(peer))
+        scope.cancel()
+    }
+
+    @Test fun sendMessagesUseTheNickname() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, scope) = controller(fake)
+        val notes = notes(c)
+        c.nicknames.set("ph", "Dad's phone")
+        assertEquals("Sent 1 tab to Dad's phone", c.send(phone, listOf(Tab("https://a.com")), emptyList()).message)
+        assertTrue(notes.isEmpty())
+        scope.cancel()
+    }
+
+    @Test fun relayStatusFollowsTheEventsStream() = runTest {
+        val fake = FakeRelayApi()
+        val (c, scope) = controller(fake)
+        val seen = mutableListOf<RelayStatus>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.relayStatus.collect { seen += it } }
+        runCurrent()
+        assertEquals(RelayStatus.CONNECTING, c.relayStatus.value) // registered, nothing connected yet
+        c.start(); runCurrent()
+        assertEquals(RelayStatus.CONNECTING, c.relayStatus.value) // the stream is open but has not said Connected
+        fake.events.emit(RelayEvent.Connected); runCurrent()
+        assertEquals(RelayStatus.CONNECTED, c.relayStatus.value)
+        fake.events.emit(RelayEvent.Disconnected); runCurrent()
+        assertEquals(RelayStatus.CONNECTING, c.relayStatus.value)
+        fake.events.emit(RelayEvent.Connected); runCurrent()
+        assertEquals(RelayStatus.CONNECTED, c.relayStatus.value)
+        assertEquals(listOf(RelayStatus.CONNECTING, RelayStatus.CONNECTED, RelayStatus.CONNECTING, RelayStatus.CONNECTED), seen)
+        assertEquals("Relay connected", RelayStatus.CONNECTED.label)
+        assertEquals("Connecting…", RelayStatus.CONNECTING.label)
+        assertEquals("Relay not set", RelayStatus.NOT_SET.label)
+        scope.cancel()
+    }
+
+    @Test fun relayStatusIsNotSetWithoutAValidAddress() = runTest {
+        val (c, scope) = controller(FakeRelayApi(), config = """{"relayUrl":"","deviceName":"PC"}""")
+        runCurrent()
+        assertEquals(RelayStatus.NOT_SET, c.relayStatus.value)
+        scope.cancel()
+    }
+
+    @Test fun relayStatusDropsToConnectingWhenTheServiceStops() = runTest {
+        val fake = FakeRelayApi()
+        val (c, scope) = controller(fake)
+        c.start(); runCurrent()
+        fake.events.emit(RelayEvent.Connected); runCurrent()
+        assertEquals(RelayStatus.CONNECTED, c.relayStatus.value)
+        c.changeRelay("https://b.example"); runCurrent()
+        assertEquals(RelayStatus.CONNECTING, c.relayStatus.value) // the old stream is gone, the new one has not connected
+        scope.cancel()
+    }
+
+    @Test fun sendResultIsNotifiedUnlessTheSendTabIsShowing() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, _) = controller(fake)
+        c.refreshPeers()
+        val notes = notes(c)
+        c.mainWindowVisible = true
+        c.mainWindowTab = MainTab.SEND
+        c.updateSend { it.withTargets(listOf(phone), null).withText("https://a.com") }
+        c.sendSelected().join()
+        assertTrue(notes.isEmpty())
+        c.mainWindowTab = MainTab.DEVICES // the window shows another tab: the result must still be seen
+        c.updateSend { it.withText("https://b.com") }
+        c.sendSelected().join()
+        assertEquals(1, notes.size)
+        assertNotNull(c.send.value.notice)
     }
 }

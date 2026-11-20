@@ -226,7 +226,7 @@ private fun QueueRowView(
 }
 
 /** First letter of the site name (`en.wikipedia.org/x` gives `W`). */
-private fun siteLetter(hostPath: String?): String {
+internal fun siteLetter(hostPath: String?): String {
     val labels = hostPath?.substringBefore('/')?.split('.').orEmpty()
     val site = if (labels.size >= 2) labels[labels.size - 2] else labels.firstOrNull().orEmpty()
     return site.firstOrNull { it.isLetterOrDigit() }?.uppercase() ?: "L"

@@ -80,4 +80,14 @@ class CatchServiceTest {
         api.events.emit(RelayEvent.DeliveryArrived(delivery("d1"))); runCurrent()
         assertEquals(listOf("handle d1", "afterDrain", "connected", "afterDrain"), log); job.cancel()
     }
+    // the connection callback follows Connected and Disconnected, and goes false when the stream ends
+    @Test fun reportsConnectionChanges() = runTest {
+        val api = FakeRelayApi(); val states = mutableListOf<Boolean>()
+        val svc = CatchService(api, InboxDrainer(api, MemorySeen()) {}, {}, {}, onConnectionChange = { states += it })
+        val job = launch { svc.run() }; runCurrent()
+        api.events.emit(RelayEvent.Connected); runCurrent()
+        api.events.emit(RelayEvent.Disconnected); runCurrent()
+        api.events.emit(RelayEvent.Connected); runCurrent()
+        assertEquals(listOf(true, false, true), states); job.cancel()
+    }
 }

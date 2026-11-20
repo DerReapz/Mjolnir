@@ -50,6 +50,9 @@ sealed interface RelayEvent {
 
     /** Emitted by RelayClient after every (re)connect; the server never sends it. */
     @Serializable @SerialName("connected") data object Connected : RelayEvent
+
+    /** Emitted by RelayClient when an established connection drops (before it reconnects); the server never sends it. */
+    @Serializable @SerialName("disconnected") data object Disconnected : RelayEvent
 }
 
 val MjolnirJson: Json = Json {

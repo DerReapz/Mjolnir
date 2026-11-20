@@ -34,17 +34,17 @@ class RelayEventsTest {
         job.cancel()
     }
 
-    @Test fun reconnectsAndEmitsConnectedAgain() = fakeWsTest { client ->
+    @Test fun dropEmitsDisconnectedThenReconnectsAndEmitsConnectedAgain() = fakeWsTest { client ->
         assertEquals(
-            listOf(RelayEvent.Connected, RelayEvent.Unpaired("x"), RelayEvent.Connected, RelayEvent.Unpaired("x")),
-            withTimeout(10_000) { client.events().take(4).toList() },
+            listOf(RelayEvent.Connected, RelayEvent.Unpaired("x"), RelayEvent.Disconnected, RelayEvent.Connected, RelayEvent.Unpaired("x"), RelayEvent.Disconnected),
+            withTimeout(10_000) { client.events().take(6).toList() },
         )
     }
 
     @Test fun silentServerTriggersIdleReconnect() = silentWsTest { client ->
         assertEquals(
-            listOf(RelayEvent.Connected, RelayEvent.Unpaired("x"), RelayEvent.Connected),
-            withTimeout(10_000) { client.events().take(3).toList() },
+            listOf(RelayEvent.Connected, RelayEvent.Unpaired("x"), RelayEvent.Disconnected, RelayEvent.Connected),
+            withTimeout(10_000) { client.events().take(4).toList() },
         )
     }
 

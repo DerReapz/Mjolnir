@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -60,10 +61,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.rememberWindowState
-import app.mjolnir.client.RelayUrls
 import app.mjolnir.desktop.AppController
 import app.mjolnir.desktop.ItemPreview
 import app.mjolnir.desktop.MainTab
+import app.mjolnir.desktop.SendState
 import app.mjolnir.desktop.browseWithSystem
 import app.mjolnir.desktop.previewOf
 import app.mjolnir.desktop.scanFiles
@@ -81,15 +82,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val STATUS_CONNECTED = Color(0xFF4ADE80)
+internal val STATUS_CONNECTED = Color(0xFF4ADE80)
 
 /** The one main window: sidebar plus the selected tab. Closing it is up to [onClose] (hide to tray, or quit). */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose: () -> Unit, icon: Painter? = null) {
     val send by c.send.collectAsState() // the queue is owned by the controller and outlives this window
-    val config by c.config.collectAsState()
     val nicknames by c.nicknames.changes.collectAsState()
+    val relayStatus by c.relayStatus.collectAsState()
+    var pairOnOpen by remember { mutableStateOf(false) } // the Send tab's *Pair a device* opens Devices with pairing started
     var sending by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val previews = remember { mutableStateMapOf<String, ItemPreview>() }
@@ -98,9 +100,11 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
         c.mainWindowVisible = true
         onDispose { c.mainWindowVisible = false }
     }
+    SideEffect { c.mainWindowTab = tab } // a send result is shown in the window only on the Send tab
     LaunchedEffect(Unit) { c.refreshPeers() }
     // Folders and probing types read the disk: previews are built off the UI thread and kept per row.
     LaunchedEffect(send.files) {
+        evictStalePreviews(previews, send)
         for (key in send.files.map(::uploadUnitKey).distinct()) {
             if (key !in previews) previews[key] = withContext(Dispatchers.IO) { previewOf(File(key)) }
         }
@@ -131,7 +135,6 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
         }
     }
 
-    val status = relayStatus(config.relayUrl, config.token)
     Window(
         onCloseRequest = onClose, state = rememberWindowState(size = DpSize(1040.dp, 680.dp)),
         title = "Mjolnir", icon = icon,
@@ -149,44 +152,48 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
         LaunchedEffect(Unit) { c.openRequests.collect { bringToFront(awtWindow) } } // Explorer's *Send to*, tray: come to the front
         MjolnirTheme {
             Row(Modifier.fillMaxSize().dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget)) {
-                Sidebar(selected = tab, relayStatus = status, guestBadge = null, onSelect = onTab)
+                Sidebar(selected = tab, relayStatus = relayStatus.label, guestBadge = null, onSelect = onTab)
                 Box(Modifier.weight(1f).fillMaxHeight()) {
-                    // Received, Devices and Settings arrive in the next task; until then they open their own windows.
-                    SendTabContent(
-                        state = send,
-                        nicknameOf = { peer -> nicknames[peer.deviceId] ?: peer.name }, // same rule as Nicknames.displayName; reads the flow so renames recompose
-                        previews = previews,
-                        sending = sending,
-                        onState = { next -> c.updateSend { next } },
-                        onAddFiles = {
-                            val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
-                            dialog.isVisible = true
-                            addFiles(dialog.files.toList())
-                        },
-                        onAddFolder = {
-                            val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
-                            if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) addFiles(listOf(chooser.selectedFile))
-                        },
-                        onPair = { onTab(MainTab.DEVICES) },
-                        onSend = {
-                            sending = true
-                            // Runs in the controller's scope, so closing this window cannot cancel it.
-                            c.sendSelected().invokeOnCompletion { sending = false }
-                        },
-                        onOpen = ::openPreview,
-                        onShowInFolder = ::showPreviewInFolder,
-                    )
+                    when (tab) {
+                        MainTab.SEND -> SendTabContent(
+                            state = send,
+                            nicknameOf = { peer -> nicknames[peer.deviceId] ?: peer.name }, // same rule as Nicknames.displayName; reads the flow so renames recompose
+                            previews = previews,
+                            sending = sending,
+                            onState = { next -> c.updateSend { next } },
+                            onAddFiles = {
+                                val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
+                                dialog.isVisible = true
+                                addFiles(dialog.files.toList())
+                            },
+                            onAddFolder = {
+                                val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+                                if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) addFiles(listOf(chooser.selectedFile))
+                            },
+                            onPair = { pairOnOpen = true; onTab(MainTab.DEVICES) },
+                            onSend = {
+                                sending = true
+                                // Runs in the controller's scope, so closing this window cannot cancel it.
+                                c.sendSelected().invokeOnCompletion { sending = false }
+                            },
+                            onOpen = ::openPreview,
+                            onShowInFolder = ::showPreviewInFolder,
+                        )
+                        MainTab.RECEIVED -> ReceivedTab(c)
+                        MainTab.DEVICES -> DevicesTab(c, openPairing = pairOnOpen, onPairingOpened = { pairOnOpen = false })
+                        MainTab.SETTINGS -> SettingsTab(c, parent = awtWindow)
+                        MainTab.GUEST -> {} // arrives with the guest-room plan; the sidebar hides it until then
+                    }
                 }
             }
         }
     }
 }
 
-/** `Relay connected` once registered, `Connecting…` while not, `Relay not set` without a valid address. */
-internal fun relayStatus(relayUrl: String, token: String?): String = when {
-    RelayUrls.normalize(relayUrl) == null -> "Relay not set"
-    token == null -> "Connecting…"
-    else -> "Relay connected"
+/** Drops previews whose row has left the queue, so the map does not hold every file ever added. */
+internal fun evictStalePreviews(previews: MutableMap<String, ItemPreview>, send: SendState) {
+    val live = send.links.toSet() + send.files.map(::uploadUnitKey)
+    previews.keys.retainAll(live)
 }
 
 private class NavItem(val tab: MainTab, val label: String, val icon: List<String>)
@@ -268,27 +275,22 @@ private fun readClipboard(): Pair<List<File>, String?> = try {
 }
 
 private fun openPreview(p: ItemPreview) {
-    val path = when (p) {
-        is ItemPreview.Photo -> p.path
-        is ItemPreview.OtherFile -> p.path
-        is ItemPreview.Folder -> p.path
-        is ItemPreview.Link -> return try { browseWithSystem(URI(p.url)) } catch (_: Exception) {}
-        is ItemPreview.Missing -> return
+    when (p) {
+        is ItemPreview.Photo -> openFile(File(p.path))
+        is ItemPreview.OtherFile -> openFile(File(p.path))
+        is ItemPreview.Folder -> openFile(File(p.path))
+        is ItemPreview.Link -> try { browseWithSystem(URI(p.url)) } catch (_: Exception) {}
+        is ItemPreview.Missing -> {}
     }
-    try { Desktop.getDesktop().open(File(path)) } catch (_: Exception) {}
 }
 
 private fun showPreviewInFolder(p: ItemPreview) {
-    val path = when (p) {
-        is ItemPreview.Photo -> p.path
-        is ItemPreview.OtherFile -> p.path
-        is ItemPreview.Folder -> p.path
-        else -> return
+    when (p) {
+        is ItemPreview.Photo -> revealInFolder(File(p.path))
+        is ItemPreview.OtherFile -> revealInFolder(File(p.path))
+        is ItemPreview.Folder -> revealInFolder(File(p.path))
+        else -> {}
     }
-    try {
-        if (System.getProperty("os.name").startsWith("Windows")) ProcessBuilder("explorer.exe", "/select,", File(path).absolutePath).start()
-        else Desktop.getDesktop().open(File(path).parentFile)
-    } catch (_: Exception) {}
 }
 
 /** Restores [w] if minimized and raises it above other windows (the alwaysOnTop toggle gets past focus rules). */

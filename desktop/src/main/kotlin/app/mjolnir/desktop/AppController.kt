@@ -37,6 +37,9 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -56,6 +59,16 @@ import kotlinx.serialization.builtins.serializer
 /** Tabs of the main window; `GUEST` is unused until the guest-room plan. */
 enum class MainTab { SEND, GUEST, RECEIVED, DEVICES, SETTINGS }
 
+/** The sidebar's relay line. */
+enum class RelayStatus(val label: String) {
+    /** No valid relay address. */
+    NOT_SET("Relay not set"),
+    /** An address is set, but the events stream is not connected right now (still connecting, or reconnecting). */
+    CONNECTING("Connecting…"),
+    /** The events stream is connected. */
+    CONNECTED("Relay connected"),
+}
+
 private const val RETRY_DELAY_MS = 30_000L
 const val TOOLTIP_IDLE = "Mjolnir"
 
@@ -64,6 +77,10 @@ class AppController(
     private val dataDir: File = appDataDir(),
     /** Runs everything that must outlive a window: relay calls, sends, lifecycle changes. */
     val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    /** Registry write for *Start at sign-in*; returns whether it worked. Injectable so tests need no registry. */
+    private val launchAtLoginSetter: (Boolean) -> Boolean = { app.mjolnir.desktop.setLaunchAtLogin(it) },
+    /** Creates or deletes the Explorer *Send to* shortcut; returns whether it worked. */
+    private val sendToSetter: (Boolean) -> Boolean = { setSendToShortcut(it) },
     private val apiFactory: (url: String, token: () -> String?) -> RelayApi = { url, token -> RelayClient.create(url, token) },
 ) {
 
@@ -72,6 +89,16 @@ class AppController(
     val history = ReceivedHistory(JsonFileStore(File(dataDir, "received.json"), ListSerializer(ReceivedEntry.serializer())) { emptyList() })
     private val _config = MutableStateFlow(store.read())
     val config: StateFlow<DesktopConfig> = _config.asStateFlow()
+
+    private val connected = MutableStateFlow(false)
+    private fun statusOf(config: DesktopConfig, up: Boolean) = when {
+        RelayUrls.normalize(config.relayUrl) == null -> RelayStatus.NOT_SET
+        !up -> RelayStatus.CONNECTING
+        else -> RelayStatus.CONNECTED
+    }
+    /** Live connection state: [RelayEvent.Connected] received and not since dropped. */
+    val relayStatus: StateFlow<RelayStatus> = combine(_config, connected, ::statusOf)
+        .stateIn(scope, SharingStarted.Eagerly, statusOf(_config.value, false))
 
     private val _peers = MutableStateFlow<List<Peer>>(emptyList())
     val peers: StateFlow<List<Peer>> = _peers.asStateFlow()
@@ -86,6 +113,9 @@ class AppController(
 
     /** Set by the main window while it is shown; then results appear in the window instead of as tray notifications. */
     @Volatile var mainWindowVisible: Boolean = false
+
+    /** The tab the main window is showing; a send result appears in the window only while this is [MainTab.SEND]. */
+    @Volatile var mainWindowTab: MainTab = MainTab.SEND
 
     private val _openRequests = MutableSharedFlow<MainTab>(extraBufferCapacity = 4)
     /** Asks the UI to show the main window on a tab. */
@@ -179,6 +209,7 @@ class AppController(
                     onPeersChanged = { refreshPeers() },
                     afterDrain = { cleanStagingFolder(api) },
                     onConnected = { kickOutbox() },
+                    onConnectionChange = { connected.value = it },
                 ).run()
                 delay(RETRY_DELAY_MS) // the events flow ended (client closed): start over
             } catch (e: CancellationException) {
@@ -361,7 +392,8 @@ class AppController(
                 val kept = if (r.filesQueued) cur.copy(files = cur.files - files.toSet(), selected = cur.selected - files.mapTo(HashSet()) { uploadUnitKey(it) }) else cur
                 kept.withoutLinks(sentUrls).withoutStaleRow().copy(notice = r.message)
             }
-            if (!mainWindowVisible) notify(r.message) // a visible window shows the notice itself
+            // Only the Send tab shows the notice itself; any other tab, or no window, gets a tray notification.
+            if (!(mainWindowVisible && mainWindowTab == MainTab.SEND)) notify(r.message)
         }
     }
 
@@ -377,7 +409,8 @@ class AppController(
 
     /** Sends links now and queues files; returns the message to show. */
     suspend fun send(target: Peer, tabs: List<Tab>, files: List<LocalUpload>): SendResult {
-        val api = api() ?: return SendResult(Messages.notSent(Messages.failureReason(RelayErrorKind.NETWORK, target.name)), emptyList(), false)
+        val shown = nicknames.displayName(target)
+        val api = api() ?: return SendResult(Messages.notSent(Messages.failureReason(RelayErrorKind.NETWORK, shown)), emptyList(), false)
         val token = store.read().token
         val parts = mutableListOf<String>()
         var sentTabs = emptyList<Tab>()
@@ -386,18 +419,18 @@ class AppController(
             val outcome = sendInBatches(api, target.deviceId, tabs)
             sentTabs = outcome.sentTabs
             error = outcome.error
-            if (sentTabs.isNotEmpty()) parts += Messages.sent(sentTabs.size, 0, target.name)
+            if (sentTabs.isNotEmpty()) parts += Messages.sent(sentTabs.size, 0, shown)
         }
         if (files.isNotEmpty()) {
             val now = System.currentTimeMillis()
             for (group in groupForSending(files)) {
-                outbox.enqueue(OutgoingFiles(UUID.randomUUID().toString(), target.deviceId, target.name, group, createdAtEpochMs = now))
+                outbox.enqueue(OutgoingFiles(UUID.randomUUID().toString(), target.deviceId, shown, group, createdAtEpochMs = now))
             }
-            parts += Messages.queued(files.size, target.name)
+            parts += Messages.queued(files.size, shown)
             kickOutbox()
         }
         if (error != null) {
-            parts += Messages.notSent(Messages.failureReason(error.kind, target.name))
+            parts += Messages.notSent(Messages.failureReason(error.kind, shown))
             if (error.kind == RelayErrorKind.UNAUTHORIZED) scope.launch { recoverUnauthorized(token) }
         }
         if (sentTabs.isNotEmpty() || files.isNotEmpty()) updateConfig { it.copy(lastPhoneId = target.deviceId) }
@@ -447,7 +480,7 @@ class AppController(
     }
 
     fun lastPhoneName(): String =
-        _peers.value.find { it.deviceId == _config.value.lastPhoneId }?.name ?: "device"
+        _peers.value.find { it.deviceId == _config.value.lastPhoneId }?.let(nicknames::displayName) ?: "device"
 
     fun openReceivedFiles() {
         scope.launch {
@@ -517,29 +550,28 @@ class AppController(
         val api = api() ?: return
         try {
             api.unpair(peer.deviceId)
+            nicknames.remove(peer.deviceId) // a nickname belongs to a pairing
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
-            notify(Messages.failureReason(e.kind, peer.name))
+            notify(Messages.failureReason(e.kind, nicknames.displayName(peer)))
         }
         refreshPeers()
     }
 
     /** Switches relay in [scope]: forgets credentials and pairings, then registers on the new one. */
-    fun changeRelay(url: String): Job = scope.launch {
-        relaySwitch.withLock {
-            if (url == _config.value.relayUrl) return@withLock
-            serviceSwitch.withLock { serviceJob?.cancelAndJoin(); serviceJob = null }
-            updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null) }
-            setPeers(emptyList())
-            restartService()
-        }
+    fun changeRelay(url: String): Job = scope.launch { switchRelay(url) }
+
+    private suspend fun switchRelay(url: String) = relaySwitch.withLock {
+        if (url == _config.value.relayUrl) return@withLock
+        serviceSwitch.withLock { serviceJob?.cancelAndJoin(); serviceJob = null }
+        connected.value = false
+        updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null) }
+        setPeers(emptyList())
+        restartService()
     }
 
     private val relaySwitch = Mutex()
-
-    /** Renames in [scope]; [onResult] gets an error message or null. */
-    fun startRename(name: String, onResult: (String?) -> Unit): Job = scope.launch { onResult(rename(name)) }
 
     /** Renames this device on the relay (when registered) and in the config; returns an error message or null. */
     suspend fun rename(name: String): String? {
@@ -559,23 +591,56 @@ class AppController(
         return null
     }
 
-    fun setSaveDir(dir: File) {
-        scope.launch { updateConfig { it.copy(saveDir = dir.absolutePath) } }
-    }
+    /**
+     * Applies the Settings draft in [scope], so closing the window cannot interrupt it; [onResult] gets an error
+     * message, or null when everything was applied.
+     */
+    fun saveSettings(draft: SettingsDraft, onResult: (String?) -> Unit = {}): Job = scope.launch { onResult(applySettings(draft)) }
 
-    /** Runs `reg` in [scope]; the setting is stored only when it succeeded. */
-    fun setLaunchAtLogin(enabled: Boolean): Job = scope.launch {
-        if (app.mjolnir.desktop.setLaunchAtLogin(enabled)) updateConfig { it.copy(launchAtLogin = enabled) }
-    }
-
-    /** Runs PowerShell (or deletes the shortcut) in [scope]; the setting is stored only when it succeeded. */
-    fun setSendToMenu(enabled: Boolean): Job = scope.launch {
-        if (setSendToShortcut(enabled)) updateConfig { it.copy(sendToMenu = enabled) }
+    /**
+     * Applies [draft]: the device name (on the relay too, while registered), folder and checkboxes, the two Windows
+     * settings (stored only when they took effect), and last the relay, which unpairs everything. Returns a message
+     * for an invalid draft or a setting that could not be applied, else null.
+     */
+    suspend fun applySettings(draft: SettingsDraft): String? {
+        draft.validate()?.let { return it }
+        val current = _config.value
+        val name = draft.deviceName.trim()
+        if (name != current.deviceName) rename(name)?.let { return it }
+        val dir = draft.saveDir.trim()
+        val saveDir = when {
+            dir.isEmpty() -> null
+            dir == current.saveDirPath().absolutePath -> current.saveDir // the shown default stays "default"
+            else -> dir
+        }
+        updateConfig { it.copy(saveDir = saveDir, openLinksOnArrival = draft.openLinksOnArrival, keepInTray = draft.keepInTray) }
+        var problem: String? = null
+        if (draft.launchAtLogin != current.launchAtLogin) {
+            if (launchAtLoginSetter(draft.launchAtLogin)) updateConfig { it.copy(launchAtLogin = draft.launchAtLogin) }
+            else problem = "Couldn't change whether Mjolnir starts when you sign in."
+        }
+        if (draft.sendToMenu != current.sendToMenu) {
+            if (sendToSetter(draft.sendToMenu)) updateConfig { it.copy(sendToMenu = draft.sendToMenu) }
+            else problem = problem ?: "Couldn't change Explorer's Send to menu."
+        }
+        RelayUrls.normalize(draft.relayUrl)?.let { switchRelay(it) }
+        return problem
     }
 
     /** Recreates the *Send to* shortcut at startup when the setting is on (repairs a deleted or moved one). */
     fun ensureSendToShortcut(): Job? =
-        if (_config.value.sendToMenu) scope.launch { setSendToShortcut(true) } else null
+        if (_config.value.sendToMenu) scope.launch { sendToSetter(true) } else null
+
+    /** Opens the folder holding the bundled font licences (extracted from the jar on first use). */
+    fun openLicences() {
+        scope.launch {
+            try {
+                Desktop.getDesktop().open(extractLicences(File(dataDir, "licences")))
+            } catch (e: Exception) {
+                // nothing sensible to do
+            }
+        }
+    }
 
     fun shutdown() {
         synchronized(clientLock) { (client as? AutoCloseable)?.close(); client = null }
