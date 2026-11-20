@@ -53,6 +53,8 @@ data class RelayLimits(
     val registrationsPerHourPerIp: Int = 5,
     val claimsPerMinute: Int = 10,
     val sendsPerMinute: Int = 60,
+    val maxSpacesPerDevice: Int = 50,
+    val maxMembersPerSpace: Int = 50,
 )
 
 data class RelayDeps(
@@ -109,6 +111,7 @@ fun Application.relayModule(deps: RelayDeps) {
         bearer("device") {
             authenticate { cred ->
                 deps.store.deviceByTokenHash(sha256Hex(cred.token))
+                    ?.also { deps.store.touchLastSeen(it.id, deps.clock.nowMs()) }
                     ?.let { DevicePrincipal(it.id, it.name, it.kind) }
             }
         }
@@ -145,6 +148,7 @@ fun Application.relayModule(deps: RelayDeps) {
         get("/health") { call.respondText("ok") }
         deviceRoutes(deps)
         pairingRoutes(deps)
+        spaceRoutes(deps)
         sendRoutes(deps)
         fileRoutes(deps)
     }

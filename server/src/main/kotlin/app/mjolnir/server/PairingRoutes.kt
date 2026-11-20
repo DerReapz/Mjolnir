@@ -4,6 +4,9 @@ import io.ktor.websocket.Frame
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import app.mjolnir.protocol.ClaimRequest
+import app.mjolnir.protocol.CodeKind
+import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.SpaceRef
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.ErrorResponse
 import app.mjolnir.protocol.Limits
@@ -46,17 +49,37 @@ fun Route.pairingRoutes(deps: RelayDeps) {
         rateLimit(ClaimLimit) {
             post("/v1/pairings/claim") {
                 val me = call.me()
-                val code = PairingCode.normalize(call.receive<ClaimRequest>().code)
-                    ?: return@post call.notFound()
+                val req = call.receive<ClaimRequest>()
+                val code = PairingCode.normalize(req.code) ?: return@post call.notFound()
                 val now = deps.clock.nowMs()
                 val open = store.openPairingByCode(code, now) ?: return@post call.notFound()
                 if (open.ownerId == me.deviceId) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("own_code"))
                 }
+                if (req.expect != open.kind) {
+                    val error = if (open.kind == CodeKind.SPACE_INVITE) "wrong_kind_space" else "wrong_kind_pairing"
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse(error))
+                }
+                var space: SpaceRef? = null
+                if (open.kind == CodeKind.SPACE_INVITE) {
+                    // The inviter must still administer the space: a transferred or deleted space voids its old invites.
+                    val s = open.spaceId?.let { store.space(it) }
+                    if (s == null || s.adminId != open.ownerId) return@post call.notFound()
+                    space = s.toRef()
+                    if (store.members(s.id).any { it.id == me.deviceId }) {
+                        return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("already_member"))
+                    }
+                    if (store.spacesOf(me.deviceId).size >= deps.limits.maxSpacesPerDevice) {
+                        return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("space_limit"))
+                    }
+                    if (store.members(s.id).size >= deps.limits.maxMembersPerSpace) {
+                        return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("member_limit"))
+                    }
+                }
                 val row = store.claimPairing(code, me.deviceId, now) ?: return@post call.notFound()
                 val owner = store.device(row.ownerId) ?: return@post call.notFound()
-                hub.emit(row.ownerId, RelayEvent.PairRequested(row.id, DeviceRow(me.deviceId, me.name, me.kind, null).toPeer()))
-                call.respond(HttpStatusCode.Accepted, ClaimResponse(row.id, owner.toPeer()))
+                hub.emit(row.ownerId, RelayEvent.PairRequested(row.id, DeviceRow(me.deviceId, me.name, me.kind, null).toPeer(), space))
+                call.respond(HttpStatusCode.Accepted, ClaimResponse(row.id, owner.toPeer(), row.kind, space))
             }
         }
 
@@ -67,22 +90,29 @@ fun Route.pairingRoutes(deps: RelayDeps) {
             val state = effectiveState(row, deps.clock.nowMs())
             val otherId = if (row.ownerId == me.deviceId) row.claimerId else row.ownerId
             val peer = if (state == PairingState.ACCEPTED) otherId?.let { store.device(it)?.toPeer() } else null
-            call.respond(PairingStatus(state, peer))
+            val space = if (row.kind == CodeKind.SPACE_INVITE) row.spaceId?.let { store.space(it)?.toRef() } else null
+            call.respond(PairingStatus(state, peer, space))
         }
 
         post("/v1/pairings/{id}/accept") {
             val me = call.me()
             val id = call.parameters["id"]!!
-            when (store.resolvePairing(id, me.deviceId, accept = true, nowMs = deps.clock.nowMs())) {
+            val result = store.resolvePairing(id, me.deviceId, accept = true, nowMs = deps.clock.nowMs(), maxMembers = deps.limits.maxMembersPerSpace)
+            when (result) {
                 Store.Resolved.NOT_FOUND -> call.notFound()
+                Store.Resolved.FULL -> call.respond(HttpStatusCode.Conflict, ErrorResponse("member_limit"))
                 Store.Resolved.FORBIDDEN -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("forbidden"))
                 Store.Resolved.ALREADY_ACCEPTED -> call.respond(HttpStatusCode.NoContent)
                 Store.Resolved.WON -> {
                     val row = store.pairing(id)!!
                     val owner = store.device(row.ownerId)!!
                     val claimer = store.device(row.claimerId!!)!!
-                    hub.emit(owner.id, RelayEvent.Paired(claimer.toPeer()))
-                    hub.emit(claimer.id, RelayEvent.Paired(owner.toPeer()))
+                    if (row.kind == CodeKind.SPACE_INVITE) {
+                        emitSpaceChanged(deps, row.spaceId!!)
+                    } else {
+                        hub.emit(owner.id, RelayEvent.Paired(claimer.toPeer()))
+                        hub.emit(claimer.id, RelayEvent.Paired(owner.toPeer()))
+                    }
                     call.respond(HttpStatusCode.NoContent)
                 }
             }
@@ -91,14 +121,21 @@ fun Route.pairingRoutes(deps: RelayDeps) {
         post("/v1/pairings/{id}/reject") {
             val me = call.me()
             when (store.resolvePairing(call.parameters["id"]!!, me.deviceId, accept = false, nowMs = deps.clock.nowMs())) {
-                Store.Resolved.NOT_FOUND, Store.Resolved.ALREADY_ACCEPTED -> call.notFound()
+                Store.Resolved.NOT_FOUND, Store.Resolved.ALREADY_ACCEPTED, Store.Resolved.FULL -> call.notFound()
                 Store.Resolved.FORBIDDEN -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("forbidden"))
                 Store.Resolved.WON -> call.respond(HttpStatusCode.NoContent)
             }
         }
 
         get("/v1/peers") {
-            call.respond(store.peersOf(call.me().deviceId).map { it.toPeer() })
+            val me = call.me().deviceId
+            val paired = store.peersOf(me)
+            val pairedIds = paired.map { it.id }.toSet()
+            // A device that is paired shows once, under paired; otherwise once per shared space.
+            val viaSpaces = store.spacesOf(me).flatMap { s ->
+                store.members(s.id).filter { it.id != me && it.id !in pairedIds }.map { Peer(it.id, it.name, it.kind, s.toRef()) }
+            }
+            call.respond(paired.map { it.toPeer() } + viaSpaces)
         }
 
         delete("/v1/peers/{deviceId}") {

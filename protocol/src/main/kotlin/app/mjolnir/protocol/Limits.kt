@@ -5,6 +5,8 @@ object Limits {
     const val MAX_URL_LENGTH = 8192
     const val MAX_TITLE_LENGTH = 300
     const val MAX_DEVICE_NAME_LENGTH = 64
+    const val MAX_SPACE_NAME_LENGTH = 40
+    const val ADMIN_SILENT_TAKEOVER_MS = 2_592_000_000L
     const val PAIRING_TTL_MS = 300_000L
     const val DELIVERY_TTL_MS = 604_800_000L
     const val MAX_BODY_BYTES = 1_048_576L

@@ -105,4 +105,26 @@ class PairingRoutesTest {
         assertEquals(HttpStatusCode.NotFound, client.post("/v1/pairings/${claim.pairingId}/reject") { bearerAuth(pc.token) }.status)
         assertEquals(PairingState.ACCEPTED, status(phone, claim.pairingId).state)
     }
+    @Test fun regeneratingCodeDoesNotCancelWaitingClaim() = relayTest {
+        val pc = register("PC", DeviceKind.PC); val phone = register()
+        val claim = claim(phone, createCode(pc))
+        createCode(pc)
+        assertEquals(HttpStatusCode.NoContent, client.post("/v1/pairings/${claim.pairingId}/accept") { bearerAuth(pc.token) }.status)
+        assertEquals(PairingState.ACCEPTED, status(phone, claim.pairingId).state)
+        assertEquals(listOf(phone.deviceId), peers(pc).map { it.deviceId })
+    }
+    @Test fun purgeDeletesUnacceptedPairingsExpiredOverADayAgo() = relayTest {
+        val pc = register("PC", DeviceKind.PC); val phone = register(); val other = register("Other")
+        createCode(register("Third"))               // PENDING, never claimed
+        claim(phone, createCode(other))             // CLAIMED, never answered
+        pair(pc, other)                             // ACCEPTED
+        val day = 86_400_000L
+        clock.now += 300_000 + day - 1_000          // expired, but under a day ago
+        purge(deps)
+        assertEquals(3, store.rowCount("pairings"))
+        clock.now += 2_000                          // now expired over a day ago
+        purge(deps)
+        assertEquals(1, store.rowCount("pairings")) // only the ACCEPTED row is kept
+        assertEquals(listOf(other.deviceId), peers(pc).map { it.deviceId })
+    }
 }

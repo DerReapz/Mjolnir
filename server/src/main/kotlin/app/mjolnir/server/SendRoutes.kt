@@ -6,6 +6,7 @@ import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.SendRequest
 import app.mjolnir.protocol.SendResponse
+import app.mjolnir.protocol.SpaceRef
 import app.mjolnir.protocol.cleanTabs
 import app.mjolnir.protocol.isSafeTabUrl
 import io.ktor.http.HttpStatusCode
@@ -48,9 +49,18 @@ fun Route.sendRoutes(deps: RelayDeps) {
             post("/v1/send") {
                 val me = call.principal<DevicePrincipal>()!!
                 val req = call.receive<SendRequest>()
-                if (!store.areLinked(me.deviceId, req.to)) {
+                // Allowed when paired, or when the card the user clicked names a space both devices are in.
+                // A given spaceId must always hold, since it is stored as the delivery's label.
+                val space = req.spaceId?.let { id ->
+                    if (req.to == me.deviceId || !store.shareSpace(me.deviceId, req.to, id)) {
+                        return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("not_in_space"))
+                    }
+                    store.space(id)
+                }
+                if (space == null && !store.areLinked(me.deviceId, req.to)) {
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("not_paired"))
                 }
+                val ref = space?.let { SpaceRef(it.id, it.name) }
                 // A delivery holds tabs or files, never both and never neither.
                 if (req.tabs.isEmpty() == req.fileIds.isEmpty()) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("tabs_or_files"))
@@ -61,13 +71,13 @@ fun Route.sendRoutes(deps: RelayDeps) {
                     if (req.fileIds.size > Limits.MAX_FILES_PER_SEND) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_files"))
                     }
-                    val (result, row) = store.createFileDelivery(me.deviceId, req.to, req.fileIds, now)
+                    val (result, row) = store.createFileDelivery(me.deviceId, req.to, req.fileIds, now, ref?.id, ref?.name)
                     return@post when (result) {
                         AttachResult.INVALID -> call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_files"))
                         AttachResult.ALREADY_SENT -> call.respond(HttpStatusCode.Conflict, ErrorResponse("already_sent"))
                         AttachResult.OK -> {
                             row!!
-                            deps.hub.emit(req.to, RelayEvent.DeliveryArrived(Delivery(row.id, from, emptyList(), now, row.files)))
+                            deps.hub.emit(req.to, RelayEvent.DeliveryArrived(Delivery(row.id, from, emptyList(), now, row.files, ref)))
                             ping(req.to)
                             call.respond(HttpStatusCode.Accepted, SendResponse(row.id))
                         }
@@ -77,8 +87,8 @@ fun Route.sendRoutes(deps: RelayDeps) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_tabs"))
                 }
                 val tabs = cleanTabs(req.tabs)
-                val id = store.createDelivery(me.deviceId, req.to, tabs, now)
-                deps.hub.emit(req.to, RelayEvent.DeliveryArrived(Delivery(id, from, tabs, now)))
+                val id = store.createDelivery(me.deviceId, req.to, tabs, now, spaceId = ref?.id, spaceName = ref?.name)
+                deps.hub.emit(req.to, RelayEvent.DeliveryArrived(Delivery(id, from, tabs, now, space = ref)))
                 ping(req.to)
                 call.respond(HttpStatusCode.Accepted, SendResponse(id))
             }
@@ -87,7 +97,7 @@ fun Route.sendRoutes(deps: RelayDeps) {
         get("/v1/inbox") {
             val me = call.principal<DevicePrincipal>()!!
             val out = store.inbox(me.deviceId, deps.clock.nowMs()).mapNotNull { row ->
-                store.device(row.fromId)?.let { Delivery(row.id, it.toPeer(), row.tabs, row.sentAtMs, row.files) }
+                store.device(row.fromId)?.let { Delivery(row.id, it.toPeer(), row.tabs, row.sentAtMs, row.files, row.spaceId?.let { id -> SpaceRef(id, row.spaceName ?: "") }) }
             }
             call.respond(out)
         }

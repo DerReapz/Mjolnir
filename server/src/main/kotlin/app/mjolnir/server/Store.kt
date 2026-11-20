@@ -53,6 +53,9 @@ enum class AttachResult { OK, ALREADY_SENT, INVALID }
 
 fun DeviceRow.toPeer(): Peer = Peer(id, name, kind)
 
+/** Unaccepted pairing and invite rows are kept this long past their expiry, then purged. */
+private const val STALE_PAIRING_MS = 86_400_000L
+
 class Store(jdbcUrl: String) {
     private val conn: Connection = DriverManager.getConnection(jdbcUrl)
 
@@ -300,22 +303,38 @@ class Store(jdbcUrl: String) {
         }
     }
 
-    enum class Resolved { NOT_FOUND, FORBIDDEN, WON, ALREADY_ACCEPTED }
+    enum class Resolved { NOT_FOUND, FORBIDDEN, WON, ALREADY_ACCEPTED, FULL }
 
-    /** One atomic CLAIMED -> ACCEPTED/REJECTED transition by the owner; links on accept. */
+    /**
+     * One atomic CLAIMED -> ACCEPTED/REJECTED transition by the owner. Accepting a PAIRING links the two devices;
+     * accepting a SPACE_INVITE adds the claimer to the space, provided the owner still administers it and it has
+     * room (FULL, with the pairing left CLAIMED).
+     */
     @Synchronized
-    fun resolvePairing(id: String, deviceId: String, accept: Boolean, nowMs: Long): Resolved {
+    fun resolvePairing(id: String, deviceId: String, accept: Boolean, nowMs: Long, maxMembers: Int = Int.MAX_VALUE): Resolved = transaction {
         val row = pairing(id)
-        if (row == null || (row.ownerId != deviceId && row.claimerId != deviceId)) return Resolved.NOT_FOUND
-        if (row.ownerId != deviceId) return Resolved.FORBIDDEN
+        if (row == null || (row.ownerId != deviceId && row.claimerId != deviceId)) return@transaction Resolved.NOT_FOUND
+        if (row.ownerId != deviceId) return@transaction Resolved.FORBIDDEN
         val claimerId = row.claimerId
-        if (accept && row.state == PairingState.ACCEPTED && claimerId != null && areLinked(row.ownerId, claimerId)) {
-            return Resolved.ALREADY_ACCEPTED
+        val invite = row.kind == CodeKind.SPACE_INVITE
+        if (accept && row.state == PairingState.ACCEPTED && claimerId != null &&
+            (if (invite) row.spaceId?.let { shareSpace(row.ownerId, claimerId, it) } == true else areLinked(row.ownerId, claimerId))
+        ) {
+            return@transaction Resolved.ALREADY_ACCEPTED
         }
-        if (row.state != PairingState.CLAIMED || nowMs > row.expiresAtMs || claimerId == null) return Resolved.NOT_FOUND
-        if (accept) link(row.ownerId, claimerId)
+        if (row.state != PairingState.CLAIMED || nowMs > row.expiresAtMs || claimerId == null) return@transaction Resolved.NOT_FOUND
+        if (invite) {
+            val space = row.spaceId?.let { space(it) }
+            if (space == null || space.adminId != row.ownerId) return@transaction Resolved.NOT_FOUND
+            if (accept) {
+                if (members(space.id).size >= maxMembers) return@transaction Resolved.FULL
+                addMember(space.id, claimerId, nowMs)
+            }
+        } else if (accept) {
+            link(row.ownerId, claimerId)
+        }
         setPairingState(id, if (accept) PairingState.ACCEPTED else PairingState.REJECTED)
-        return Resolved.WON
+        Resolved.WON
     }
 
     @Synchronized
@@ -585,13 +604,16 @@ class Store(jdbcUrl: String) {
 
     /** Attaches [fileIds] and creates their delivery in one step; returns the delivery and its files on OK. */
     @Synchronized
-    fun createFileDelivery(fromId: String, toId: String, fileIds: List<String>, nowMs: Long): Pair<AttachResult, DeliveryRow?> =
+    fun createFileDelivery(
+        fromId: String, toId: String, fileIds: List<String>, nowMs: Long,
+        spaceId: String? = null, spaceName: String? = null,
+    ): Pair<AttachResult, DeliveryRow?> =
         transaction {
             val id = newId()
             val result = attachFiles(fileIds, fromId, toId, id)
             if (result != AttachResult.OK) return@transaction result to null
-            createDelivery(fromId, toId, emptyList(), nowMs, id)
-            result to DeliveryRow(id, fromId, toId, emptyList(), nowMs, filesOfDelivery(id))
+            createDelivery(fromId, toId, emptyList(), nowMs, id, spaceId, spaceName)
+            result to DeliveryRow(id, fromId, toId, emptyList(), nowMs, filesOfDelivery(id), spaceId, spaceName)
         }
 
     /** A file [deviceId] may download: its own, or one sent to it in a live delivery; never an acked tombstone. */
@@ -629,6 +651,7 @@ class Store(jdbcUrl: String) {
         exec("DELETE FROM files WHERE acked_at IS NOT NULL AND acked_at<=?", deliveryCutoff) // blobs went on ack
         exec("DELETE FROM files WHERE delivery_id IN (SELECT id FROM deliveries WHERE sent_at<=?)", deliveryCutoff)
         exec("DELETE FROM deliveries WHERE sent_at<=?", deliveryCutoff)
+        exec("DELETE FROM pairings WHERE state<>'ACCEPTED' AND expires_at<?", nowMs - STALE_PAIRING_MS)
         out
     }
 
