@@ -82,6 +82,12 @@ fun HttpClientConfig<*>.installMjolnirDefaults() {
     }
 }
 
+/** The Ktor client every relay call uses: OkHttp engine plus [installMjolnirDefaults]. */
+fun newMjolnirHttpClient(): HttpClient = HttpClient(OkHttp) {
+    installMjolnirDefaults()
+    engine { config { pingInterval(20, TimeUnit.SECONDS) } }
+}
+
 private fun isHeartbeat(text: String): Boolean = try {
     (MjolnirJson.parseToJsonElement(text) as? JsonObject)?.get("type")?.jsonPrimitive?.contentOrNull == "heartbeat"
 } catch (_: Exception) {
@@ -129,10 +135,7 @@ class RelayClient(
     companion object {
         fun create(baseUrl: String, token: () -> String?): RelayClient =
             RelayClient(
-                HttpClient(OkHttp) {
-                    installMjolnirDefaults()
-                    engine { config { pingInterval(20, TimeUnit.SECONDS) } }
-                },
+                newMjolnirHttpClient(),
                 baseUrl,
                 token = token,
             )
