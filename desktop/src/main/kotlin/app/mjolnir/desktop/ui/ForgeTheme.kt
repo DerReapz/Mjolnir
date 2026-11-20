@@ -156,6 +156,18 @@ fun ForgePrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = M
     ) { ButtonLabel(text, if (big) 16 else 14) }
 }
 
+/** The disabled state of the big accent button: legible muted text on a surface with a border, not a dimmed accent. */
+@Composable
+fun ForgeDisabledButton(text: String, modifier: Modifier = Modifier, big: Boolean = true) {
+    Button(
+        onClick = {}, enabled = false, shape = if (big) Forge.inputShape else Forge.buttonShape,
+        modifier = modifier.height(if (big) 48.dp else 40.dp),
+        border = BorderStroke(1.dp, Forge.border),
+        colors = ButtonDefaults.buttonColors(disabledContainerColor = Forge.surface, disabledContentColor = Forge.muted),
+        contentPadding = PaddingValues(horizontal = 18.dp),
+    ) { ButtonLabel(text, if (big) 16 else 14) }
+}
+
 @Composable
 fun ForgeSecondaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     OutlinedButton(

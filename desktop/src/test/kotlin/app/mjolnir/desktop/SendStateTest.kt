@@ -195,4 +195,16 @@ class SameNameFoldersTest {
         assertEquals("b", s.lastUsedId)
         assertEquals(listOf(b, a), s.groups.single().peers)
     }
+
+    @Test fun removingTheSelectedRowClearsIt() {
+        val s = SendState().copy(files = listOf(upload("/x/a.txt", "a.txt"), upload("/x/b.txt", "b.txt"))).selectRow("/x/a.txt")
+        assertNull(s.removeFile("/x/a.txt").selectedRow)
+        assertEquals("/x/a.txt", s.removeFile("/x/b.txt").selectedRow)
+    }
+
+    @Test fun sendingTheSelectedLinkClearsItsRow() {
+        val s = SendState().withText("https://a.com https://b.com").selectRow("https://a.com")
+        assertNull(s.withoutLinks(setOf("https://a.com")).selectedRow)
+        assertEquals("https://a.com", s.withoutLinks(setOf("https://b.com")).selectedRow)
+    }
 }

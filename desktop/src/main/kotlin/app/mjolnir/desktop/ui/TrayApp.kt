@@ -30,6 +30,7 @@ import androidx.compose.ui.window.rememberDialogState
 import androidx.compose.ui.window.rememberTrayState
 import app.mjolnir.desktop.ALREADY_RUNNING
 import app.mjolnir.desktop.AppController
+import app.mjolnir.desktop.MainTab
 import app.mjolnir.protocol.RelayEvent
 import java.io.File
 import javax.imageio.ImageIO
@@ -50,7 +51,8 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     val pairRequest by c.pairRequest.collectAsState()
     val icon = remember { loadIcon() }
 
-    var showSend by remember { mutableStateOf(false) }
+    var showMain by remember { mutableStateOf(false) }
+    var mainTab by remember { mutableStateOf(MainTab.SEND) }
     var showPair by remember { mutableStateOf(false) }
     var showDevices by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(RelayUrls.normalize(config.relayUrl) == null) }
@@ -59,7 +61,7 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
         c.notifications.collect { trayState.sendNotification(Notification("Mjolnir", it)) }
     }
     LaunchedEffect(Unit) {
-        c.openRequests.collect { showSend = true }
+        c.openRequests.collect { showMain = true; mainTab = MainTab.SEND } // other tabs arrive with the next task
     }
     // Paths from Explorer's *Send to* (this launch or a later one): the controller queues them and asks for the window.
     LaunchedEffect(Unit) {
@@ -72,8 +74,9 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
         }
     }
 
-    Tray(icon = icon, state = trayState, tooltip = tooltip, onAction = { showSend = true }, menu = {
-        Item("Send to device…", onClick = { showSend = true })
+    Tray(icon = icon, state = trayState, tooltip = tooltip, onAction = { c.openWindow() }, menu = {
+        Item("Open Mjolnir", onClick = { c.openWindow() })
+        Item("Send to device…", onClick = { c.openWindow(MainTab.SEND) })
         val lastPhoneId = config.lastPhoneId
         if (lastPhoneId != null) {
             val name = peers.find { it.deviceId == lastPhoneId }?.name ?: "device"
@@ -88,7 +91,23 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
         Item("Quit Mjolnir", onClick = onQuit)
     })
 
-    if (showSend) SendWindow(c, icon, onPair = { showPair = true }, onClose = { showSend = false })
+    if (showMain) {
+        MainWindow(
+            c, mainTab,
+            // Received, Devices and Settings are built in the next task; until then they open the existing windows.
+            onTab = { tab ->
+                when (tab) {
+                    MainTab.SEND -> mainTab = tab
+                    MainTab.DEVICES -> showDevices = true
+                    MainTab.SETTINGS -> showSettings = true
+                    MainTab.RECEIVED -> c.openReceivedFiles()
+                    MainTab.GUEST -> {}
+                }
+            },
+            onClose = { if (config.keepInTray) showMain = false else onQuit() },
+            icon = icon,
+        )
+    }
     if (showPair) PairWindow(c, icon, onClose = { showPair = false })
     if (showDevices) DevicesWindow(c, icon, onPair = { showPair = true }, onClose = { showDevices = false })
     if (showSettings) SettingsWindow(c, icon, onClose = { showSettings = false })

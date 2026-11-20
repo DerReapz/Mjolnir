@@ -71,12 +71,16 @@ data class SendState(
 
     fun removeFile(path: String): SendState {
         val left = files.filter { it.path != path }
-        return copy(files = left, selected = selected.intersect(links.toSet() + left.map(::uploadUnitKey)))
+        return copy(files = left, selected = selected.intersect(links.toSet() + left.map(::uploadUnitKey))).withoutStaleRow()
     }
+
+    /** Clears [selectedRow] when the row it points at is no longer queued. */
+    fun withoutStaleRow(): SendState =
+        if (selectedRow == null || selectedRow in links || files.any { uploadUnitKey(it) == selectedRow }) this else copy(selectedRow = null)
 
     fun withText(text: String): SendState {
         val links = extractUrls(text)
-        return copy(text = text, links = links, selected = links.toSet() + selected.intersect(files.mapTo(HashSet()) { uploadUnitKey(it) }))
+        return copy(text = text, links = links, selected = links.toSet() + selected.intersect(files.mapTo(HashSet()) { uploadUnitKey(it) })).withoutStaleRow()
     }
 
     /** Drops [urls] from the pasted text and the link list; the check marks of the remaining links are kept. */
@@ -89,7 +93,7 @@ data class SendState(
             line.split(Regex("\\s+")).mapNotNull { token -> withoutSent(token, urls) }.joinToString(" ").ifEmpty { null }
         }.joinToString("\n")
         val left = links - urls
-        return copy(text = kept, links = left, selected = selected - urls)
+        return copy(text = kept, links = left, selected = selected - urls).withoutStaleRow()
     }
 
     fun toggle(url: String): SendState = copy(selected = if (url in selected) selected - url else selected + url)

@@ -234,4 +234,28 @@ class AppControllerTest {
         c.sendSelected().join()
         assertEquals(listOf("b.txt"), c.send.value.files.map { it.relativePath })
     }
+
+    @Test fun sendNoticeGoesToTrayOnlyWhileWindowHidden() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, _) = controller(fake)
+        c.refreshPeers()
+        val notes = notes(c)
+        c.updateSend { it.withTargets(listOf(phone), null).withText("https://a.com") }
+        c.mainWindowVisible = true
+        c.sendSelected().join()
+        assertTrue(notes.isEmpty()); assertNotNull(c.send.value.notice)
+        c.mainWindowVisible = false
+        c.updateSend { it.withText("https://b.com") }
+        c.sendSelected().join()
+        assertEquals(1, notes.size)
+    }
+
+    @Test fun sendingClearsSelectedRowOfSentItem() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, _) = controller(fake)
+        c.refreshPeers()
+        c.updateSend { it.withTargets(listOf(phone), null).withText("https://a.com").selectRow("https://a.com") }
+        c.sendSelected().join()
+        assertNull(c.send.value.selectedRow)
+    }
 }

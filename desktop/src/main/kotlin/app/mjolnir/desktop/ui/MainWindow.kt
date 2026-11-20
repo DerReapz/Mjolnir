@@ -1,0 +1,301 @@
+package app.mjolnir.desktop.ui
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.DragData
+import androidx.compose.ui.draganddrop.dragData
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.rememberWindowState
+import app.mjolnir.client.RelayUrls
+import app.mjolnir.desktop.AppController
+import app.mjolnir.desktop.ItemPreview
+import app.mjolnir.desktop.MainTab
+import app.mjolnir.desktop.browseWithSystem
+import app.mjolnir.desktop.previewOf
+import app.mjolnir.desktop.scanFiles
+import app.mjolnir.desktop.uploadUnitKey
+import java.awt.Desktop
+import java.awt.Dimension
+import java.awt.FileDialog
+import java.awt.Frame
+import java.awt.Toolkit
+import java.awt.datatransfer.DataFlavor
+import java.io.File
+import java.net.URI
+import javax.swing.JFileChooser
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private val STATUS_CONNECTED = Color(0xFF4ADE80)
+
+/** The one main window: sidebar plus the selected tab. Closing it is up to [onClose] (hide to tray, or quit). */
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
+@Composable
+fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose: () -> Unit, icon: Painter? = null) {
+    val send by c.send.collectAsState() // the queue is owned by the controller and outlives this window
+    val config by c.config.collectAsState()
+    val nicknames by c.nicknames.changes.collectAsState()
+    var sending by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val previews = remember { mutableStateMapOf<String, ItemPreview>() }
+
+    DisposableEffect(c) {
+        c.mainWindowVisible = true
+        onDispose { c.mainWindowVisible = false }
+    }
+    LaunchedEffect(Unit) { c.refreshPeers() }
+    // Folders and probing types read the disk: previews are built off the UI thread and kept per row.
+    LaunchedEffect(send.files) {
+        for (key in send.files.map(::uploadUnitKey).distinct()) {
+            if (key !in previews) previews[key] = withContext(Dispatchers.IO) { previewOf(File(key)) }
+        }
+    }
+
+    // Walking folders and probing types reads the disk: never on the UI thread.
+    fun addFiles(files: List<File>) {
+        if (files.isEmpty()) return
+        scope.launch {
+            val scan = withContext(Dispatchers.IO) { scanFiles(files) }
+            c.updateSend { it.withScanned(scan) }
+        }
+    }
+    fun addText(text: String) {
+        if (text.isBlank()) return
+        c.updateSend { it.withText(listOf(it.text, text).filter { t -> t.isNotBlank() }.joinToString("\n")) }
+    }
+
+    val dropTarget = remember {
+        object : DragAndDropTarget {
+            override fun onDrop(event: DragAndDropEvent): Boolean = when (val data = event.dragData()) {
+                is DragData.FilesList -> {
+                    addFiles(data.readFiles().mapNotNull { runCatching { File(URI(it)) }.getOrNull() }); true
+                }
+                is DragData.Text -> { addText(data.readText()); true }
+                else -> false
+            }
+        }
+    }
+
+    val status = relayStatus(config.relayUrl, config.token)
+    Window(
+        onCloseRequest = onClose, state = rememberWindowState(size = DpSize(1040.dp, 680.dp)),
+        title = "Mjolnir", icon = icon,
+        onPreviewKeyEvent = { e ->
+            // Ctrl+V anywhere on the Send tab: files from Explorer, else text (links).
+            if (tab == MainTab.SEND && e.type == KeyEventType.KeyDown && e.isCtrlPressed && e.key == Key.V) {
+                val (files, text) = readClipboard()
+                if (files.isNotEmpty()) addFiles(files) else if (text != null) addText(text)
+                files.isNotEmpty() || text != null
+            } else false
+        },
+    ) {
+        val awtWindow = window
+        LaunchedEffect(awtWindow) { awtWindow.minimumSize = Dimension(900, 600) }
+        LaunchedEffect(Unit) { c.openRequests.collect { bringToFront(awtWindow) } } // Explorer's *Send to*, tray: come to the front
+        MjolnirTheme {
+            Row(Modifier.fillMaxSize().dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget)) {
+                Sidebar(selected = tab, relayStatus = status, guestBadge = null, onSelect = onTab)
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    // Received, Devices and Settings arrive in the next task; until then they open their own windows.
+                    SendTabContent(
+                        state = send,
+                        nicknameOf = { peer -> nicknames[peer.deviceId] ?: peer.name }, // same rule as Nicknames.displayName; reads the flow so renames recompose
+                        previews = previews,
+                        sending = sending,
+                        onState = { next -> c.updateSend { next } },
+                        onAddFiles = {
+                            val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
+                            dialog.isVisible = true
+                            addFiles(dialog.files.toList())
+                        },
+                        onAddFolder = {
+                            val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+                            if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) addFiles(listOf(chooser.selectedFile))
+                        },
+                        onPair = { onTab(MainTab.DEVICES) },
+                        onSend = {
+                            sending = true
+                            // Runs in the controller's scope, so closing this window cannot cancel it.
+                            c.sendSelected().invokeOnCompletion { sending = false }
+                        },
+                        onOpen = ::openPreview,
+                        onShowInFolder = ::showPreviewInFolder,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** `Relay connected` once registered, `Connecting…` while not, `Relay not set` without a valid address. */
+internal fun relayStatus(relayUrl: String, token: String?): String = when {
+    RelayUrls.normalize(relayUrl) == null -> "Relay not set"
+    token == null -> "Connecting…"
+    else -> "Relay connected"
+}
+
+private class NavItem(val tab: MainTab, val label: String, val icon: List<String>)
+
+private val NAV = listOf(
+    NavItem(MainTab.SEND, "Send", listOf("M22 2L11 13", "M22 2l-7 20-4-9-9-4z")),
+    NavItem(MainTab.GUEST, "Guest room", listOf("M3 21V8l9-5 9 5v13", "M9 21v-7h6v7")),
+    NavItem(MainTab.RECEIVED, "Received", listOf("M12 3v12", "M7 10l5 5 5-5", "M4 21h16")),
+    NavItem(MainTab.DEVICES, "Devices", listOf("M3 4h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z", "M18 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z", "M6 18h6")),
+    NavItem(MainTab.SETTINGS, "Settings", listOf(
+        "M9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0",
+        "M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z",
+    )),
+)
+
+internal val ICON_FOLDER = listOf("M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z")
+
+/** A 24-unit stroke icon (the mockup's SVG paths), drawn at [size]. */
+@Composable
+internal fun ForgeIcon(paths: List<String>, tint: Color, size: Dp) {
+    val parsed = remember(paths) { paths.map { PathParser().parsePathString(it).toPath() } }
+    Canvas(Modifier.size(size)) {
+        withTransform({ scale(this@Canvas.size.width / 24f, this@Canvas.size.height / 24f, Offset.Zero) }) {
+            parsed.forEach { drawPath(it, tint, style = Stroke(2f, cap = StrokeCap.Round, join = StrokeJoin.Round)) }
+        }
+    }
+}
+
+/**
+ * 208 px sidebar: wordmark, nav items, relay status. The Guest room item shows only while [guestBadge] is set (the
+ * room's countdown); there is no room feature yet, so it stays hidden.
+ */
+@Composable
+fun Sidebar(selected: MainTab, relayStatus: String, guestBadge: String?, onSelect: (MainTab) -> Unit) {
+    Column(
+        Modifier.width(208.dp).fillMaxHeight().background(Forge.panel)
+            .drawBehind { drawLine(Forge.border, Offset(size.width, 0f), Offset(size.width, size.height), 1.dp.toPx()) }
+            .padding(horizontal = 12.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(Modifier.padding(start = 8.dp, end = 8.dp, bottom = 18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Image(forgeHammer(), contentDescription = null, modifier = Modifier.size(26.dp))
+            Text("MJOLNIR", style = TextStyle(fontFamily = ForgeFonts.grotesk700, fontSize = 18.sp, letterSpacing = 0.5.sp, color = Forge.text))
+        }
+        for (item in NAV) {
+            if (item.tab == MainTab.GUEST && guestBadge == null) continue
+            if (item.tab == MainTab.SETTINGS) Spacer(Modifier.weight(1f))
+            val active = item.tab == selected
+            val tint = if (active) Forge.accent else Forge.muted
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 40.dp).clip(Forge.buttonShape)
+                    .background(if (active) Forge.surface else Color.Transparent)
+                    .clickable { onSelect(item.tab) }.padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                ForgeIcon(item.icon, tint, 18.dp)
+                Text(item.label, style = TextStyle(fontFamily = if (active) ForgeFonts.inter600 else ForgeFonts.inter400, fontSize = 14.sp, color = tint), modifier = Modifier.weight(1f))
+                if (item.tab == MainTab.GUEST && guestBadge != null) Text(guestBadge, style = TextStyle(fontSize = 12.sp, color = Forge.accent))
+            }
+        }
+        Row(Modifier.padding(start = 10.dp, end = 10.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val dot = when (relayStatus) { "Relay connected" -> STATUS_CONNECTED; "Relay not set" -> Forge.error; else -> Forge.accent }
+            Box(Modifier.size(8.dp).background(dot, CircleShape))
+            Text(relayStatus, style = TextStyle(fontFamily = ForgeFonts.inter400, fontSize = 12.sp, color = Forge.muted))
+        }
+    }
+}
+
+private fun readClipboard(): Pair<List<File>, String?> = try {
+    val cb = Toolkit.getDefaultToolkit().systemClipboard
+    when {
+        cb.isDataFlavorAvailable(DataFlavor.javaFileListFlavor) ->
+            @Suppress("UNCHECKED_CAST") ((cb.getData(DataFlavor.javaFileListFlavor) as List<File>) to null)
+        cb.isDataFlavorAvailable(DataFlavor.stringFlavor) -> emptyList<File>() to (cb.getData(DataFlavor.stringFlavor) as? String)
+        else -> emptyList<File>() to null
+    }
+} catch (_: Exception) {
+    emptyList<File>() to null
+}
+
+private fun openPreview(p: ItemPreview) {
+    val path = when (p) {
+        is ItemPreview.Photo -> p.path
+        is ItemPreview.OtherFile -> p.path
+        is ItemPreview.Folder -> p.path
+        is ItemPreview.Link -> return try { browseWithSystem(URI(p.url)) } catch (_: Exception) {}
+        is ItemPreview.Missing -> return
+    }
+    try { Desktop.getDesktop().open(File(path)) } catch (_: Exception) {}
+}
+
+private fun showPreviewInFolder(p: ItemPreview) {
+    val path = when (p) {
+        is ItemPreview.Photo -> p.path
+        is ItemPreview.OtherFile -> p.path
+        is ItemPreview.Folder -> p.path
+        else -> return
+    }
+    try {
+        if (System.getProperty("os.name").startsWith("Windows")) ProcessBuilder("explorer.exe", "/select,", File(path).absolutePath).start()
+        else Desktop.getDesktop().open(File(path).parentFile)
+    } catch (_: Exception) {}
+}
+
+/** Restores [w] if minimized and raises it above other windows (the alwaysOnTop toggle gets past focus rules). */
+private fun bringToFront(w: Frame) {
+    if (w.extendedState and Frame.ICONIFIED != 0) w.extendedState = w.extendedState and Frame.ICONIFIED.inv()
+    w.isAlwaysOnTop = true
+    w.toFront()
+    w.requestFocus()
+    w.isAlwaysOnTop = false
+}

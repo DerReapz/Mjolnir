@@ -84,6 +84,9 @@ class AppController(
         _send.update(change)
     }
 
+    /** Set by the main window while it is shown; then results appear in the window instead of as tray notifications. */
+    @Volatile var mainWindowVisible: Boolean = false
+
     private val _openRequests = MutableSharedFlow<MainTab>(extraBufferCapacity = 4)
     /** Asks the UI to show the main window on a tab. */
     val openRequests: SharedFlow<MainTab> = _openRequests
@@ -356,9 +359,9 @@ class AppController(
             val sentUrls = r.sentTabs.map { it.url }.toSet()
             updateSend { cur ->
                 val kept = if (r.filesQueued) cur.copy(files = cur.files - files.toSet(), selected = cur.selected - files.mapTo(HashSet()) { uploadUnitKey(it) }) else cur
-                kept.withoutLinks(sentUrls).copy(notice = r.message)
+                kept.withoutLinks(sentUrls).withoutStaleRow().copy(notice = r.message)
             }
-            notify(r.message)
+            if (!mainWindowVisible) notify(r.message) // a visible window shows the notice itself
         }
     }
 
