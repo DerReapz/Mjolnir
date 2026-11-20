@@ -32,10 +32,11 @@ data class SendState(
 
     fun selectRow(key: String): SendState = copy(selectedRow = key)
 
-    /** E.g. `3 of 4 selected · 1.4 GB`: queued links and top-level files/folders (files are always selected). */
+    /** E.g. `3 of 4 selected · 1.4 GB`: queued links and top-level files/folders (rows keyed by URL or top-level path; size counts selected files). */
     val summary: String get() {
-        val units = files.groupBy(::uploadUnitKey).size
-        return "${selected.size + units} of ${links.size + units} selected · ${Messages.size(files.sumOf { it.sizeBytes })}"
+        val units = files.groupBy(::uploadUnitKey).keys
+        val count = links.count { it in selected } + units.count { it in selected }
+        return "$count of ${links.size + units.size} selected · ${Messages.size(selectedFiles.sumOf { it.sizeBytes })}"
     }
 
     /**
@@ -64,22 +65,27 @@ data class SendState(
             val single = scan.singleOrNull()
             notice = if (single != null && single.isFile) Messages.tooBig(single.name) else Messages.leftOut(leftOut)
         }
-        return copy(files = result, notice = notice)
+        val added = result.drop(files.size).mapTo(HashSet()) { uploadUnitKey(it) }
+        return copy(files = result, selected = selected + added, notice = notice)
     }
 
-    fun removeFile(path: String): SendState = copy(files = files.filter { it.path != path })
+    fun removeFile(path: String): SendState {
+        val left = files.filter { it.path != path }
+        return copy(files = left, selected = selected.intersect(links.toSet() + left.map(::uploadUnitKey)))
+    }
 
     fun withText(text: String): SendState {
         val links = extractUrls(text)
-        return copy(text = text, links = links, selected = links.toSet())
+        return copy(text = text, links = links, selected = links.toSet() + selected.intersect(files.mapTo(HashSet()) { uploadUnitKey(it) }))
     }
 
     /** Drops [urls] from the pasted text and the link list; the check marks of the remaining links are kept. */
     fun withoutLinks(urls: Set<String>): SendState {
         if (urls.isEmpty()) return this
-        val text = urls.fold(text) { t, u -> t.replace(u, "") }.lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
-        val left = extractUrls(text)
-        return copy(text = text, links = left, selected = selected.intersect(left.toSet()))
+        // Whole links only: a sent URL that prefixes another link must not damage it.
+        val left = links - urls
+        val text = left.joinToString("\n")
+        return copy(text = text, links = left, selected = selected - urls)
     }
 
     fun toggle(url: String): SendState = copy(selected = if (url in selected) selected - url else selected + url)
@@ -93,7 +99,10 @@ data class SendState(
 
     fun selectTarget(id: String): SendState = if (targets.any { it.deviceId == id }) copy(targetId = id) else this
 
-    val canSend: Boolean get() = targetId != null && (selected.isNotEmpty() || files.isNotEmpty())
+    /** Files and folders whose row ([uploadUnitKey]) is checked. */
+    val selectedFiles: List<LocalUpload> get() = files.filter { uploadUnitKey(it) in selected }
+
+    val canSend: Boolean get() = targetId != null && (links.any { it in selected } || selectedFiles.isNotEmpty())
 
     fun tabs(): List<Tab> = links.filter { it in selected }.map { Tab(it) }
 

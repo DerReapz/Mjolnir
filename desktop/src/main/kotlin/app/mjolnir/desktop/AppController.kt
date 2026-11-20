@@ -343,7 +343,7 @@ class AppController(
         val s = _send.value
         val target = s.target
         val tabs = s.tabs()
-        val files = s.files
+        val files = s.selectedFiles
         return scope.launch {
             if (target == null || !s.canSend) return@launch
             val r = try {
@@ -355,7 +355,7 @@ class AppController(
             }
             val sentUrls = r.sentTabs.map { it.url }.toSet()
             updateSend { cur ->
-                val kept = if (r.filesQueued) cur.copy(files = cur.files - files.toSet()) else cur
+                val kept = if (r.filesQueued) cur.copy(files = cur.files - files.toSet(), selected = cur.selected - files.mapTo(HashSet()) { uploadUnitKey(it) }) else cur
                 kept.withoutLinks(sentUrls).copy(notice = r.message)
             }
             notify(r.message)

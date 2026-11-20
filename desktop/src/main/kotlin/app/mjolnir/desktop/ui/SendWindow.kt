@@ -199,6 +199,8 @@ internal fun SendContent(
                             Modifier.fillMaxWidth().heightIn(min = 40.dp).forgeRow().padding(start = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            val rowKey = uploadUnitKey(group.files.first())
+                            Checkbox(checked = rowKey in state.selected, onCheckedChange = { onState(state.toggle(rowKey)) }, colors = forgeCheckboxColors())
                             Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
                                 ForgeBodyText(group.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(

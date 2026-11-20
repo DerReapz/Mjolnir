@@ -221,4 +221,17 @@ class AppControllerTest {
         assertEquals(listOf(MainTab.SEND, MainTab.SEND), opened)
         assertEquals(2, c.send.value.files.size)
     }
+
+    @Test fun uncheckedFileStaysAfterSend() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, _) = controller(fake)
+        c.refreshPeers()
+        val a = File(dir, "a.txt").apply { writeText("a") }
+        val b = File(dir, "b.txt").apply { writeText("b") }
+        c.updateSend { it.withTargets(listOf(phone), null).withFiles(listOf(a, b)) }
+        val keyB = uploadUnitKey(c.send.value.files.single { it.relativePath == "b.txt" })
+        c.updateSend { it.toggle(keyB) }
+        c.sendSelected().join()
+        assertEquals(listOf("b.txt"), c.send.value.files.map { it.relativePath })
+    }
 }

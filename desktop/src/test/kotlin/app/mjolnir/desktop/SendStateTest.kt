@@ -118,7 +118,32 @@ class SameNameFoldersTest {
                 app.mjolnir.client.LocalUpload("/y/c.txt", "c.txt", "x/y", 1 * mb),
             ),
         )
-        assertEquals("3 of 4 selected · 6 MB", s.summary)
+        val keys = setOf(uploadUnitKey(s.files[0]), uploadUnitKey(s.files[2]))
+        assertEquals("3 of 4 selected · 6 MB", s.copy(selected = s.selected + keys).summary)
+    }
+
+    private fun upload(path: String, rel: String, size: Long = 1) = app.mjolnir.client.LocalUpload(path, rel, "x/y", size)
+
+    @Test fun summaryCountsOnlySelectedFiles() {
+        val mb = 1024L * 1024
+        val s = SendState().copy(files = listOf(upload("/x/a.txt", "a.txt", 3 * mb), upload("/x/b.txt", "b.txt", 2 * mb)), selected = setOf("/x/a.txt"))
+        assertEquals("1 of 2 selected · 3 MB", s.summary)
+        assertEquals(listOf(s.files[0]), s.selectedFiles)
+    }
+
+    @Test fun sentPrefixLinkKeepsLongerUnchecked() {
+        val s = SendState().withText("https://a.com https://a.com/page").toggle("https://a.com/page")
+        val after = s.withoutLinks(setOf("https://a.com"))
+        assertEquals(listOf("https://a.com/page"), after.links)
+        assertTrue(after.selected.isEmpty())
+        assertEquals("https://a.com/page", after.text)
+    }
+
+    @Test fun uncheckedFileMeansCannotSend() {
+        val peer = Peer("p", "P", DeviceKind.PC)
+        val s = SendState().withTargets(listOf(peer), null).copy(files = listOf(upload("/x/a.txt", "a.txt")))
+        assertFalse(s.canSend)
+        assertTrue(s.toggle("/x/a.txt").canSend)
     }
 
     @Test fun selectRowSetsPreviewKey() {
