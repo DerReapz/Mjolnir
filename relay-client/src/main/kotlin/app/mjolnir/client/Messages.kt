@@ -16,8 +16,10 @@ object Messages {
         else -> tabs(tabs)
     }
 
-    fun caught(tabs: Int, files: Int, from: String) = "Caught ${items(tabs, files)} from $from"
-    fun thrown(tabs: Int, files: Int, to: String) = "Thrown ${items(tabs, files)} to $to"
+    private fun tagged(text: String, space: String?) = if (space == null) text else "$text · $space"
+
+    fun caught(tabs: Int, files: Int, from: String, space: String? = null) = tagged("Caught ${items(tabs, files)} from $from", space)
+    fun thrown(tabs: Int, files: Int, to: String, space: String? = null) = tagged("Thrown ${items(tabs, files)} to $to", space)
     fun notThrown(reason: String) = "Not thrown: $reason. Your tabs are still here."
     fun sent(tabs: Int, files: Int, to: String) = "Sent ${items(tabs, files)} to $to"
     fun tooBig(name: String) = "$name is too big (max 100 MB)"

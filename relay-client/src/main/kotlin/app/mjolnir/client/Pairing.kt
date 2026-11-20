@@ -1,5 +1,6 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.PairingCode
 import app.mjolnir.protocol.PairingState
 import app.mjolnir.protocol.Peer
@@ -21,6 +22,17 @@ private const val NOT_FOUND = "Code not found or expired. Get a new code on the 
 /** The relay's error for claiming a code this device created itself. */
 private const val OWN_CODE_ERROR = "own_code"
 
+/** Copy for the relay's 400/409 claim errors, keyed by the error code in the response body. */
+private val CLAIM_ERRORS = mapOf(
+    OWN_CODE_ERROR to "That's this device's own code. Enter it on the other device.",
+    "wrong_kind_space" to "That's a space invite. Use Join a space.",
+    "wrong_kind_pairing" to "That's a pairing code. Use Pair a device.",
+    // The relay's error names no space, so the copy cannot either.
+    "already_member" to "This device is already in that space.",
+    "member_limit" to "This space is full (50 devices).",
+    "space_limit" to "You're in the most spaces allowed (50).",
+)
+
 /**
  * Claims a pairing code typed on this device, then waits for the code's owner to accept. Shared by Android and desktop.
  * [onWaiting] is called once with the code owner after a successful claim. Cancellation propagates.
@@ -31,19 +43,20 @@ suspend fun claimAndAwait(
     onWaiting: (Peer) -> Unit,
     pollMs: Long = 2_000,
     limit: Duration = 5.minutes,
+    expect: CodeKind = CodeKind.PAIRING,
 ): ClaimOutcome {
     val code = PairingCode.normalize(input) ?: return ClaimOutcome.Failed("That code should be 6 letters and numbers")
     val claim = try {
-        api.claimPairingCode(code)
+        api.claimPairingCode(code, expect)
     } catch (e: RelayException) {
         return when (e.kind) {
             RelayErrorKind.UNAUTHORIZED -> ClaimOutcome.Failed(Messages.RESET, RelayErrorKind.UNAUTHORIZED)
             RelayErrorKind.NOT_FOUND -> ClaimOutcome.Failed(NOT_FOUND)
             RelayErrorKind.RATE_LIMITED -> ClaimOutcome.Failed("Too many tries. Wait a minute.")
-            // Only the relay's own_code error means this device's code; any other bad request is treated as not found.
-            RelayErrorKind.INVALID -> ClaimOutcome.Failed(
-                if (e.message == OWN_CODE_ERROR) "That's this device's own code. Enter it on the other device." else NOT_FOUND,
-            )
+            // Only the relay's named claim errors get their own copy; any other bad request is treated as not found.
+            RelayErrorKind.INVALID -> ClaimOutcome.Failed(CLAIM_ERRORS[e.message] ?: NOT_FOUND)
+            // 409s arrive as ALREADY_SENT: already_member, member_limit, space_limit.
+            RelayErrorKind.ALREADY_SENT -> ClaimOutcome.Failed(CLAIM_ERRORS[e.message] ?: GENERIC)
             RelayErrorKind.NETWORK -> ClaimOutcome.Failed("Can't reach the relay. Check your connection.")
             else -> ClaimOutcome.Failed(GENERIC)
         }

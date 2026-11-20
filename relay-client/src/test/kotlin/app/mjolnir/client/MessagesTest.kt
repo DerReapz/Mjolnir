@@ -14,4 +14,10 @@ class MessagesTest {
         assertEquals("Not thrown: no connection. Your tabs are still here.",
             Messages.notThrown(Messages.failureReason(RelayErrorKind.NETWORK, "PC")))
     }
+
+    @Test fun caughtWithSpace() {
+        assertEquals("Caught 1 tab from Sam · Friends", Messages.caught(1, 0, "Sam", space = "Friends"))
+        assertEquals("Thrown 2 tabs to Sam · Friends", Messages.thrown(2, 0, "Sam", space = "Friends"))
+        assertEquals("Caught 1 tab from Sam", Messages.caught(1, 0, "Sam", space = null))
+    }
 }

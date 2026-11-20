@@ -2,6 +2,7 @@ package app.mjolnir.client
 
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.SpaceRef
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -24,5 +25,37 @@ class DestinationsTest {
         val shown = mapOf("1" to "Zed", "2" to "Amy", "3" to "Bob") // nicknames; real names sort the other way
         val groups = groupDestinations(listOf(p("1", "Aaa"), p("2", "Bbb"), p("3", "Ccc")), null) { shown.getValue(it.deviceId) }
         assertEquals(listOf("2", "3", "1"), groups.single().peers.map { it.deviceId })
+    }
+
+    private fun sp(id: String, name: String, space: String, spaceName: String) =
+        Peer(id, name, DeviceKind.PHONE, SpaceRef(space, spaceName))
+
+    @Test fun spaceGroupsAfterMine() {
+        val groups = groupDestinations(
+            listOf(sp("3", "Sam", "s2", "Work"), p("1", "Zed"), sp("2", "Amy", "s1", "Friends"), sp("4", "Bea", "s1", "Friends")),
+            lastUsedId = "4",
+        )
+        assertEquals(listOf("mine", "space:s2", "space:s1"), groups.map { it.key })
+        assertEquals(listOf("My devices", "Work", "Friends"), groups.map { it.title })
+        assertEquals(listOf("4", "2"), groups[2].peers.map { it.deviceId })
+    }
+
+    @Test fun pairedAndSpaceMemberOnlyUnderMine() {
+        // The relay lists a device paired with you once, without a space; no space entry accompanies it.
+        val groups = groupDestinations(listOf(p("1", "Zed"), sp("2", "Amy", "s1", "Friends")), null)
+        assertEquals(listOf("1"), groups.first { it.key == "mine" }.peers.map { it.deviceId })
+        assertEquals(listOf("2"), groups.first { it.key == "space:s1" }.peers.map { it.deviceId })
+    }
+
+    @Test fun deviceInTwoSpacesInBoth() {
+        val groups = groupDestinations(listOf(sp("2", "Amy", "s1", "Friends"), sp("2", "Amy", "s2", "Work")), null)
+        assertEquals(listOf("space:s1", "space:s2"), groups.map { it.key })
+        assertEquals(listOf(DestinationKey("2", "s1")), groups[0].peers.map { it.destinationKey })
+        assertEquals(listOf(DestinationKey("2", "s2")), groups[1].peers.map { it.destinationKey })
+    }
+
+    @Test fun emptyGroupsAreDropped() {
+        assertEquals(emptyList(), groupDestinations(emptyList(), null))
+        assertEquals(listOf("mine"), groupDestinations(listOf(p("1", "A")), null).map { it.key })
     }
 }

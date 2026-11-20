@@ -1,6 +1,7 @@
 package app.mjolnir.client
 
 import app.mjolnir.protocol.ClaimResponse
+import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.Delivery
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.PairingCodeResponse
@@ -11,6 +12,7 @@ import app.mjolnir.protocol.RegisterResponse
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.SendRequest
 import app.mjolnir.protocol.SendResponse
+import app.mjolnir.protocol.Space
 import app.mjolnir.protocol.Tab
 import app.mjolnir.protocol.FileRef
 import app.mjolnir.protocol.UploadStatus
@@ -34,6 +36,7 @@ class FakeRelayApi : RelayApi {
     var pairingCodeResult = PairingCodeResponse("ABC123", Long.MAX_VALUE)
     var onSend: suspend (SendRequest) -> SendResponse = { SendResponse("del-${sent.size}") }
     var onClaim: suspend (String) -> ClaimResponse = { ClaimResponse("pair-1", Peer("owner", "Owner", DeviceKind.PC)) }
+    val claimExpects = mutableListOf<CodeKind>()
     val statuses = ArrayDeque<PairingStatus>()
     val accepted = mutableListOf<String>()
     val rejected = mutableListOf<String>()
@@ -84,7 +87,7 @@ class FakeRelayApi : RelayApi {
     override suspend fun rename(name: String): Peer { check(); me = me.copy(name = name); return me }
     override suspend fun setPushToken(pushToken: String) { check(); pushTokens += pushToken }
     override suspend fun createPairingCode(): PairingCodeResponse { check(); return pairingCodeResult }
-    override suspend fun claimPairingCode(code: String): ClaimResponse { check(); return onClaim(code) }
+    override suspend fun claimPairingCode(code: String, expect: CodeKind): ClaimResponse { check(); claimExpects += expect; return onClaim(code) }
     override suspend fun pairingStatus(pairingId: String): PairingStatus {
         check()
         if (statuses.isEmpty()) return PairingStatus(PairingState.PENDING)
@@ -94,12 +97,22 @@ class FakeRelayApi : RelayApi {
     override suspend fun rejectPairing(pairingId: String) { check(); rejected += pairingId }
     override suspend fun peers(): List<Peer> { check(); return peers.toList() }
     override suspend fun unpair(deviceId: String) { check(); unpaired += deviceId; peers.removeAll { it.deviceId == deviceId } }
-    override suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String>): SendResponse {
+    override suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String>, spaceId: String?): SendResponse {
         check()
-        val request = SendRequest(to, tabs, fileIds)
+        val request = SendRequest(to, tabs, fileIds, spaceId)
         sent += request
         return onSend(request)
     }
+    // Space calls are not scripted here; tests that need them run against the real relay (RelayClientSpacesTest).
+    override suspend fun createSpace(name: String): Space = TODO("not faked")
+    override suspend fun spaces(): List<Space> { check(); return emptyList() }
+    override suspend fun renameSpace(id: String, name: String): Space = TODO("not faked")
+    override suspend fun deleteSpace(id: String) = TODO("not faked")
+    override suspend fun createInvite(spaceId: String): PairingCodeResponse = TODO("not faked")
+    override suspend fun removeMember(spaceId: String, deviceId: String) = TODO("not faked")
+    override suspend fun transferAdmin(spaceId: String, deviceId: String): Space = TODO("not faked")
+    override suspend fun takeOverAdmin(spaceId: String): Space = TODO("not faked")
+
     override suspend fun inbox(): List<Delivery> { check(); return inbox.toList() }
     override suspend fun ack(deliveryId: String) { check(); acked += deliveryId; inbox.removeAll { it.id == deliveryId } }
     override fun events(): Flow<RelayEvent> = events

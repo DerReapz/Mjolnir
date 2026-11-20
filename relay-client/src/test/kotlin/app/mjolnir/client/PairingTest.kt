@@ -2,6 +2,7 @@
 
 package app.mjolnir.client
 
+import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.PairingState
 import app.mjolnir.protocol.PairingStatus
@@ -126,5 +127,41 @@ class PairingTest {
             override suspend fun pairingStatus(pairingId: String): PairingStatus = throw RelayException(RelayErrorKind.NOT_FOUND, "x")
         }
         assertEquals(ClaimOutcome.Failed("The code expired. Get a new code on the other device."), claimAndAwait(gone, "ABC234", {}))
+    }
+
+    @Test fun wrongKindMessages() = runTest {
+        assertEquals(
+            ClaimOutcome.Failed("That's a space invite. Use Join a space."),
+            claimAndAwait(failing(RelayErrorKind.INVALID, "wrong_kind_space"), "ABC234", {}),
+        )
+        assertEquals(
+            ClaimOutcome.Failed("That's a pairing code. Use Pair a device."),
+            claimAndAwait(failing(RelayErrorKind.INVALID, "wrong_kind_pairing"), "ABC234", {}, expect = CodeKind.SPACE_INVITE),
+        )
+    }
+
+    @Test fun expectIsPassedToTheRelay() = runTest {
+        val api = fake()
+        claimAndAwait(api, "ABC234", {}, pollMs = 1, limit = kotlin.time.Duration.parse("1ms"), expect = CodeKind.SPACE_INVITE)
+        claimAndAwait(api, "ABC234", {}, pollMs = 1, limit = kotlin.time.Duration.parse("1ms"))
+        assertEquals(listOf(CodeKind.SPACE_INVITE, CodeKind.PAIRING), api.claimExpects)
+    }
+
+    @Test fun alreadyMemberMessage() = runTest {
+        assertEquals(
+            ClaimOutcome.Failed("This device is already in that space."),
+            claimAndAwait(failing(RelayErrorKind.ALREADY_SENT, "already_member"), "ABC234", {}, expect = CodeKind.SPACE_INVITE),
+        )
+    }
+
+    @Test fun limitMessages() = runTest {
+        assertEquals(
+            ClaimOutcome.Failed("This space is full (50 devices)."),
+            claimAndAwait(failing(RelayErrorKind.ALREADY_SENT, "member_limit"), "ABC234", {}, expect = CodeKind.SPACE_INVITE),
+        )
+        assertEquals(
+            ClaimOutcome.Failed("You're in the most spaces allowed (50)."),
+            claimAndAwait(failing(RelayErrorKind.ALREADY_SENT, "space_limit"), "ABC234", {}, expect = CodeKind.SPACE_INVITE),
+        )
     }
 }

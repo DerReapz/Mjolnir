@@ -204,4 +204,20 @@ class OutboxTest {
     }
 
     @Test fun unknownIdIsRetryAndHarmless() = runTest { assertEquals(OutboxResult.Retry, outbox().process("nope")) }
+
+    @Test fun spaceIdPassedToSend() = runTest {
+        val ob = outbox(); ob.enqueue(item(upload("a", 3)).copy(spaceId = "s1"))
+        assertTrue(ob.process("o1") is OutboxResult.Done)
+        assertEquals("s1", api.sent.single().spaceId)
+    }
+
+    @Test fun outboxStopsOnNotPairedForSpace() = runTest {
+        api.failAllWith = null
+        api.onSend = { throw fail(RelayErrorKind.NOT_PAIRED) }
+        val ob = outbox(); ob.enqueue(item(upload("a", 3)).copy(spaceId = "s1"))
+        val result = ob.process("o1")
+        assertTrue(result is OutboxResult.Failed); assertEquals(RelayErrorKind.NOT_PAIRED, result.kind)
+        assertTrue(ob.pending().isEmpty())
+        assertEquals(emptyList(), cleaned)
+    }
 }

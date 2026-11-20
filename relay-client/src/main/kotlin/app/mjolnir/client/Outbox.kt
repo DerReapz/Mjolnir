@@ -17,6 +17,8 @@ data class OutgoingFiles(
     val files: List<LocalUpload>,
     val allowMetered: Boolean = false,
     val createdAtEpochMs: Long,
+    /** The space whose card the files were thrown from; null for a paired device. */
+    val spaceId: String? = null,
 ) {
     val totalBytes: Long get() = files.sumOf { it.sizeBytes }
 }
@@ -98,7 +100,7 @@ class Outbox(
         }
         report(total)
 
-        val error = sendInBatches(api, item.to, emptyList(), refs).error ?: return done(item)
+        val error = sendInBatches(api, item.to, emptyList(), refs, item.spaceId).error ?: return done(item)
         // A lost response: the relay already holds this delivery (or the recipient acked it, leaving tombstones).
         if (error.kind == RelayErrorKind.ALREADY_SENT) return done(item)
         return failure(item, error)

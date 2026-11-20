@@ -1,6 +1,8 @@
 package app.mjolnir.client
 
 import app.mjolnir.protocol.ClaimResponse
+import app.mjolnir.protocol.CodeKind
+import app.mjolnir.protocol.Space
 import app.mjolnir.protocol.Delivery
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.PairingCodeResponse
@@ -31,13 +33,27 @@ interface RelayApi {
     suspend fun rename(name: String): Peer
     suspend fun setPushToken(pushToken: String)
     suspend fun createPairingCode(): PairingCodeResponse
-    suspend fun claimPairingCode(code: String): ClaimResponse
+    /** [expect] is the kind of code the caller believes this is; the relay answers 400 wrong_kind_* when it differs. */
+    suspend fun claimPairingCode(code: String, expect: CodeKind = CodeKind.PAIRING): ClaimResponse
     suspend fun pairingStatus(pairingId: String): PairingStatus
     suspend fun acceptPairing(pairingId: String)
     suspend fun rejectPairing(pairingId: String)
     suspend fun peers(): List<Peer>
     suspend fun unpair(deviceId: String)
-    suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String> = emptyList()): SendResponse
+    suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String> = emptyList(), spaceId: String? = null): SendResponse
+
+    suspend fun createSpace(name: String): Space
+    suspend fun spaces(): List<Space>
+    suspend fun renameSpace(id: String, name: String): Space
+    suspend fun deleteSpace(id: String)
+    suspend fun createInvite(spaceId: String): PairingCodeResponse
+    /** Admin removes [deviceId]; a member removing themselves is leaving. */
+    suspend fun removeMember(spaceId: String, deviceId: String)
+    suspend fun transferAdmin(spaceId: String, deviceId: String): Space
+    suspend fun takeOverAdmin(spaceId: String): Space
+    /** Leaves [spaceId]: [removeMember] of this device. */
+    suspend fun leaveSpace(spaceId: String) = removeMember(spaceId, me().deviceId)
+
     suspend fun inbox(): List<Delivery>
     suspend fun ack(deliveryId: String)
 

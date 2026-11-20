@@ -36,6 +36,8 @@ class CatchService(
                 is RelayEvent.PairRequested -> onPairRequest(event)
                 is RelayEvent.Paired -> onPeersChanged()
                 is RelayEvent.Unpaired -> { onUnpaired(event.deviceId); onPeersChanged() }
+                // The Spaces UI (S4) will handle these properly; until then a space change just refreshes the peer list.
+                is RelayEvent.SpaceChanged, is RelayEvent.SpaceDeleted -> onPeersChanged()
             }
         }
     }

@@ -2,6 +2,11 @@ package app.mjolnir.client
 
 import app.mjolnir.protocol.ClaimRequest
 import app.mjolnir.protocol.ClaimResponse
+import app.mjolnir.protocol.CodeKind
+import app.mjolnir.protocol.CreateSpaceRequest
+import app.mjolnir.protocol.RenameSpaceRequest
+import app.mjolnir.protocol.Space
+import app.mjolnir.protocol.TransferAdminRequest
 import app.mjolnir.protocol.Delivery
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.ErrorResponse
@@ -224,8 +229,8 @@ class RelayClient(
 
     override suspend fun createPairingCode(): PairingCodeResponse = callBody { http.post("$base/v1/pairings") { auth() } }
 
-    override suspend fun claimPairingCode(code: String): ClaimResponse = callBody {
-        http.post("$base/v1/pairings/claim") { auth(); contentType(ContentType.Application.Json); setBody(ClaimRequest(code)) }
+    override suspend fun claimPairingCode(code: String, expect: CodeKind): ClaimResponse = callBody {
+        http.post("$base/v1/pairings/claim") { auth(); contentType(ContentType.Application.Json); setBody(ClaimRequest(code, expect)) }
     }
 
     override suspend fun pairingStatus(pairingId: String): PairingStatus = callBody { http.get("$base/v1/pairings/$pairingId") { auth() } }
@@ -238,9 +243,33 @@ class RelayClient(
 
     override suspend fun unpair(deviceId: String) { call { http.delete("$base/v1/peers/$deviceId") { auth() } } }
 
-    override suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String>): SendResponse = callBody {
-        http.post("$base/v1/send") { auth(); contentType(ContentType.Application.Json); setBody(SendRequest(to, tabs, fileIds)) }
+    override suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String>, spaceId: String?): SendResponse = callBody {
+        http.post("$base/v1/send") { auth(); contentType(ContentType.Application.Json); setBody(SendRequest(to, tabs, fileIds, spaceId)) }
     }
+
+    override suspend fun createSpace(name: String): Space = callBody {
+        http.post("$base/v1/spaces") { auth(); contentType(ContentType.Application.Json); setBody(CreateSpaceRequest(name)) }
+    }
+
+    override suspend fun spaces(): List<Space> = callBody { http.get("$base/v1/spaces") { auth() } }
+
+    override suspend fun renameSpace(id: String, name: String): Space = callBody {
+        http.patch("$base/v1/spaces/$id") { auth(); contentType(ContentType.Application.Json); setBody(RenameSpaceRequest(name)) }
+    }
+
+    override suspend fun deleteSpace(id: String) { call { http.delete("$base/v1/spaces/$id") { auth() } } }
+
+    override suspend fun createInvite(spaceId: String): PairingCodeResponse = callBody { http.post("$base/v1/spaces/$spaceId/invites") { auth() } }
+
+    override suspend fun removeMember(spaceId: String, deviceId: String) {
+        call { http.delete("$base/v1/spaces/$spaceId/members/$deviceId") { auth() } }
+    }
+
+    override suspend fun transferAdmin(spaceId: String, deviceId: String): Space = callBody {
+        http.post("$base/v1/spaces/$spaceId/admin") { auth(); contentType(ContentType.Application.Json); setBody(TransferAdminRequest(deviceId)) }
+    }
+
+    override suspend fun takeOverAdmin(spaceId: String): Space = callBody { http.post("$base/v1/spaces/$spaceId/takeover") { auth() } }
 
     override suspend fun inbox(): List<Delivery> = callBody { http.get("$base/v1/inbox") { auth() } }
 

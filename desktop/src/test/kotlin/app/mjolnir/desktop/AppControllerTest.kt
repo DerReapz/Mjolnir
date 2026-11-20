@@ -462,7 +462,7 @@ class AppControllerTest {
         val fake = FakeRelayApi().apply { peers += phone }
         val gate = CompletableDeferred<Unit>()
         val api = object : RelayApi by fake {
-            override suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String>): SendResponse { gate.await(); return fake.send(to, tabs, fileIds) }
+            override suspend fun send(to: String, tabs: List<Tab>, fileIds: List<String>, spaceId: String?): SendResponse { gate.await(); return fake.send(to, tabs, fileIds, spaceId) }
         }
         val (c, scope) = controller(api)
         c.refreshPeers()
