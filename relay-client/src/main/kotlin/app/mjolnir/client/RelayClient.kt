@@ -161,13 +161,14 @@ class RelayClient(
     /** Maps a non-2xx response to its [RelayException]. */
     private suspend fun errorFor(response: HttpResponse): RelayException {
         val code = response.status.value
-        val message = try {
-            MjolnirJson.decodeFromString(ErrorResponse.serializer(), response.bodyAsText()).error
+        val parsed = try {
+            MjolnirJson.decodeFromString(ErrorResponse.serializer(), response.bodyAsText())
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            "HTTP $code"
+            null
         }
+        val message = parsed?.error ?: "HTTP $code"
         val kind = when (code) {
             401 -> RelayErrorKind.UNAUTHORIZED
             403 -> RelayErrorKind.NOT_PAIRED
@@ -179,7 +180,7 @@ class RelayClient(
             507 -> RelayErrorKind.STORAGE_FULL
             else -> if (code >= 500) RelayErrorKind.SERVER else RelayErrorKind.INVALID
         }
-        return RelayException(kind, message)
+        return RelayException(kind, message, detail = parsed?.detail)
     }
 
     /** Runs [block]; 2xx and any status in [okCodes] are returned, everything else becomes a [RelayException]. */

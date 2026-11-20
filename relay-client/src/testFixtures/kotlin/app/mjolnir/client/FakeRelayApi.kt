@@ -11,6 +11,7 @@ import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.RegisterResponse
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.SendRequest
+import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.SendResponse
 import app.mjolnir.protocol.Space
 import app.mjolnir.protocol.Tab
@@ -103,15 +104,79 @@ class FakeRelayApi : RelayApi {
         sent += request
         return onSend(request)
     }
-    // Space calls are not scripted here; tests that need them run against the real relay (RelayClientSpacesTest).
-    override suspend fun createSpace(name: String): Space = TODO("not faked")
-    override suspend fun spaces(): List<Space> { check(); return emptyList() }
-    override suspend fun renameSpace(id: String, name: String): Space = TODO("not faked")
-    override suspend fun deleteSpace(id: String) = TODO("not faked")
-    override suspend fun createInvite(spaceId: String): PairingCodeResponse = TODO("not faked")
-    override suspend fun removeMember(spaceId: String, deviceId: String) = TODO("not faked")
-    override suspend fun transferAdmin(spaceId: String, deviceId: String): Space = TODO("not faked")
-    override suspend fun takeOverAdmin(spaceId: String): Space = TODO("not faked")
+    /** In-memory spaces, each with [me] as a member unless removed; the fake enforces the relay's rules for them. */
+    val spaceList = mutableListOf<Space>()
+    /** The clock the fake judges an admin's silence by. */
+    var nowMs: Long = 1_700_000_000_000L
+    private var nextSpace = 0
+
+    /** Puts [peer] into space [spaceId] (test setup, as if they had joined). */
+    fun addMember(spaceId: String, peer: Peer) = updateSpace(spaceId) { it.copy(members = it.members + peer) }
+
+    /** Test setup: a space [id] administered by [admin], where [me] is a plain member. */
+    fun asMemberOf(id: String, admin: Peer, adminSilent: Boolean = false, name: String = "Space $id") {
+        spaceList += Space(id, name, admin.deviceId, listOf(admin, me), if (adminSilent) 0L else nowMs)
+    }
+
+    private fun err(kind: RelayErrorKind, code: String) = RelayException(kind, code)
+
+    private fun updateSpace(id: String, change: (Space) -> Space): Space {
+        val index = spaceList.indexOfFirst { it.id == id }
+        require(index >= 0) { "no such fake space $id" }
+        return change(spaceList[index]).also { spaceList[index] = it }
+    }
+
+    /** The space if [me] is a member (else NOT_FOUND). */
+    private fun memberSpace(id: String): Space =
+        spaceList.find { it.id == id && it.members.any { m -> m.deviceId == me.deviceId } } ?: throw err(RelayErrorKind.NOT_FOUND, "not_found")
+
+    private fun adminSpace(id: String): Space =
+        memberSpace(id).also { if (it.adminId != me.deviceId) throw err(RelayErrorKind.NOT_PAIRED, "not_admin") }
+
+    private fun validName(raw: String): String =
+        raw.trim().takeIf { it.isNotEmpty() && it.length <= Limits.MAX_SPACE_NAME_LENGTH && it.none(Char::isISOControl) }
+            ?: throw err(RelayErrorKind.INVALID, "invalid_name")
+
+    override suspend fun createSpace(name: String): Space {
+        check()
+        val valid = validName(name)
+        return Space("space-${++nextSpace}", valid, me.deviceId, listOf(me), nowMs).also { spaceList += it }
+    }
+
+    override suspend fun spaces(): List<Space> { check(); return spaceList.filter { s -> s.members.any { it.deviceId == me.deviceId } } }
+
+    override suspend fun renameSpace(id: String, name: String): Space {
+        check(); adminSpace(id)
+        val valid = validName(name)
+        return updateSpace(id) { it.copy(name = valid) }
+    }
+
+    override suspend fun deleteSpace(id: String) { check(); adminSpace(id); spaceList.removeAll { it.id == id } }
+
+    override suspend fun createInvite(spaceId: String): PairingCodeResponse { check(); adminSpace(spaceId); return pairingCodeResult }
+
+    override suspend fun removeMember(spaceId: String, deviceId: String) {
+        check()
+        val space = memberSpace(spaceId)
+        if (deviceId != me.deviceId && space.adminId != me.deviceId) throw err(RelayErrorKind.NOT_PAIRED, "not_admin")
+        if (space.members.none { it.deviceId == deviceId }) throw err(RelayErrorKind.NOT_FOUND, "not_found")
+        if (deviceId == space.adminId) throw err(RelayErrorKind.ALREADY_SENT, "admin_must_transfer")
+        updateSpace(spaceId) { it.copy(members = it.members.filter { m -> m.deviceId != deviceId }) }
+    }
+
+    override suspend fun transferAdmin(spaceId: String, deviceId: String): Space {
+        check(); val space = adminSpace(spaceId)
+        if (space.members.none { it.deviceId == deviceId }) throw err(RelayErrorKind.NOT_FOUND, "not_found")
+        return updateSpace(spaceId) { it.copy(adminId = deviceId, adminLastSeenEpochMs = if (deviceId == me.deviceId) nowMs else it.adminLastSeenEpochMs) }
+    }
+
+    override suspend fun takeOverAdmin(spaceId: String): Space {
+        check(); val space = memberSpace(spaceId)
+        if (space.adminId == me.deviceId || nowMs - space.adminLastSeenEpochMs <= Limits.ADMIN_SILENT_TAKEOVER_MS) {
+            throw err(RelayErrorKind.ALREADY_SENT, "admin_active")
+        }
+        return updateSpace(spaceId) { it.copy(adminId = me.deviceId, adminLastSeenEpochMs = nowMs) }
+    }
 
     override suspend fun inbox(): List<Delivery> { check(); return inbox.toList() }
     override suspend fun ack(deliveryId: String) { check(); acked += deliveryId; inbox.removeAll { it.id == deliveryId } }

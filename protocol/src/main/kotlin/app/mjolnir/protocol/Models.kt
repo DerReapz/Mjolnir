@@ -58,7 +58,7 @@ import kotlinx.serialization.json.Json
 @Serializable data class CreateSpaceRequest(val name: String)
 @Serializable data class RenameSpaceRequest(val name: String)
 @Serializable data class TransferAdminRequest(val deviceId: String)
-@Serializable data class ErrorResponse(val error: String)
+@Serializable data class ErrorResponse(val error: String, val detail: String? = null)
 
 @Serializable
 sealed interface RelayEvent {

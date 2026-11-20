@@ -21,7 +21,8 @@ import kotlinx.coroutines.test.runTest
 class PairingTest {
     private val owner = Peer("owner", "Pixel 8", DeviceKind.PHONE)
     private fun fake() = FakeRelayApi().apply { onClaim = { app.mjolnir.protocol.ClaimResponse("pair-1", owner) } }
-    private fun failing(kind: RelayErrorKind, message: String = "x") = fake().apply { onClaim = { throw RelayException(kind, message) } }
+    private fun failing(kind: RelayErrorKind, message: String = "x", detail: String? = null) =
+        fake().apply { onClaim = { throw RelayException(kind, message, detail = detail) } }
 
     @Test fun badFormat() = runTest {
         val r = claimAndAwait(fake(), "12", {})
@@ -148,6 +149,10 @@ class PairingTest {
     }
 
     @Test fun alreadyMemberMessage() = runTest {
+        assertEquals(
+            ClaimOutcome.Failed("This device is already in Friends."),
+            claimAndAwait(failing(RelayErrorKind.ALREADY_SENT, "already_member", "Friends"), "ABC234", {}, expect = CodeKind.SPACE_INVITE),
+        )
         assertEquals(
             ClaimOutcome.Failed("This device is already in that space."),
             claimAndAwait(failing(RelayErrorKind.ALREADY_SENT, "already_member"), "ABC234", {}, expect = CodeKind.SPACE_INVITE),

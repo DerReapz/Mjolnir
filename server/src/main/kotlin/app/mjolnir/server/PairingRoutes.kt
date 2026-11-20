@@ -68,7 +68,7 @@ fun Route.pairingRoutes(deps: RelayDeps) {
                     if (s == null || s.adminId != open.ownerId) return@post call.notFound()
                     space = s.toRef()
                     if (store.members(s.id).any { it.id == me.deviceId }) {
-                        return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("already_member"))
+                        return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("already_member", s.name))
                     }
                     if (store.spacesOf(me.deviceId).size >= deps.limits.maxSpacesPerDevice) {
                         return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("space_limit"))

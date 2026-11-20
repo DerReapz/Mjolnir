@@ -176,7 +176,8 @@ class SpaceRoutesTest {
         val a = register("A"); val b = register("B")
         val s = createSpace(a); join(a, s, b)
         val r = claimInvite(b, inviteCode(a, s.id))
-        assertEquals(HttpStatusCode.Conflict, r.status); assertEquals("already_member", r.body<ErrorResponse>().error)
+        assertEquals(HttpStatusCode.Conflict, r.status); val body = r.body<ErrorResponse>()
+        assertEquals("already_member", body.error); assertEquals(s.name, body.detail)
     }
 
     @Test fun adminClaimingOwnInviteIsOwnCode() = relayTest {
@@ -236,6 +237,18 @@ class SpaceRoutesTest {
         )
         assertEquals(4, peers.size)
         assertTrue(peers.none { it.deviceId == me.deviceId || it.deviceId == z.deviceId })
+    }
+
+    @Test fun peersListSpacesInCreationOrderNotJoinOrder() = relayTest {
+        val me = register("Me"); val d = register("D")
+        val a = createSpace(d, "A")          // created first
+        clock.now += 1_000
+        val b = createSpace(me, "B")         // created second, but I joined it first
+        clock.now += 1_000
+        join(d, a, me)
+        join(me, b, d)
+        assertEquals(listOf("A", "B"), peers(me).map { it.space!!.name })
+        assertEquals(listOf("A", "B"), spaces(me).map { it.name })
     }
 
     @Test fun unpairSpaceOnlyPeerIs404() = relayTest {

@@ -25,6 +25,8 @@ class RelayException(
     message: String,
     cause: Throwable? = null,
     val userMessage: String? = null,
+    /** The relay's `detail` for the error, e.g. the space name for already_member. */
+    val detail: String? = null,
 ) : Exception(message, cause)
 
 interface RelayApi {

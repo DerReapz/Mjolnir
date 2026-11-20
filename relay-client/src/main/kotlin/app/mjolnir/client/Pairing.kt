@@ -22,13 +22,13 @@ private const val NOT_FOUND = "Code not found or expired. Get a new code on the 
 /** The relay's error for claiming a code this device created itself. */
 private const val OWN_CODE_ERROR = "own_code"
 
+private const val ALREADY_MEMBER_ERROR = "already_member"
+
 /** Copy for the relay's 400/409 claim errors, keyed by the error code in the response body. */
 private val CLAIM_ERRORS = mapOf(
     OWN_CODE_ERROR to "That's this device's own code. Enter it on the other device.",
     "wrong_kind_space" to "That's a space invite. Use Join a space.",
     "wrong_kind_pairing" to "That's a pairing code. Use Pair a device.",
-    // The relay's error names no space, so the copy cannot either.
-    "already_member" to "This device is already in that space.",
     "member_limit" to "This space is full (50 devices).",
     "space_limit" to "You're in the most spaces allowed (50).",
 )
@@ -56,7 +56,9 @@ suspend fun claimAndAwait(
             // Only the relay's named claim errors get their own copy; any other bad request is treated as not found.
             RelayErrorKind.INVALID -> ClaimOutcome.Failed(CLAIM_ERRORS[e.message] ?: NOT_FOUND)
             // 409s arrive as ALREADY_SENT: already_member, member_limit, space_limit.
-            RelayErrorKind.ALREADY_SENT -> ClaimOutcome.Failed(CLAIM_ERRORS[e.message] ?: GENERIC)
+            RelayErrorKind.ALREADY_SENT -> ClaimOutcome.Failed(
+                if (e.message == ALREADY_MEMBER_ERROR) "This device is already in ${e.detail ?: "that space"}." else CLAIM_ERRORS[e.message] ?: GENERIC,
+            )
             RelayErrorKind.NETWORK -> ClaimOutcome.Failed("Can't reach the relay. Check your connection.")
             else -> ClaimOutcome.Failed(GENERIC)
         }

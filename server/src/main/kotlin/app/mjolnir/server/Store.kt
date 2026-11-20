@@ -365,7 +365,7 @@ class Store(jdbcUrl: String) {
     fun spacesOf(deviceId: String): List<SpaceRow> =
         conn.prepareStatement(
             """SELECT s.* FROM spaces s JOIN space_members m ON m.space_id=s.id
-               WHERE m.device_id=? ORDER BY m.joined_at, s.id"""
+               WHERE m.device_id=? ORDER BY s.created_at, s.id"""
         ).use {
             it.setString(1, deviceId)
             it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toSpace()) } }

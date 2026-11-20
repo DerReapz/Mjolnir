@@ -54,6 +54,16 @@ class RelayClientSpacesTest {
         assertEquals(RelayErrorKind.INVALID, e.kind); assertEquals("wrong_kind_space", e.message)
     }
 
+    @Test fun alreadyMemberCarriesSpaceName() = clientTest {
+        val admin = newDevice("Admin", DeviceKind.PC); val guest = newDevice("Sam", DeviceKind.PHONE)
+        val space = admin.api.createSpace("Friends")
+        join(admin, space.id, guest)
+        val e = runCatching { guest.api.claimPairingCode(admin.api.createInvite(space.id).code, CodeKind.SPACE_INVITE) }.exceptionOrNull() as RelayException
+        assertEquals("already_member", e.message); assertEquals("Friends", e.detail)
+        assertEquals(ClaimOutcome.Failed("This device is already in Friends."),
+            claimAndAwait(guest.api, admin.api.createInvite(space.id).code, {}, expect = CodeKind.SPACE_INVITE))
+    }
+
     @Test fun removeMemberLeaveAndAdminRules() = clientTest {
         val admin = newDevice("Admin", DeviceKind.PC); val a = newDevice("A", DeviceKind.PHONE); val b = newDevice("B", DeviceKind.PHONE)
         val space = admin.api.createSpace("Friends")
