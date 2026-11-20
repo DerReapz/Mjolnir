@@ -91,3 +91,6 @@ Added by the guest-room project. This project only leaves room for it in the sid
 - **Refactoring is fine.** The Compose layer may be restructured freely; logic tests move with the logic.
 - **Nicknames are in scope on Android too.** Every existing message that names a device (`{device}`, `{pc}`, `{name}`) uses the nickname when one is set; the wording is otherwise unchanged.
 - **Received tab link titles** come from the delivery's `tabs[].title`, falling back to the URL.
+
+## Ready for spaces
+Spaces (`2026-11-20-spaces-design.md`) is built next. The Send tab's device cards and the Devices tab list are built as grouped lists from the start. For now there is one group, `My devices`; its heading stays hidden while it is the only group.
