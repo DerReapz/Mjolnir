@@ -49,7 +49,7 @@ Friends will install Mjolnir too. The owner wants to keep their own devices priv
 ### Leaving, removal, deletion
 - A member who leaves or is removed disappears from everyone's lists immediately (`space_changed` event). Deliveries already accepted by the relay still complete.
 - When a space is deleted, everyone's lists drop it. Members see `{space} was deleted.`
-- If the admin device is reset or unregistered, the longest-standing member becomes admin automatically. If no members remain, the space is deleted.
+- An admin who leaves must first pick a new admin (*Make admin*) or delete the space. If the admin device hasn't connected to the relay for 30 days, any member can choose *Take over as admin*, which needs a confirmation. The relay records each device's last-seen time for this. Silent devices still count as members.
 
 ### Sending and receiving
 - Sending to a space member works exactly like sending to a paired device: same outbox, same limits, same Wi-Fi rule.
@@ -81,3 +81,16 @@ Friends will install Mjolnir too. The owner wants to keep their own devices priv
 - Exact endpoints, event payloads and table layout.
 - How the join request reaches the admin when it's offline (store it and re-deliver on connect, like pairing requests, or let the code expire).
 - Ordering within a group: by name, with last used first.
+
+## Decisions settled after the builder review (designer's calls)
+- **Which space a delivery is from.** `/v1/send` takes an optional `spaceId`. The card you send from decides it: a card under a space heading sends that space's id, and a card under *My devices* sends none. The relay checks that the sender and recipient share that space and stores the id and space name on the delivery. Labels (`· {space}`) come from the delivery, so older items keep their label even after the member leaves. Deliveries between paired devices carry no space and no label.
+- **A device in two spaces** shows under both headings. Selecting it highlights its card under every heading; the space sent is the one of the card you clicked.
+- **Admin recovery.** There is no automatic handover; an admin who leaves must hand over or delete, and *Take over as admin* is available once the admin has been silent for 30 days (see *Leaving, removal, deletion*). A stuck space can't happen unless every member is silent too.
+- **Codes carry a kind.** Codes are either `pairing` or `space_invite`. A device can have one active pairing code plus one active invite per space it administers. A single claim route returns the kind. Rate limits share one counter. Copy for mismatches:
+  - `That's a space invite. Use Join a space.`
+  - `That's a pairing code. Use Pair a device.`
+  - `This device is already in {space}.`
+  - An admin claiming their own invite gets the existing own-code message.
+- **Older apps.** Their *Unpair* on a member they only share a space with gets 404 and changes nothing. That's acceptable.
+- **Nicknames** are deleted only when nothing links you to that device any more: no pairing and no shared space.
+- **The phone gets the whole feature:** the admin UI, the join flow, grouped `Throw to`, labels and notifications, with state machines and tests on both apps.

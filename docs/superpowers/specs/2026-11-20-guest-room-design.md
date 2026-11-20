@@ -44,7 +44,7 @@ The owner wants to exchange files and folders with someone who does **not** have
 - The guest page shows `You sent` with progress and a delivered tick.
 
 ### Ending
-- *End room*, or expiry, or the owner device unpairing/losing access: the relay revokes the guest token, removes the link, deletes the guest device, and deletes stored files that were sent **to the guest** and not yet downloaded; files sent **to the owner** follow the normal delivery rules (7 days) so a closed room never loses the owner's incoming files.
+- *End room* or expiry: the relay revokes the guest token, removes the link, deletes the guest device, and deletes stored files that were sent **to the guest** and not yet downloaded; files sent **to the owner** follow the normal delivery rules (7 days) so a closed room never loses the owner's incoming files.
 - The guest page switches to `This room has closed.`; the owner's apps drop the `Guest` destination.
 
 ## Relay security rules (must hold)
@@ -77,7 +77,7 @@ The owner wants to exchange files and folders with someone who does **not** have
 ## Decisions settled after the builder review (designer's calls)
 - **Real link, extra rules on top.** Redeeming the invite creates the guest device and a normal `links` row to the owner device. Send, peers and inbox stay unchanged, and a guest-kind check adds the restrictions listed under the security rules.
 - **The room belongs to the device that opened it.** There are no accounts, so only that device sees the `Guest` destination, gets the guest's items and can end the room. Both the PC and the phone can open rooms.
-- **What ends a room:** *End room*, expiry, or the owner device being reset or unregistered. Unpairing other devices does not end it.
+- **What ends a room:** *End room* or expiry, and nothing else. Unpairing other devices does not end it.
 - **Limits.** The per-room cap defaults to the relay's global storage cap and can only be lowered (`MJOLNIR_GUEST_MAX_MB`). The existing per-file and per-send limits apply. Guest-page copy for limits:
   - `Too big. Files can be up to {n} MB.`
   - `Too many files. Send up to 1,000 at a time.`
