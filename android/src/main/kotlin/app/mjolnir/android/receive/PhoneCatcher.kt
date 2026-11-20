@@ -11,6 +11,7 @@ import app.mjolnir.client.RelayApi
 import app.mjolnir.client.receiveFiles
 import app.mjolnir.protocol.Delivery
 import app.mjolnir.protocol.FileRef
+import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.cleanTabs
 import java.io.File
 import java.io.IOException
@@ -43,6 +44,8 @@ class PhoneCatcher(
     private val notify: (String) -> Unit,
     private val decide: (Delivery) -> NetDecision,
     private val now: () -> Long = System::currentTimeMillis,
+    /** The name to show for a sender (its nickname when one is set). */
+    private val displayName: (Peer) -> String = { it.name },
     /** Called once a delivery's files are about to be downloaded (e.g. to go foreground). */
     private val beforeDownload: suspend (Delivery) -> Unit = {},
     /** Bytes of [FileRef] held locally so far, for a progress notification. */
@@ -87,7 +90,7 @@ class PhoneCatcher(
             if (published.isEmpty()) throw e
         }
         try {
-            notify(Messages.caught(tabs.size, published.size, d.from.name))
+            notify(Messages.caught(tabs.size, published.size, displayName(d.from)))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

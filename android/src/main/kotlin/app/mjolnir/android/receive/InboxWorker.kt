@@ -134,6 +134,7 @@ class InboxWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             stagingDir = c.stagingDir,
             publisher = MediaStoreFilePublisher(applicationContext),
             notify = { text -> current?.let { notifyCaught(it, text) } },
+            displayName = c.nicknames::displayName,
             decide = { d ->
                 networkDecision(d.files.sumOf { it.sizeBytes }, metered, config.largeFilePolicy, config.largeFileThresholdMb, d.id in c.allowedOnce.read())
             },
@@ -278,7 +279,7 @@ class InboxWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                 .putExtra(EXTRA_DELIVERY_ID, d.id),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val text = Messages.waitingToReceive(d.files.size, d.files.sumOf { it.sizeBytes }, d.from.name)
+        val text = Messages.waitingToReceive(d.files.size, d.files.sumOf { it.sizeBytes }, container.nicknames.displayName(d.from))
         postNotification(
             applicationContext, waitingNotificationId(d.id),
             Notification.Builder(applicationContext, CHANNEL_CAUGHT)

@@ -46,6 +46,13 @@ class PhoneCatcherTest {
         assertEquals(listOf("Caught 2 tabs from DESKTOP-4F2K"), notes)
     }
 
+    @Test fun caughtNotificationUsesNickname() = runTest {
+        val named = PhoneCatcher(api, store, staging, publisher, notify = { notes += it }, decide = { NetDecision.GO }, now = { 1_000 },
+            displayName = { if (it.deviceId == "pc1") "Work PC" else it.name })
+        named.handle(Delivery("d1", pc, listOf(Tab("https://a.com")), 0))
+        assertEquals(listOf("Caught 1 tab from Work PC"), notes)
+    }
+
     @Test fun savesLooseFileAndNotifies() = runTest {
         val ref = api.putBlob("f1", "report.pdf", byteArrayOf(1, 2))
         c.handle(Delivery("d1", Peer("pc1", "DESKTOP-4F2K", DeviceKind.PC), emptyList(), 0, listOf(ref)))

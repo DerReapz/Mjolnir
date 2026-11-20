@@ -163,7 +163,7 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
         return when (result) {
             is OutboxResult.Done -> {
-                notifyResult(item.id, Messages.thrown(0, result.item.files.size, result.item.toName))
+                notifyResult(item.id, Messages.thrown(0, result.item.files.size, shownName(result.item)))
                 Result.success()
             }
             OutboxResult.Retry -> Result.retry()
@@ -186,7 +186,7 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     }
                 } else {
                     // A specific reason such as "Couldn't read a.jpg" beats the generic one.
-                    val reason = result.message ?: Messages.failureReason(result.kind, result.item.toName)
+                    val reason = result.message ?: Messages.failureReason(result.kind, shownName(result.item))
                     notifyResult(item.id, Messages.filesBack(reason))
                 }
                 Result.success()
@@ -194,13 +194,16 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
     }
 
+    /** The nickname if one was set since the throw was queued, else the name it was queued with. */
+    private fun shownName(item: OutgoingFiles): String = container.nicknames.get(item.to) ?: item.toName
+
     private fun foregroundInfo(item: OutgoingFiles, pct: Int?, name: String?) =
         ForegroundInfo(progressNotificationId(item.id), progressNotification(item, pct, name), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
 
     private fun progressNotification(item: OutgoingFiles, pct: Int?, name: String?): Notification =
         Notification.Builder(applicationContext, CHANNEL_SENDING_PROGRESS)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle(rowTitle(item))
+            .setContentTitle(rowTitle(item, shownName(item)))
             .setContentText(outgoingLabel(true, pct, name, false))
             .setProgress(100, pct ?: 0, pct == null)
             .setOngoing(true)
@@ -218,7 +221,7 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         )
         return Notification.Builder(applicationContext, CHANNEL_SENDING)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentText(Messages.waitingToThrow(item.files.size, item.totalBytes, item.toName))
+            .setContentText(Messages.waitingToThrow(item.files.size, item.totalBytes, shownName(item)))
             .setStyle(Notification.BigTextStyle())
             .setContentIntent(openApp())
             .addAction(Notification.Action.Builder(null, "Send now", sendNow).build())
@@ -245,4 +248,4 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
 }
 
 /** `{items} to {pc}`, the title of an *On the way* row and of the progress notification. */
-fun rowTitle(item: OutgoingFiles): String = "${Messages.items(0, item.files.size)} to ${item.toName}"
+fun rowTitle(item: OutgoingFiles, toName: String = item.toName): String = "${Messages.items(0, item.files.size)} to $toName"

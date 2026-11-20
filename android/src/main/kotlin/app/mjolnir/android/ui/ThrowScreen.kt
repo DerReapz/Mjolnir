@@ -199,7 +199,7 @@ fun ThrowScreen(
                 if (state.outgoing.isNotEmpty()) {
                     item(key = "on-the-way") { SectionLabel("On the way", Modifier.padding(top = 8.dp)) }
                     items(state.outgoing, key = { "out-" + it.id }) { item ->
-                        OutgoingRow(item, onFinished = { vm.refreshOutgoing() }, onSendNow = {
+                        OutgoingRow(item, state.targets.find { it.deviceId == item.to }?.name ?: item.toName, onFinished = { vm.refreshOutgoing() }, onSendNow = {
                             scope.launch(Dispatchers.IO) { sendNow(context, item.id) }
                         })
                     }
@@ -227,7 +227,7 @@ internal fun SectionLabel(text: String, modifier: Modifier = Modifier) {
 
 /** One pending background throw: `{items} to {pc}` and its status; a row waiting for Wi-Fi offers `Send now`. */
 @Composable
-private fun OutgoingRow(item: OutgoingFiles, onFinished: () -> Unit, onSendNow: () -> Unit) {
+private fun OutgoingRow(item: OutgoingFiles, toName: String, onFinished: () -> Unit, onSendNow: () -> Unit) {
     val context = LocalContext.current
     val infos by remember(item.id) {
         WorkManager.getInstance(context.applicationContext).getWorkInfosForUniqueWorkFlow(uniqueThrowWork(item.id))
@@ -247,7 +247,7 @@ private fun OutgoingRow(item: OutgoingFiles, onFinished: () -> Unit, onSendNow: 
             scheduleOutgoing(context.applicationContext, item.id, policy = ExistingWorkPolicy.KEEP)
         }
     }
-    OutgoingCard(rowTitle(item), status, onSendNow)
+    OutgoingCard(rowTitle(item, toName), status, onSendNow)
 }
 
 /** A pending throw: its title, a 6 dp progress bar and the status line; a row waiting for Wi-Fi offers `Send now`. */
@@ -294,8 +294,14 @@ private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: 
             expanded = open, onDismissRequest = { open = false },
             containerColor = Forge.Surface, border = BorderStroke(1.dp, Forge.Border),
         ) {
-            for (device in state.targets) {
-                DropdownMenuItem(text = { Text("${device.name} (${kindLabel(device)})") }, onClick = { vm.selectTarget(device.deviceId); open = false })
+            for (group in state.groups) {
+                group.title?.let { Text(it, Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = Forge.Muted) }
+                for (device in group.peers) {
+                    DropdownMenuItem(
+                        text = { Text("${device.name} (${kindLabel(device)})", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        onClick = { vm.selectTarget(device.deviceId); open = false },
+                    )
+                }
             }
         }
     }
@@ -320,7 +326,7 @@ internal fun TargetCard(name: String?, kind: String?, onClick: () -> Unit) {
             Text("Pair a device first", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold))
         } else {
             Text("Throw to", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
-            Text(name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1)
+            Text(name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (kind != null) {
                 Text(
                     kind,

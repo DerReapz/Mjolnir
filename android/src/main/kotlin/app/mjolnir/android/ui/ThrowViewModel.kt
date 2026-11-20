@@ -9,7 +9,10 @@ import app.mjolnir.android.data.toUploads
 import app.mjolnir.android.share.Imported
 import app.mjolnir.android.throwing.Sensitivity
 import app.mjolnir.protocol.Tab
+import app.mjolnir.client.DestinationGroup
 import app.mjolnir.client.JsonFileStore
+import app.mjolnir.client.Nicknames
+import app.mjolnir.client.groupDestinations
 import app.mjolnir.client.Messages
 import app.mjolnir.client.OutgoingFiles
 import app.mjolnir.client.Outbox
@@ -40,6 +43,7 @@ sealed interface ThrowPhase {
 data class ThrowUiState(
     val tray: List<TrayItem> = emptyList(),
     val selected: Set<String> = emptySet(),
+    /** Paired devices, each carrying the name to show (the nickname when one is set). */
     val targets: List<Peer> = emptyList(),
     val targetId: String? = null,
     val phase: ThrowPhase = ThrowPhase.Idle,
@@ -47,6 +51,8 @@ data class ThrowUiState(
     val outgoing: List<OutgoingFiles> = emptyList(),
     val sensitivity: Sensitivity = Sensitivity.MEDIUM,
 ) {
+    /** [targets] grouped for the selector; a single group has no title. */
+    val groups: List<DestinationGroup> get() = groupDestinations(targets, targetId)
     val canThrow: Boolean get() = targetId != null && selected.isNotEmpty() && phase == ThrowPhase.Idle
 }
 
@@ -59,6 +65,7 @@ class ThrowViewModel(
     private val tray: JsonFileStore<List<TrayItem>>,
     private val config: JsonFileStore<PhoneConfig>,
     private val outbox: Outbox,
+    private val nicknames: Nicknames,
     private val scheduleOutgoing: (String) -> Unit,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** Called when the relay rejects this device's token, so the registration is reset (must not throw). */
@@ -187,7 +194,7 @@ class ThrowViewModel(
             val ids = peers.mapTo(HashSet()) { it.deviceId }
             _state.update { s ->
                 val target = s.targetId?.takeIf { it in ids } ?: remembered?.takeIf { it in ids } ?: peers.firstOrNull()?.deviceId
-                s.copy(targets = peers, targetId = target)
+                s.copy(targets = peers.map { it.copy(name = nicknames.displayName(it)) }, targetId = target)
             }
         }
     }

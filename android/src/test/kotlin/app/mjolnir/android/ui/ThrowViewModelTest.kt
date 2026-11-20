@@ -5,6 +5,7 @@ import app.mjolnir.android.data.PhoneConfig
 import app.mjolnir.android.data.TrayItem
 import app.mjolnir.client.FakeRelayApi
 import app.mjolnir.client.JsonFileStore
+import app.mjolnir.client.Nicknames
 import app.mjolnir.client.LocalUpload
 import app.mjolnir.client.OutgoingFiles
 import app.mjolnir.client.Outbox
@@ -24,6 +25,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -42,6 +45,7 @@ class ThrowViewModelTest {
     private lateinit var configStore: JsonFileStore<PhoneConfig>
     private lateinit var outbox: Outbox
     private lateinit var vm: ThrowViewModel
+    private lateinit var nicknames: Nicknames
 
     private val a = TrayItem.Link(Tab("https://a.com"))
     private val b = TrayItem.Link(Tab("https://b.com"))
@@ -62,12 +66,29 @@ class ThrowViewModelTest {
         )
         val copy = File(temp.newFolder("outbox-files"), "f-copy").apply { writeText("hello") }
         f = TrayItem.LocalFile("f", copy.path, "f.txt", 5, "text/plain")
+        nicknames = Nicknames(JsonFileStore(File(temp.root, "nicknames.json"), MapSerializer(String.serializer(), String.serializer())) { emptyMap() })
         vm = newVm()
     }
 
-    private fun newVm() = ThrowViewModel(api, trayStore, configStore, outbox, { scheduled += it }, main.dispatcher)
+    private fun newVm() = ThrowViewModel(api, trayStore, configStore, outbox, nicknames, { scheduled += it }, main.dispatcher)
 
     private fun throwNow() { vm.onHoldStart(); vm.onFlick() }
+
+    @Test fun targetsShowNickname() = runTest {
+        nicknames.set("pc1", "Work PC")
+        vm.refreshTargets(); advanceUntilIdle()
+        assertEquals(listOf("Work PC", "Laptop", "Other phone"), vm.state.value.targets.map { it.name })
+        assertEquals("pc1", vm.state.value.targetId)
+    }
+
+    @Test fun groupsSingleGroupNoTitle() = runTest {
+        nicknames.set("ph", "Aaa")
+        vm.refreshTargets(); advanceUntilIdle()
+        val groups = vm.state.value.groups
+        assertEquals(1, groups.size)
+        assertNull(groups.single().title)
+        assertEquals(listOf("pc1", "ph", "pc2"), groups.single().peers.map { it.deviceId }.let { it }) // last used first, then by shown name
+    }
 
     @Test fun sharedItemsLandInTrayAndAreSelected() = runTest {
         vm.addShared(listOf(a, f)); advanceUntilIdle()
@@ -157,7 +178,7 @@ class ThrowViewModelTest {
 
     @Test fun unauthorizedThrowResetsTheSessionAndSaysSo() = runTest {
         var resets = 0
-        vm = ThrowViewModel(api, trayStore, configStore, outbox, { scheduled += it }, main.dispatcher,
+        vm = ThrowViewModel(api, trayStore, configStore, outbox, nicknames, { scheduled += it }, main.dispatcher,
             onUnauthorized = { resets++; throw java.io.IOException("disk full") })
         api.onSend = { throw RelayException(RelayErrorKind.UNAUTHORIZED, "x") }
         vm.addShared(listOf(a)); vm.refreshTargets(); advanceUntilIdle(); throwNow(); advanceUntilIdle()
@@ -228,7 +249,7 @@ class ThrowViewModelTest {
             api = { api },
             open = { u, offset -> File(u.path).inputStream().also { it.skip(offset) } },
         )
-        val broken = ThrowViewModel(api, trayStore, configStore, brokenOutbox, { scheduled += it }, main.dispatcher)
+        val broken = ThrowViewModel(api, trayStore, configStore, brokenOutbox, nicknames, { scheduled += it }, main.dispatcher)
         broken.refreshTargets(); broken.addShared(listOf(f), listOf("stale notice")); advanceUntilIdle()
         broken.onHoldStart(); broken.onFlick(); advanceUntilIdle()
         assertEquals("Not thrown: this phone couldn't queue the files. Your tabs are still here.", broken.state.value.notice)

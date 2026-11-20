@@ -19,6 +19,7 @@ import app.mjolnir.android.session.SwitchingRelayApi
 import app.mjolnir.client.FileSeenDeliveries
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.LocalUpload
+import app.mjolnir.client.Nicknames
 import app.mjolnir.client.Outbox
 import app.mjolnir.client.OutgoingFiles
 import app.mjolnir.client.RelayApi
@@ -33,6 +34,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.SetSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.serializer
@@ -69,6 +71,8 @@ class AppContainer(context: Context) {
         PhoneConfig(relayUrl = BuildConfig.RELAY_URL, deviceName = Build.MODEL)
     }
     val tray = JsonFileStore(File(filesDir, "tray.json"), ListSerializer(serializer<TrayItem>())) { emptyList() }
+    /** Private, local names for paired devices; never sent anywhere. */
+    val nicknames = Nicknames(JsonFileStore(File(filesDir, "nicknames.json"), MapSerializer(String.serializer(), String.serializer())) { emptyMap() })
     val outboxDir = File(filesDir, "outbox")
     val seen = FileSeenDeliveries(File(filesDir, "seen.json"))
 

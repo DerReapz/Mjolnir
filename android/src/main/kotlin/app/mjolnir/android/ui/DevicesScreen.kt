@@ -23,6 +23,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextOverflow
 import app.mjolnir.protocol.PairingCode
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.getValue
@@ -39,6 +40,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.mjolnir.android.session.PhoneSession
 import app.mjolnir.client.Messages
+import app.mjolnir.client.Nicknames
 import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
@@ -49,17 +51,24 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-data class DevicesUi(val peers: List<Peer> = emptyList(), val notice: String? = null)
+data class DevicesUi(val peers: List<Peer> = emptyList(), val nicknames: Map<String, String> = emptyMap(), val notice: String? = null)
 
-class DevicesViewModel(private val api: RelayApi, private val session: PhoneSession) : ViewModel() {
-    private val _state = MutableStateFlow(DevicesUi())
+class DevicesViewModel(private val api: RelayApi, private val session: PhoneSession, private val nicknames: Nicknames) : ViewModel() {
+    private val _state = MutableStateFlow(DevicesUi(nicknames = nicknames.changes.value))
     val state: StateFlow<DevicesUi> = _state.asStateFlow()
 
     fun refresh() = run("Couldn't load devices") { _state.value = _state.value.copy(peers = api.peers(), notice = null) }
 
     fun unpair(deviceId: String) = run("Couldn't unpair") {
         api.unpair(deviceId)
-        _state.value = _state.value.copy(peers = api.peers(), notice = null)
+        nicknames.remove(deviceId)
+        _state.value = _state.value.copy(peers = api.peers(), nicknames = nicknames.changes.value, notice = null)
+    }
+
+    /** Sets the private nickname for [deviceId]; empty clears it. */
+    fun rename(deviceId: String, nickname: String) = run("Couldn't rename") {
+        nicknames.set(deviceId, nickname)
+        _state.value = _state.value.copy(nicknames = nicknames.changes.value, notice = null)
     }
 
     private fun run(failure: String, block: suspend () -> Unit) {
@@ -69,7 +78,7 @@ class DevicesViewModel(private val api: RelayApi, private val session: PhoneSess
             } catch (e: RelayException) {
                 if (e.kind == RelayErrorKind.UNAUTHORIZED) {
                     resetQuietly(session)
-                    _state.value = DevicesUi(notice = Messages.RESET)
+                    _state.value = DevicesUi(nicknames = nicknames.changes.value, notice = Messages.RESET)
                 } else {
                     _state.value = _state.value.copy(notice = "$failure: ${Messages.failureReason(e.kind, "the other device")}.")
                 }
@@ -86,6 +95,7 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Mod
     val pairingState by pairing.state.collectAsState()
     var showPairing by rememberSaveable { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<Peer?>(null) }
+    var renaming by remember { mutableStateOf<Peer?>(null) }
     LaunchedEffect(Unit) { vm.refresh() }
     LaunchedEffect(pairingState) { if (pairingState is PairingUi.Paired) vm.refresh() }
 
@@ -98,9 +108,12 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Mod
                 items(state.peers, key = { it.deviceId }) { peer ->
                     ForgeCard {
                         Column(Modifier.weight(1f)) {
-                            Text(peer.name, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium))
+                            val nickname = state.nicknames[peer.deviceId]
+                            Text(nickname ?: peer.name, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (nickname != null) Text(peer.name, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(if (peer.kind == DeviceKind.PC) "PC" else "Phone", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
                         }
+                        TextButton(onClick = { renaming = peer }) { Text("Rename") }
                         TextButton(onClick = { confirm = peer }) { Text("Unpair") }
                     }
                 }
@@ -109,14 +122,35 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Mod
         }
     }
 
+    renaming?.let { peer ->
+        RenameDialog(
+            shownName = state.nicknames[peer.deviceId] ?: peer.name,
+            initial = state.nicknames[peer.deviceId].orEmpty(),
+            onSave = { vm.rename(peer.deviceId, it); renaming = null },
+            onCancel = { renaming = null },
+        )
+    }
+
     confirm?.let { peer ->
         AlertDialog(
             onDismissRequest = { confirm = null },
-            title = { Text("Unpair ${peer.name}?") },
+            title = { Text("Unpair ${state.nicknames[peer.deviceId] ?: peer.name}?") },
             confirmButton = { TextButton(onClick = { vm.unpair(peer.deviceId); confirm = null }) { Text("Unpair") } },
             dismissButton = { TextButton(onClick = { confirm = null }) { Text("Cancel") } },
         )
     }
+}
+
+@Composable
+private fun RenameDialog(shownName: String, initial: String, onSave: (String) -> Unit, onCancel: () -> Unit) {
+    var text by rememberSaveable { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Rename $shownName", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        text = { OutlinedTextField(shape = FieldShape, colors = forgeFieldColors(), value = text, onValueChange = { text = it }, singleLine = true) },
+        confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+    )
 }
 
 private enum class PairMode { CHOOSE, ENTER, SHOW }

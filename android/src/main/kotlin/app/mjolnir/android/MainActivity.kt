@@ -62,11 +62,11 @@ class MainActivity : ComponentActivity() {
                 ThrowViewModel::class.java -> {
                     val appContext = applicationContext
                     ThrowViewModel(
-                        c.api, c.tray, c.config, c.outbox, scheduleOutgoing = { id -> scheduleOutgoing(appContext, id) },
+                        c.api, c.tray, c.config, c.outbox, c.nicknames, scheduleOutgoing = { id -> scheduleOutgoing(appContext, id) },
                         io = Dispatchers.IO, onUnauthorized = { resetQuietly(session) },
                     )
                 }
-                DevicesViewModel::class.java -> DevicesViewModel(c.api, session)
+                DevicesViewModel::class.java -> DevicesViewModel(c.api, session, c.nicknames)
                 PairingViewModel::class.java -> {
                     // The ThrowViewModel lives in the same store, so holding it (not the Activity) is safe.
                     val throwing = throwVm
