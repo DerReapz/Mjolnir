@@ -74,12 +74,12 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
         }
     }
 
-    Tray(icon = icon, state = trayState, tooltip = tooltip, onAction = { c.openWindow() }, menu = {
-        Item("Open Mjolnir", onClick = { c.openWindow() })
+    Tray(icon = icon, state = trayState, tooltip = tooltip, onAction = { c.openWindow(mainTab) }, menu = {
+        Item("Open Mjolnir", onClick = { c.openWindow(mainTab) }) // the last tab shown
         Item("Send to device…", onClick = { c.openWindow(MainTab.SEND) })
         val lastPhoneId = config.lastPhoneId
         if (lastPhoneId != null) {
-            val name = peers.find { it.deviceId == lastPhoneId }?.let { nicknames[it.deviceId] ?: it.name } ?: "device"
+            val name = peers.find { it.deviceId == lastPhoneId }?.let { nicknames.nicknameOr(it.deviceId, it.name) } ?: "device"
             Item("Send clipboard to $name", onClick = { c.sendClipboard() })
         }
         Item("Open received files", onClick = { c.openReceivedFiles() })

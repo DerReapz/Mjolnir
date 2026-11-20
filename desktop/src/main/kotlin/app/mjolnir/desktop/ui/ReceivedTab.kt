@@ -80,7 +80,7 @@ fun ReceivedTab(c: AppController) {
     }
 
     ReceivedTabContent(
-        entries, nicknameOf = { nicknames[it.fromDeviceId] ?: it.fromName }, whenOf = { formatReceivedTime(it.atEpochMs, now) },
+        entries, nicknameOf = { nicknames.nicknameOr(it.fromDeviceId, it.fromName) }, whenOf = { formatReceivedTime(it.atEpochMs, now) },
         onOpen = ::open, onShowInFolder = ::show, onOpenFolder = c::openReceivedFiles, notice = notice,
     )
 }

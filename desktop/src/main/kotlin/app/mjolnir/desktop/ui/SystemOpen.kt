@@ -20,3 +20,6 @@ internal fun revealInFolder(file: File): Boolean = try {
 } catch (_: Exception) {
     false
 }
+
+/** The nickname for [deviceId] from a [app.mjolnir.client.Nicknames.changes] snapshot, else [realName] (same rule as `Nicknames.displayName`, but readable from a collected flow). */
+internal fun Map<String, String>.nicknameOr(deviceId: String, realName: String): String = this[deviceId] ?: realName

@@ -416,4 +416,35 @@ class AppControllerTest {
         assertEquals(1, notes.size)
         assertNotNull(c.send.value.notice)
     }
+
+    // ---- M5 fix round 1 ----------------------------------------------------------------------------------------
+
+    @Test fun checkboxSaveWithTrailingSlashRelayDoesNotSwitch() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, scope) = controller(
+            fake, config = """{"relayUrl":"https://a.example/","deviceId":"old-id","token":"old-token","deviceName":"PC"}""",
+        )
+        val draft = c.config.value.toDraft().copy(openLinksOnArrival = false)
+        assertFalse(draft.relayChanged(c.config.value))
+        assertNull(c.applySettings(draft)); runCurrent()
+        assertTrue(fake.registerCalls.isEmpty())
+        assertEquals("old-token", c.config.value.token); assertEquals("old-id", c.config.value.deviceId)
+        assertEquals("https://a.example/", c.config.value.relayUrl)
+        assertFalse(c.config.value.openLinksOnArrival)
+        scope.cancel()
+    }
+
+    @Test fun relayAndNameChangeWorksWhenOldRelayDown() = runTest {
+        val fake = FakeRelayApi()
+        val api = object : RelayApi by fake {
+            override suspend fun rename(name: String): Peer = throw RelayException(RelayErrorKind.NETWORK, "offline")
+        }
+        val (c, scope) = controller(api)
+        val draft = c.config.value.toDraft().copy(relayUrl = "https://b.example", deviceName = "Desk")
+        assertNull(c.applySettings(draft)); runCurrent()
+        assertEquals("Desk", c.config.value.deviceName)
+        assertEquals("https://b.example", c.config.value.relayUrl)
+        assertEquals("Desk", fake.registerCalls.last().first) // registered anew under the new name
+        scope.cancel()
+    }
 }

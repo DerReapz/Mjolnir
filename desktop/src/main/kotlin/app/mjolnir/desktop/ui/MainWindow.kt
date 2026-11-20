@@ -157,7 +157,7 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
                     when (tab) {
                         MainTab.SEND -> SendTabContent(
                             state = send,
-                            nicknameOf = { peer -> nicknames[peer.deviceId] ?: peer.name }, // same rule as Nicknames.displayName; reads the flow so renames recompose
+                            nicknameOf = { peer -> nicknames.nicknameOr(peer.deviceId, peer.name) }, // reads the flow so renames recompose
                             previews = previews,
                             sending = sending,
                             onState = { next -> c.updateSend { next } },

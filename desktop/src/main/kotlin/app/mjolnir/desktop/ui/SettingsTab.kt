@@ -40,6 +40,7 @@ import app.mjolnir.client.RelayUrls
 import app.mjolnir.client.checkRelay
 import app.mjolnir.desktop.AppController
 import app.mjolnir.desktop.RELAY_CHANGE_WARNING
+import app.mjolnir.desktop.RelayStatus
 import app.mjolnir.desktop.SettingsDraft
 import app.mjolnir.desktop.USE_HTTPS
 import app.mjolnir.desktop.isValidDeviceName
@@ -78,6 +79,7 @@ sealed interface RelayTest {
 @Composable
 fun SettingsTab(c: AppController, parent: Component? = null) {
     val config by c.config.collectAsState()
+    val liveStatus by c.relayStatus.collectAsState()
     var draft by remember { mutableStateOf(config.toDraft()) }
     var test by remember { mutableStateOf<RelayTest>(RelayTest.Idle) }
     var attempted by remember { mutableStateOf(false) }
@@ -95,6 +97,9 @@ fun SettingsTab(c: AppController, parent: Component? = null) {
             saving = false
             message = error ?: "Saved"
             messageIsError = error != null
+            // A Windows setting that failed keeps its saved value: show that, not the ticked box.
+            val saved = c.config.value
+            draft = draft.copy(launchAtLogin = saved.launchAtLogin, sendToMenu = saved.sendToMenu)
             if (error == null) draft = draft.copy(relayUrl = RelayUrls.normalize(draft.relayUrl) ?: draft.relayUrl, deviceName = draft.deviceName.trim())
         }
     }
@@ -134,7 +139,7 @@ fun SettingsTab(c: AppController, parent: Component? = null) {
                 if (chooser.showOpenDialog(parent) == JFileChooser.APPROVE_OPTION) draft = draft.copy(saveDir = chooser.selectedFile.absolutePath)
             },
             message = message, isError = messageIsError, saving = saving,
-            onLicences = c::openLicences, onSave = ::save,
+            onLicences = c::openLicences, onSave = ::save, liveStatus = liveStatus,
         )
         if (confirmRelay) ConfirmRelayChange(onCancel = { confirmRelay = false }, onConfirm = { confirmRelay = false; commit() })
     }
@@ -168,6 +173,7 @@ fun SettingsTabContent(
     isError: Boolean = true,
     saving: Boolean = false,
     version: String = APP_VERSION,
+    liveStatus: RelayStatus? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -180,7 +186,12 @@ fun SettingsTabContent(
                     relayMessage?.let { Hint(it, if (it == USE_HTTPS) Forge.error else Forge.accent) }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         val (dot, text) = when (test) {
-                            RelayTest.Idle -> Forge.dashed to "Check that this address answers."
+                            RelayTest.Idle -> when (liveStatus) {
+                                RelayStatus.CONNECTED -> STATUS_CONNECTED to "Connected"
+                                RelayStatus.CONNECTING -> Forge.accent to RelayStatus.CONNECTING.label
+                                RelayStatus.NOT_SET -> Forge.error to RelayStatus.NOT_SET.label
+                                null -> Forge.dashed to "Check that this address answers."
+                            }
                             RelayTest.Testing -> Forge.accent to "Testing…"
                             is RelayTest.Ok -> STATUS_CONNECTED to "Connected · ${test.millis} ms"
                             is RelayTest.Failed -> Forge.error to test.message

@@ -44,4 +44,20 @@ class SettingsTabTest {
         onNodeWithText("Test").performClick(); onNodeWithText("Save").performClick(); onNodeWithText("Open-source licences").performClick()
         assertEquals(Triple(1, 1, 1), Triple(tests, saves, licences))
     }
+
+    @Test fun idleStatusLineShowsTheLiveRelayStatus() = runComposeUiTest {
+        var live by mutableStateOf(app.mjolnir.desktop.RelayStatus.CONNECTED)
+        setContent { MjolnirTheme { SettingsTabContent(draft, {}, null, RelayTest.Idle, {}, {}, null, {}, {}, liveStatus = live) } }
+        onNodeWithText("Connected").assertExists()
+        live = app.mjolnir.desktop.RelayStatus.CONNECTING
+        onNodeWithText("Connecting…").assertExists()
+        live = app.mjolnir.desktop.RelayStatus.NOT_SET
+        onNodeWithText("Relay not set").assertExists()
+    }
+
+    @Test fun afterATestTheResultReplacesTheLiveStatus() = runComposeUiTest {
+        setContent { MjolnirTheme { SettingsTabContent(draft, {}, null, RelayTest.Ok(12), {}, {}, null, {}, {}, liveStatus = app.mjolnir.desktop.RelayStatus.CONNECTING) } }
+        onNodeWithText("Connected · 12 ms").assertExists()
+        onAllNodesWithText("Connecting…").assertCountEquals(0)
+    }
 }

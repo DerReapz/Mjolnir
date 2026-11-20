@@ -3,6 +3,8 @@
 package app.mjolnir.desktop.ui
 
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -134,5 +136,17 @@ class DevicesTabTest {
         waitForIdle()
         assertEquals(1, shown)
         onNodeWithText("Close").assertExists() // the panel is open
+    }
+
+    @Test fun failedWindowsSettingGoesBackToItsSavedValue() = runComposeUiTest {
+        File(dir, "config.json").writeText("""{"relayUrl":"https://a.example","deviceId":"d","token":"t","deviceName":"This PC"}""")
+        val c = AppController(dir, scope, launchAtLoginSetter = { false }) { _, _ -> FakeRelayApi() }
+        setContent { MjolnirTheme { SettingsTab(c) } }
+        val boxes = onAllNodes(androidx.compose.ui.test.isToggleable())
+        boxes[1].performClick() // start at sign-in
+        boxes[1].assertIsOn()
+        onNodeWithText("Save").performClick()
+        waitUntilExactlyOneExists(androidx.compose.ui.test.hasText("Couldn't change whether", substring = true), 10_000)
+        boxes[1].assertIsOff() // re-seeded from config, not left ticked
     }
 }

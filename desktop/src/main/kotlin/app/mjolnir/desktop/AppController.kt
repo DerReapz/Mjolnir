@@ -563,7 +563,7 @@ class AppController(
     fun changeRelay(url: String): Job = scope.launch { switchRelay(url) }
 
     private suspend fun switchRelay(url: String) = relaySwitch.withLock {
-        if (url == _config.value.relayUrl) return@withLock
+        if (RelayUrls.normalize(url) == RelayUrls.normalize(_config.value.relayUrl)) return@withLock
         serviceSwitch.withLock { serviceJob?.cancelAndJoin(); serviceJob = null }
         connected.value = false
         updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null) }
@@ -606,7 +606,11 @@ class AppController(
         draft.validate()?.let { return it }
         val current = _config.value
         val name = draft.deviceName.trim()
-        if (name != current.deviceName) rename(name)?.let { return it }
+        // Switching relay re-registers under the stored name, so the old relay (maybe down) is not asked to rename.
+        val switching = draft.relayChanged(current) || current.relayUrl.isBlank()
+        if (name != current.deviceName) {
+            if (switching) updateConfig { it.copy(deviceName = name) } else rename(name)?.let { return it }
+        }
         val dir = draft.saveDir.trim()
         val saveDir = when {
             dir.isEmpty() -> null
@@ -623,7 +627,7 @@ class AppController(
             if (sendToSetter(draft.sendToMenu)) updateConfig { it.copy(sendToMenu = draft.sendToMenu) }
             else problem = problem ?: "Couldn't change Explorer's Send to menu."
         }
-        RelayUrls.normalize(draft.relayUrl)?.let { switchRelay(it) }
+        if (switching) RelayUrls.normalize(draft.relayUrl)?.let { switchRelay(it) }
         return problem
     }
 

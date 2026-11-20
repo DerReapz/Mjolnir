@@ -87,7 +87,7 @@ fun DevicesTab(c: AppController, openPairing: Boolean = false, onPairingOpened: 
         )
         renaming?.let { peer ->
             RenameDialog(
-                shownName = nicknames[peer.deviceId] ?: peer.name, nickname = nicknames[peer.deviceId].orEmpty(), realName = peer.name,
+                shownName = nicknames.nicknameOr(peer.deviceId, peer.name), nickname = nicknames[peer.deviceId].orEmpty(), realName = peer.name,
                 onSave = { text -> c.nicknames.set(peer.deviceId, text); renaming = null }, // empty clears it
                 onCancel = { renaming = null },
             )
@@ -125,7 +125,7 @@ fun DevicesTabContent(
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text(nickname ?: peer.name, style = TextStyle(fontFamily = ForgeFonts.inter600, fontSize = 14.sp, color = Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(nicknames.nicknameOr(peer.deviceId, peer.name), style = TextStyle(fontFamily = ForgeFonts.inter600, fontSize = 14.sp, color = Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (nickname != null) Text(peer.name, style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(if (peer.kind == DeviceKind.PHONE) "Phone" else "PC", style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted))
                         }
