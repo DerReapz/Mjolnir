@@ -200,7 +200,7 @@ class ChatController(
                             members = page.members,
                             receipts = page.receipts,
                             messages = c.messages + page.messages.associateBy { it.id },
-                            listedEmpty = false,
+                            listedEmpty = c.listedEmpty && page.messages.isEmpty(), // an empty page is not history yet
                         )
                     }
                     (page.messages.filter { it.event is ChatEvent.Renamed }.maxByOrNull { it.rev }?.event as? ChatEvent.Renamed)?.let { renamed = it.name }

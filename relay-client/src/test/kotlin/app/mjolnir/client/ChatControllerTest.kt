@@ -678,6 +678,27 @@ class ChatControllerTest {
         assertEquals(listOf("hello there"), seen2.map { it.text })
     }
 
+    @Test fun openingAnEmptyChatKeepsItsFirstMessagesNewsAfterARestart() = runTest {
+        val (api, chat) = fakeWithChat()
+        val first = controller(api)
+        first.refresh() // listed empty
+        first.sync(chat) // opened while still empty, then the process dies
+        assertTrue(ChatStore(dir).read(chat).listedEmpty)
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        api.incoming(chat, sam, "first!")
+        c.refresh()
+        assertEquals(listOf("first!"), seen.map { it.text })
+        // A chat created here and opened at once is remembered the same way.
+        val made = c.createChat("s1", "Fresh").id
+        c.sync(made)
+        val c2 = controller(api)
+        val seen2 = mutableListOf<IncomingMessage>(); collect(c2, seen2)
+        api.incoming(made, sam, "hello there")
+        c2.refresh()
+        assertEquals(listOf("hello there"), seen2.map { it.text })
+    }
+
     @Test fun listPreviewIgnoresEdits() = runTest {
         val (api, chat) = fakeWithChat()
         val first = api.incoming(chat, sam, "first"); api.incoming(chat, sam, "second")
