@@ -107,8 +107,9 @@ fun messageReceipts(message: ChatMessage, receipts: List<Receipt>, members: List
     val others = members.map { it.deviceId }.filter { it != message.author.deviceId }
     val byId = receipts.associateBy { it.deviceId }
     val mine = others.mapNotNull { byId[it] }
-    val read = mine.filter { it.readRev >= message.rev }
-    val seen = mine.filter { it.readRev < message.rev && it.seenRev >= message.rev }
+    val at = message.createdRev ?: message.rev // an edit moves the rev, not what has been read
+    val read = mine.filter { it.readRev >= at }
+    val seen = mine.filter { it.readRev < at && it.seenRev >= at }
     return MessageReceipts(read, seen, others.isNotEmpty() && read.size == others.size)
 }
 

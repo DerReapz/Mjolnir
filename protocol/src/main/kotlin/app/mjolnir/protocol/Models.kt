@@ -121,6 +121,8 @@ sealed interface ChatEvent {
     val event: ChatEvent? = null,
     /** Device ids of the chat members this message mentions (always members when posted); never set on deleted messages. */
     val mentions: List<String> = emptyList(),
+    /** The chat rev at which this message first appeared; edits and deletes change [rev] but never this. Receipts compare against it (null: use [rev]). */
+    val createdRev: Long? = null,
 )
 @Serializable data class ChatSummary(
     val id: String,

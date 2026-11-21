@@ -88,6 +88,8 @@ data class ChatMessageRow(
     val event: ChatEvent? = null,
     /** Device ids this message mentions (validated against the chat's members by the route); empty once deleted. */
     val mentions: List<String> = emptyList(),
+    /** The chat rev this entry was created at; edits and deletes change [rev], never this. */
+    val createdRev: Long = rev,
 )
 
 /** Who to notify after a device left a space: chat id to the device ids that should hear about it. */
@@ -267,6 +269,8 @@ class Store(jdbcUrl: String) {
         // Relays that already hold the chat tables from an earlier build of this feature.
         addColumnIfMissing("chat_messages", "deleted_by_admin", "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("chat_messages", "event_json", "TEXT NULL")
+        addColumnIfMissing("chat_messages", "created_rev", "INTEGER NULL")
+        conn.createStatement().use { it.executeUpdate("UPDATE chat_messages SET created_rev=rev WHERE created_rev IS NULL") } // rows from before: first seen at their rev
         addColumnIfMissing("chat_members", "seen_rev", "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("chat_members", "seen_at", "INTEGER NULL")
         addColumnIfMissing("chat_members", "read_at", "INTEGER NULL")
@@ -576,6 +580,7 @@ class Store(jdbcUrl: String) {
             edited, deleted, getInt("deleted_by_admin") != 0, body.text,
             getString("event_json")?.let { MjolnirJson.decodeFromString(ChatEvent.serializer(), it) },
             body.mentions,
+            getLong("created_rev").takeIf { !wasNull() } ?: getLong("rev"),
         )
     }
 
@@ -836,7 +841,7 @@ class Store(jdbcUrl: String) {
         if (!isChatMember(chatId, authorId)) return@transaction null
         val rev = nextRev(chatId)
         val id = newId()
-        update("INSERT INTO chat_messages(id,chat_id,author_id,rev,sent_at,body_json) VALUES(?,?,?,?,?,?)", id, chatId, authorId, rev, nowMs, bodyJson(text, mentions))
+        update("INSERT INTO chat_messages(id,chat_id,author_id,rev,created_rev,sent_at,body_json) VALUES(?,?,?,?,?,?,?)", id, chatId, authorId, rev, rev, nowMs, bodyJson(text, mentions))
         ChatMessageRow(id, chatId, authorId, rev, nowMs, null, false, false, text, mentions = mentions)
     }
 
@@ -844,8 +849,8 @@ class Store(jdbcUrl: String) {
     private fun recordEvent(chatId: String, actorId: String, event: ChatEvent, nowMs: Long) {
         val rev = nextRev(chatId)
         update(
-            "INSERT INTO chat_messages(id,chat_id,author_id,rev,sent_at,body_json,event_json) VALUES(?,?,?,?,?,?,?)",
-            newId(), chatId, actorId, rev, nowMs, bodyJson(null), MjolnirJson.encodeToString(ChatEvent.serializer(), event),
+            "INSERT INTO chat_messages(id,chat_id,author_id,rev,created_rev,sent_at,body_json,event_json) VALUES(?,?,?,?,?,?,?,?)",
+            newId(), chatId, actorId, rev, rev, nowMs, bodyJson(null), MjolnirJson.encodeToString(ChatEvent.serializer(), event),
         )
     }
 

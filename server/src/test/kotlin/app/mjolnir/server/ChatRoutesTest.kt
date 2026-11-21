@@ -671,6 +671,20 @@ class ChatRoutesTest {
     private suspend fun RelayTestScope.msgReceipts(d: RegisterResponse, chatId: String, msgId: String): HttpResponse =
         client.get("/v1/chats/$chatId/messages/$msgId/receipts") { bearerAuth(d.token) }
 
+    @Test fun editedMessageKeepsItsReceipts() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        val m = say(k.owner, chat.id, "typo")
+        clock.now = 1_000; report(k.member, chat.id, "read", m.rev)
+        val edited = editMessage(k.owner, chat.id, m.id, "fixed").body<ChatMessage>()
+        assertTrue(edited.rev > m.rev); assertEquals(m.rev, edited.createdRev)
+        assertEquals(m.rev, sync(k.owner, chat.id, m.rev).messages.single { it.id == m.id }.createdRev)
+        val r = msgReceipts(k.owner, chat.id, m.id).body<List<MessageReceipt>>().single { it.deviceId == k.member.deviceId }
+        assertEquals(MessageReceipt(k.member.deviceId, 1_000, 1_000), r) // the edit did not take the read away
+        // A message id of another chat is not found here.
+        val other = newChat(k.owner, k.space.id, "Other"); val o = say(k.owner, other.id, "elsewhere")
+        assertEquals(HttpStatusCode.NotFound, msgReceipts(k.owner, chat.id, o.id).status)
+    }
+
     @Test fun infoTimesArePerMessage() = relayTest {
         val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
         val m1 = say(k.owner, chat.id, "one"); val m2 = say(k.owner, chat.id, "two")

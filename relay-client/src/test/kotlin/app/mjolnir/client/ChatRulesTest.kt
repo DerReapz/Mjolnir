@@ -111,6 +111,15 @@ class ChatRulesTest {
         assertFalse(messageReceipts(m, listOf(Receipt("me", 5, 5)), listOf(me)).everyone)
     }
 
+    @Test fun editedMessageKeepsItsReceipts() {
+        val edited = msg("a", me, 9).copy(createdRev = 5) // edited at rev 9, first posted at 5
+        val receipts = listOf(Receipt("ann", 6, 6, 1, 2), Receipt("bo", 6, 4, 1, 2))
+        val r = messageReceipts(edited, receipts, listOf(me, ann, bo))
+        assertEquals(listOf("ann"), r.read.map { it.deviceId }); assertEquals(listOf("bo"), r.seen.map { it.deviceId })
+        assertEquals("Read by Ann · Seen by Bo", receiptLineFor(edited, receipts, listOf(me, ann, bo)))
+        assertEquals("", receiptLineFor(edited.copy(createdRev = null), receipts, listOf(me, ann, bo))) // without it: rev 9, nobody has got there
+    }
+
     @Test fun mentionCandidatesFilterByShownName() {
         val members = listOf(me, ann, bo, cy)
         val shown = { p: Peer -> if (p.deviceId == "bo") "Annabel" else p.name }

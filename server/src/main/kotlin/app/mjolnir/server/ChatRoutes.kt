@@ -83,7 +83,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
     fun peer(id: String): Peer = store.device(id)?.toPeer() ?: Peer(id, "Unknown device", DeviceKind.PC)
 
     fun ChatMessageRow.toWire() = ChatMessage(
-        id, chatId, peer(authorId), rev, sentAtMs, editedAtMs, deleted, deletedByAdmin, if (deleted) null else text, event, mentions,
+        id, chatId, peer(authorId), rev, sentAtMs, editedAtMs, deleted, deletedByAdmin, if (deleted) null else text, event, mentions, createdRev,
     )
 
     fun summary(chat: ChatRow, me: String): ChatSummary = ChatSummary(
@@ -345,7 +345,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
         get("/v1/chats/{id}/messages/{msgId}/receipts") {
             val a = call.access() ?: return@get
             val msg = store.message(a.chat.id, call.parameters["msgId"]!!) ?: return@get call.error(HttpStatusCode.NotFound, "not_found")
-            call.respond(store.messageReceipts(a.chat.id, msg.rev))
+            call.respond(store.messageReceipts(a.chat.id, msg.createdRev))
         }
 
         post("/v1/chats/{id}/seen") {

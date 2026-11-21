@@ -583,6 +583,21 @@ class ChatControllerTest {
         assertTrue(second.seenAtEpochMs!! > first.seenAtEpochMs!!, "the later message was seen later") // not Sam's latest time on both
     }
 
+    @Test fun editedMessageKeepsItsReceipts() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        val m = c.send(chat, "typo")
+        c.onEvent(RelayEvent.ChatChanged(chat, m.rev, receipts = listOf(api.incomingRead(chat, sam, m.rev)!!)))
+        val edited = c.edit(chat, m.id, "fixed")
+        assertTrue(edited.rev > m.rev); assertEquals(m.rev, edited.createdRev)
+        c.sync(chat)
+        val shown = c.messages(chat).value.single { it.id == m.id }
+        assertEquals("Read by everyone", receiptLineFor(shown, c.receipts(chat).value, c.members(chat).value))
+        assertEquals(m.rev, c.messageReceipts(chat, m.id).let { shown.createdRev }) // the fake relay also times it by the first rev
+        assertTrue(c.messageReceipts(chat, m.id).single { it.deviceId == "sam" }.readAtEpochMs != null)
+    }
+
     @Test fun mentionAddedByAnEditIsAnnounced() = runTest {
         val (api, chat) = fakeWithChat()
         val c = controller(api)

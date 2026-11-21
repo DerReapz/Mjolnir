@@ -119,7 +119,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     /** [author] posts [text]; the viewer's relay connection is told. */
     fun incoming(chatId: String, author: Peer, text: String, mentions: List<String> = emptyList()): ChatMessage {
         val chat = chats.getValue(chatId)
-        val m = ChatMessage("m-${++nextMessage}", chatId, author, ++chat.rev, tick(), text = text, mentions = mentions)
+        val m = ChatMessage("m-${++nextMessage}", chatId, author, ++chat.rev, tick(), text = text, mentions = mentions, createdRev = chat.rev)
         chat.messages += m
         changed(chat)
         return m
@@ -193,7 +193,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     fun messageReceipts(chatId: String, msgId: String): List<MessageReceipt> {
         val a = access(chatId)
         val msg = a.chat.messages.firstOrNull { it.id == msgId && it.event == null } ?: throw notFound
-        fun first(id: String, kind: String) = marks[chatId].orEmpty().filter { it.deviceId == id && it.kind == kind && it.rev >= msg.rev }.minOfOrNull { it.at }
+        fun first(id: String, kind: String) = marks[chatId].orEmpty().filter { it.deviceId == id && it.kind == kind && it.rev >= (msg.createdRev ?: msg.rev) }.minOfOrNull { it.at }
         return a.chat.members.map { MessageReceipt(it.deviceId, first(it.deviceId, "seen"), first(it.deviceId, "read")) }
     }
 
@@ -359,7 +359,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         if (!a.isMember) throw err(RelayErrorKind.NOT_PAIRED, "not_member")
         val body = text(raw)
         val ids = mentionsOf(a.chat, mentions)
-        val m = ChatMessage("m-${++nextMessage}", chatId, api.me, ++a.chat.rev, tick(), text = body, mentions = ids)
+        val m = ChatMessage("m-${++nextMessage}", chatId, api.me, ++a.chat.rev, tick(), text = body, mentions = ids, createdRev = a.chat.rev)
         a.chat.messages += m
         changed(a.chat)
         return m
