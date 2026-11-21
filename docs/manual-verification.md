@@ -62,13 +62,13 @@ Needs three devices (any mix of PCs and phones, call them A, B and C) on one rel
 ## Chats (text)
 Needs two PCs (A, B) and a phone (C) in one space, with A as the space admin (so A can be the non-member admin in the moderation check). The relay must be the updated one.
 - **Create and invite by the owner:** on B, *Chats* → *New chat…* in the space; *Invite…* C. No approval step: C sees `You're invited to {chat}` and taps *Join*. The chat appears on C's Chats tab.
-- **Invite by a member:** on C, *Invite…* A. B (owner) sees `C wants to add A`; *Approve* then A sees the invite and taps *Join*. Repeat with *Deny* and check A never sees an invite. Check *Decline* on an approved invite.
+- **Invite by a member:** on C, *Invite…* A. B (owner) sees `C wants to add A`; *Approve* then A sees the invite and taps *Join*. Repeat with *Deny* and check A never sees an invite. Check *Decline* on an approved invite. The invitee gets no event or invite before the owner approves. An invite also goes away when the invitee or the inviter leaves the space (it expires after 7 days otherwise).
 - **Send:** each device sends text and a link; the link is clickable. Send an emoji-only message and a message near 4,000 characters; one over the limit shows `That message is too long (4,000 characters at most).`
 - **Mentions:** type `@`, pick a name; the receiver gets `{name} mentioned you in {chat}: …` and an `@` marker in the list. Type a name without picking: nobody is notified.
 - **Seen and read:** with C's screen off, B's latest message shows `Seen by C`; open the chat on C and it becomes `Read by C`, then `Read by everyone`. *Info* shows per-person times.
 - **Edit and delete:** edit a message (`(edited)` appears everywhere); delete one (`Message deleted`). PC: ⋯ menu; phone: long-press (*Share…*, *Edit*, *Delete*, *Info*).
-- **Admin view and moderation:** the space admin who is not a member sees the chat, can read it and sees `You see this chat as the space admin. Join to write in it.`; delete a message and remove a member as admin (`Removed by the space admin`); join to post.
-- **Owner hand-over:** the owner cannot *Leave chat* (`Make someone else the owner to leave.`); *Make owner* on another member, then leave. A sole owner uses *Delete chat*.
+- **Admin view and moderation:** the space admin who is not a member sees the chat, can read it and sees `You see this chat as the space admin. Join to write in it.`; delete a message and remove a member as admin (`Removed by the space admin`), rename the chat and delete a chat; the admin cannot edit another person's message. Join directly (no approval) to post.
+- **Owner hand-over:** the owner cannot *Leave chat* (`Make someone else the owner to leave.`); *Make owner* on another member, then leave. The owner has no way to remove another member (only the admin does); the owner can *Delete chat* at any time.
 - **Removed from the space:** remove a member from the space; the chat disappears for them.
 - **Phone notifications, app closed:** with the app swiped away, a message and a mention both notify the phone.
 - **Offline catch-up:** turn the phone's network off, send several messages from a PC, restore the network; the chat catches up in order.
