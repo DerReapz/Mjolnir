@@ -15,6 +15,12 @@ class MessagesTest {
             Messages.notThrown(Messages.failureReason(RelayErrorKind.NETWORK, "PC")))
     }
 
+    @Test fun outgoingMessagesCarryTheSpace() {
+        assertEquals("Sent 2 files to Sam · Friends", Messages.sent(0, 2, "Sam", space = "Friends"))
+        assertEquals("Waiting for Wi-Fi to throw 1 file (80 MB) to Sam · Friends", Messages.waitingToThrow(1, 83_886_080, "Sam", space = "Friends"))
+        assertEquals("Waiting for Wi-Fi to throw 1 file (80 MB) to Sam", Messages.waitingToThrow(1, 83_886_080, "Sam"))
+    }
+
     @Test fun caughtWithSpace() {
         assertEquals("Caught 1 tab from Sam · Friends", Messages.caught(1, 0, "Sam", space = "Friends"))
         assertEquals("Thrown 2 tabs to Sam · Friends", Messages.thrown(2, 0, "Sam", space = "Friends"))

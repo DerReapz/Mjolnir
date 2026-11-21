@@ -71,10 +71,8 @@ data class SpacesUi(
     fun nameOf(peer: Peer): String = nicknames[peer.deviceId] ?: peer.name
 }
 
-/** True once the admin has not connected to the relay for more than 30 days. */
-fun canTakeOver(space: Space, nowMs: Long): Boolean = nowMs - space.adminLastSeenEpochMs > Limits.ADMIN_SILENT_TAKEOVER_MS
-
 private const val NO_CONNECTION = "Can't reach the relay. Check your connection."
+private const val LOST_CONNECTION = "Lost connection to the relay. Get a new code to keep waiting."
 private const val GENERIC = "Something went wrong. Try again."
 private const val KEY_SPACE = "inviteSpaceId"
 private const val KEY_CODE = "inviteCode"
@@ -320,7 +318,8 @@ class SpacesViewModel(
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
-            if (e.kind == RelayErrorKind.UNAUTHORIZED) resetRegistration() // anything else: no invite events, the user can reopen it
+            if (e.kind == RelayErrorKind.UNAUTHORIZED) resetRegistration()
+            else notify(LOST_CONNECTION) // no more events: the join request would never show, so say so
         }
     }
 

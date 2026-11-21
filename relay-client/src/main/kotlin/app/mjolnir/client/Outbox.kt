@@ -19,6 +19,8 @@ data class OutgoingFiles(
     val createdAtEpochMs: Long,
     /** The space whose card the files were thrown from; null for a paired device. */
     val spaceId: String? = null,
+    /** [spaceId]'s name when queued, for notifications; null for a paired device. */
+    val spaceName: String? = null,
 ) {
     val totalBytes: Long get() = files.sumOf { it.sizeBytes }
 }

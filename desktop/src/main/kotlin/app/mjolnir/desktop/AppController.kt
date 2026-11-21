@@ -348,7 +348,7 @@ class AppController(
             _tooltip.value = TOOLTIP_IDLE
         }
         when (result) {
-            is OutboxResult.Done -> notify(Messages.sent(0, item.files.size, to))
+            is OutboxResult.Done -> notify(Messages.sent(0, item.files.size, to, item.spaceName))
             is OutboxResult.Retry -> scheduleRetry()
             is OutboxResult.Failed -> {
                 notify(Messages.notSent(result.message ?: Messages.failureReason(result.kind, to)))
@@ -437,12 +437,12 @@ class AppController(
             val outcome = sendInBatches(api, target.deviceId, tabs, spaceId = target.space?.id)
             sentTabs = outcome.sentTabs
             error = outcome.error
-            if (sentTabs.isNotEmpty()) parts += Messages.sent(sentTabs.size, 0, shown)
+            if (sentTabs.isNotEmpty()) parts += Messages.sent(sentTabs.size, 0, shown, target.space?.name)
         }
         if (files.isNotEmpty()) {
             val now = System.currentTimeMillis()
             for (group in groupForSending(files)) {
-                outbox.enqueue(OutgoingFiles(UUID.randomUUID().toString(), target.deviceId, target.name, group, createdAtEpochMs = now, spaceId = target.space?.id))
+                outbox.enqueue(OutgoingFiles(UUID.randomUUID().toString(), target.deviceId, target.name, group, createdAtEpochMs = now, spaceId = target.space?.id, spaceName = target.space?.name))
             }
             parts += Messages.queued(files.size, shown)
             kickOutbox()

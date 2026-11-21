@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.mjolnir.client.canTakeOver
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.PairingCode
@@ -45,7 +46,7 @@ enum class SpacesStart { NONE, NEW, JOIN }
 /**
  * The spaces this phone is in, as full-width lists with 56 dp rows. The admin's space has *Invite*, *Rename* and
  * *Delete* and, per member, *Make admin* and *Remove*; a member's space has *Leave* and, once the admin has been
- * silent for 30 days, *Take over*. Every destructive action asks first.
+ * silent for 30 days, *Take over as admin*. Every destructive action asks first.
  */
 @Composable
 fun SpacesScreen(vm: SpacesViewModel, start: SpacesStart, onBack: () -> Unit, modifier: Modifier = Modifier) {
@@ -70,7 +71,7 @@ fun SpacesScreen(vm: SpacesViewModel, start: SpacesStart, onBack: () -> Unit, mo
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { creating = true }, shape = ButtonShape) { Text("New space") }
+            Button(onClick = { creating = true }, shape = ButtonShape) { Text("New space…") }
             Button(onClick = { vm.dismissJoin(); joining = true }, shape = ButtonShape) { Text("Join a space") }
         }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -115,19 +116,19 @@ private fun SpaceBlock(space: Space, state: SpacesUi, vm: SpacesViewModel, onRen
             Column(Modifier.weight(1f)) {
                 Text(space.name, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    "${space.members.size} ${if (space.members.size == 1) "device" else "devices"}${if (isAdmin) " · you're the admin" else ""}",
+                    "${space.members.size} ${if (space.members.size == 1) "device" else "devices"}${if (isAdmin) " · admin" else ""}",
                     style = MaterialTheme.typography.bodySmall, color = Forge.Muted,
                 )
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             if (isAdmin) {
-                SpaceButton("Invite") { vm.invite(space.id) }
-                SpaceButton("Rename", onClick = onRename)
-                SpaceButton("Delete") { vm.askDelete(space) }
+                SpaceButton("Invite…") { vm.invite(space.id) }
+                SpaceButton("Rename space", onClick = onRename)
+                SpaceButton("Delete space") { vm.askDelete(space) }
             } else {
-                if (canTakeOver(space, System.currentTimeMillis())) SpaceButton("Take over") { vm.askTakeOver(space) }
-                SpaceButton("Leave") { vm.askLeave(space) }
+                if (canTakeOver(space, System.currentTimeMillis())) SpaceButton("Take over as admin") { vm.askTakeOver(space) }
+                SpaceButton("Leave space") { vm.askLeave(space) }
             }
         }
         if (invite != null) InvitePanel(invite, onNewCode = { vm.invite(space.id) }, onClose = vm::dismissInvite)

@@ -57,6 +57,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -299,7 +300,13 @@ private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: 
                 group.title?.let { Text(it, Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = Forge.Muted) }
                 for (device in group.peers) {
                     DropdownMenuItem(
-                        text = { Text("${state.nameOf(device)} (${kindLabel(device)})", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        text = {
+                            val chosen = state.isSelected(device) // every card of the chosen device, under each heading
+                            Text(
+                                "${state.nameOf(device)} (${kindLabel(device)})", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                color = if (chosen) Forge.Accent else Color.Unspecified, fontWeight = if (chosen) FontWeight.SemiBold else null,
+                            )
+                        },
                         onClick = { vm.selectTarget(device.destinationKey); open = false },
                     )
                 }

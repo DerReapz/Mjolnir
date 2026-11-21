@@ -25,7 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.desktop.InviteUi
 import app.mjolnir.desktop.JoinUi
-import app.mjolnir.desktop.canTakeOver
+import app.mjolnir.client.canTakeOver
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.PairingCode

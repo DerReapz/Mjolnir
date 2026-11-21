@@ -21,7 +21,7 @@ object Messages {
     fun caught(tabs: Int, files: Int, from: String, space: String? = null) = tagged("Caught ${items(tabs, files)} from $from", space)
     fun thrown(tabs: Int, files: Int, to: String, space: String? = null) = tagged("Thrown ${items(tabs, files)} to $to", space)
     fun notThrown(reason: String) = "Not thrown: $reason. Your tabs are still here."
-    fun sent(tabs: Int, files: Int, to: String) = "Sent ${items(tabs, files)} to $to"
+    fun sent(tabs: Int, files: Int, to: String, space: String? = null) = tagged("Sent ${items(tabs, files)} to $to", space)
     fun tooBig(name: String) = "$name is too big (max 100 MB)"
     fun unreadable(name: String) = "Couldn't read $name"
 
@@ -36,7 +36,7 @@ object Messages {
     }
 
     fun queued(files: Int, to: String) = "Throwing ${files(files)} to $to in the background"
-    fun waitingToThrow(files: Int, bytes: Long, to: String) = "Waiting for Wi-Fi to throw ${files(files)} (${size(bytes)}) to $to"
+    fun waitingToThrow(files: Int, bytes: Long, to: String, space: String? = null) = tagged("Waiting for Wi-Fi to throw ${files(files)} (${size(bytes)}) to $to", space)
     fun waitingToReceive(files: Int, bytes: Long, from: String) = "Waiting for Wi-Fi: ${files(files)} (${size(bytes)}) from $from"
     fun filesBack(reason: String) = "Not thrown: $reason. Your files are back in the tray."
     fun tooManyFiles(folder: String) = "$folder has too many files (max 1000)"

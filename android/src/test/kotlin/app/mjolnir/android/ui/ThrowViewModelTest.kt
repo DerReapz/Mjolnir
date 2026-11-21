@@ -199,9 +199,19 @@ class ThrowViewModelTest {
         vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
         assertEquals(listOf(SendRequest("pc2", listOf(a.tab), spaceId = "s1")), api.sent)
         assertEquals("s1", outbox.pending().single().spaceId)
+        assertEquals("Friends", outbox.pending().single().spaceName)
         assertEquals("Thrown 1 tab to Laptop · Friends", vm.state.value.notice?.substringBefore(". Throwing"))
         assertEquals("pc2", configStore.read().targetPcId)
         assertEquals("s1", configStore.read().targetSpaceId)
+    }
+
+    @Test fun theChosenDeviceIsHighlightedUnderEveryHeading() = runTest {
+        withSpaces()
+        vm.refreshTargets(); advanceUntilIdle()
+        vm.selectTarget(DestinationKey("pc2", "s1")); advanceUntilIdle()
+        val st = vm.state.value
+        assertEquals(listOf(true, true), st.targets.filter { it.deviceId == "pc2" }.map { st.isSelected(it) })
+        assertTrue(st.targets.filter { it.deviceId != "pc2" }.none { st.isSelected(it) })
     }
 
     @Test fun selectingAPairedCardClearsTheSpace() = runTest {

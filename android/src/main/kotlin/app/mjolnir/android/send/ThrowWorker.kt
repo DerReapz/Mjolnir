@@ -163,7 +163,7 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
         return when (result) {
             is OutboxResult.Done -> {
-                notifyResult(item.id, Messages.thrown(0, result.item.files.size, shownName(result.item)))
+                notifyResult(item.id, Messages.thrown(0, result.item.files.size, shownName(result.item), result.item.spaceName))
                 Result.success()
             }
             OutboxResult.Retry -> Result.retry()
@@ -221,7 +221,7 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         )
         return Notification.Builder(applicationContext, CHANNEL_SENDING)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentText(Messages.waitingToThrow(item.files.size, item.totalBytes, shownName(item)))
+            .setContentText(Messages.waitingToThrow(item.files.size, item.totalBytes, shownName(item), item.spaceName))
             .setStyle(Notification.BigTextStyle())
             .setContentIntent(openApp())
             .addAction(Notification.Action.Builder(null, "Send now", sendNow).build())

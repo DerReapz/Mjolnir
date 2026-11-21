@@ -332,7 +332,7 @@ class ThrowViewModel(
             for (group in groupForOutbox(fileItems)) {
                 val uploads = group.flatMap { it.toUploads() }
                 val item = OutgoingFiles(UUID.randomUUID().toString(), pc.deviceId, pc.name, uploads,
-                    createdAtEpochMs = System.currentTimeMillis(), spaceId = space?.id)
+                    createdAtEpochMs = System.currentTimeMillis(), spaceId = space?.id, spaceName = space?.name)
                 try {
                     withContext(io) { outbox.enqueue(item) }
                 } catch (e: IOException) {

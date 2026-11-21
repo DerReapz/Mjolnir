@@ -516,6 +516,18 @@ class AppControllerTest {
         scope.cancel()
     }
 
+    @Test fun fileSendFromASpaceCardNamesTheSpaceInTheNotification() = runTest {
+        val fred = Peer("f", "Fred", DeviceKind.PC, SpaceRef("s2", "Work"))
+        val fake = FakeRelayApi().apply { peers += fred }
+        val (c, scope) = controller(fake)
+        val f = File(dir, "a.txt").apply { writeText("a") }
+        val up = LocalUpload(f.absolutePath, "a.txt", "text/plain", 1)
+        val result = c.send(fred, listOf(Tab("https://a.com")), listOf(up))
+        assertTrue("Sent 1 tab to Fred · Work" in result.message, result.message)
+        assertTrue("\"spaceName\":\"Work\"" in File(dir, "outbox.json").readText(), File(dir, "outbox.json").readText())
+        scope.cancel()
+    }
+
     @Test fun spaceDeletedEventNotifiesAndRefreshes() = runTest {
         val fake = FakeRelayApi()
         val (c, scope) = controller(fake)

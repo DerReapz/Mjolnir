@@ -30,9 +30,6 @@ sealed interface JoinUi {
     data class Failed(val message: String) : JoinUi
 }
 
-/** True once the admin has not connected to the relay for more than 30 days. */
-fun canTakeOver(space: Space, nowMs: Long): Boolean = nowMs - space.adminLastSeenEpochMs > Limits.ADMIN_SILENT_TAKEOVER_MS
-
 private const val NO_CONNECTION = "Can't reach the relay. Check your connection."
 private const val GENERIC = "Something went wrong. Try again."
 

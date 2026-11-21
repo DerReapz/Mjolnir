@@ -5,6 +5,7 @@ import app.mjolnir.android.MainDispatcherRule
 import app.mjolnir.client.FakeRelayApi
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.Nicknames
+import app.mjolnir.client.canTakeOver
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
 import app.mjolnir.protocol.ClaimResponse
@@ -165,14 +166,6 @@ class SpacesViewModelTest {
         assertEquals("Book club was deleted.", vm.state.value.notice)
     }
 
-    @Test fun canTakeOverAfter30Days() {
-        val day = 24L * 60 * 60 * 1000
-        fun space(seen: Long) = Space("s", "S", "adm", listOf(admin), seen)
-        assertFalse(canTakeOver(space(now - 30 * day), now))
-        assertTrue(canTakeOver(space(now - 30 * day - 1), now))
-        assertFalse(canTakeOver(space(now), now))
-    }
-
     @Test fun adminActionsUpdateTheListAndNotifyPeers() = runTest {
         val (vm, id) = vmWithSpace()
         vm.rename(id, "Pals"); runCurrent()
@@ -221,6 +214,17 @@ class SpacesViewModelTest {
         api.failAllWith = null
         api.createSpace("Work"); vm.refresh(); advanceUntilIdle()
         assertEquals(listOf("Friends", "Work"), vm.state.value.spaces.map { it.name })
+    }
+
+    @Test fun droppedEventStreamWhileAnInviteShowsSaysSo() = runTest {
+        val dropping = object : app.mjolnir.client.RelayApi by api {
+            override fun events() = kotlinx.coroutines.flow.flow<RelayEvent> { throw RelayException(RelayErrorKind.NETWORK, "dropped") }
+        }
+        val vm = SpacesViewModel(dropping, nicknames, SavedStateHandle(), clock = { now })
+        vm.create("Friends"); runCurrent()
+        vm.invite(vm.state.value.spaces.single().id); runCurrent()
+        assertEquals("Lost connection to the relay. Get a new code to keep waiting.", vm.state.value.notice)
+        assertNotNull(vm.state.value.invite) // the code stays, with its Get a new code action
     }
 
     @Test fun rotationKeepsInviteCode() = runTest {

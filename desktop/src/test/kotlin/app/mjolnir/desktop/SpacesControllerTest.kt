@@ -96,14 +96,6 @@ class SpacesControllerTest {
         scope.cancel()
     }
 
-    @Test fun canTakeOverAfter30Days() {
-        val day = 24L * 60 * 60 * 1000
-        fun space(seen: Long) = Space("s", "S", "adm", listOf(admin), seen)
-        assertFalse(canTakeOver(space(now - 30 * day), now))
-        assertTrue(canTakeOver(space(now - 30 * day - 1), now))
-        assertFalse(canTakeOver(space(now), now))
-    }
-
     @Test fun adminActionsUpdateTheListAndNotifyPeers() = runTest {
         val api = FakeRelayApi()
         var changed = 0
