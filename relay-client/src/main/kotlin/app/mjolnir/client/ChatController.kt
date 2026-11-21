@@ -530,7 +530,7 @@ class ChatController(
     private suspend fun drainSends(gen: Int) {
         val ob = outbox ?: return
         sendLock.withLock {
-            for (item in ob.pending()) {
+            for (item in ob.pending().filter { it.failure == null }) { // a failed send waits for the user to dismiss it
                 if (gen != generation) return
                 val a = api() ?: return
                 val result = ob.process(
@@ -550,7 +550,7 @@ class ChatController(
                         if (result.unconfirmed) sync(item.chatId)
                     }
                     ChatOutboxResult.Retry -> return
-                    is ChatOutboxResult.Failed -> updatePending(item.id) { it.copy(failure = Messages.mediaNotSent(result.error)) }
+                    is ChatOutboxResult.Failed -> updatePending(item.id) { it.copy(failure = result.message) }
                 }
             }
         }
@@ -559,9 +559,11 @@ class ChatController(
     /** Waits for the sends being uploaded and posted right now (tests). */
     internal suspend fun awaitSendsIdle() = sendLock.withLock { }
 
-    /** Removes a failed send from [pendingSends]; one still in progress stays. */
+    /** Removes a failed send from [pendingSends] and the outbox (with what it had not posted); one still in progress stays. */
     fun dismissSend(id: String) {
-        _pendingSends.update { list -> list.filter { it.id != id || it.failure == null } }
+        if (_pendingSends.value.none { it.id == id && it.failure != null }) return
+        outbox?.remove(id)
+        _pendingSends.update { list -> list.filter { it.id != id } }
     }
 
     private fun updatePending(id: String, change: (PendingSend) -> PendingSend) {
@@ -575,6 +577,7 @@ class ChatController(
             files = rest.map { PendingFile(it.name, it.kind, it.upload.sizeBytes, it.relativePath, it.upload.path, it.thumb?.path) },
             sentBytes = item.attachments.take(item.posted).sumOf { it.totalBytes } + rest.sumOf { it.uploadedBytes },
             totalBytes = item.attachments.sumOf { it.totalBytes },
+            failure = item.failure,
         )
     }
 

@@ -888,6 +888,49 @@ class ChatControllerTest {
         assertEquals(0, fake.postCalls)
     }
 
+    @Test fun failedSendSurvivesARestartUntilDismissed() = runTest {
+        val (fake, chat) = fakeWithChat()
+        var posts = 0
+        val api = object : RelayApi by fake {
+            override suspend fun postMessage(chatId: String, text: String?, mentions: List<String>, attachments: List<Attachment>): ChatMessage {
+                if (++posts == 2) throw RelayException(RelayErrorKind.TOO_LARGE, "too_large") // the second batch fails for good
+                return fake.postMessage(chatId, text, mentions, attachments)
+            }
+        }
+        val c1 = mediaController(api)
+        val files = (0 until 24).map { pick("f%02d.bin".format(it), 3) } + pickPng("last.png")
+        c1.send(chat, "split", files, ImageIoThumbnailer)
+        c1.awaitSendsIdle()
+        assertEquals(listOf(20), c1.messages(chat).value.filter { it.author.deviceId == "dev-1" }.map { it.attachments.size })
+        val failure = "Not sent: a file is too big for the relay."
+        // The process dies before anyone looks: a new controller still shows the failed rest of the send.
+        val c2 = mediaController(api)
+        val failed = c2.pendingSends.value.single()
+        assertEquals(failure, failed.failure); assertNull(failed.text)
+        assertEquals(listOf("f20.bin", "f21.bin", "f22.bin", "f23.bin", "last.png"), failed.files.map { it.name })
+        val thumb = File(assertNotNull(failed.files.last().thumbPath))
+        assertTrue(thumb.isFile, "the failed send keeps its thumbnail")
+        // Never retried.
+        c2.resumeSends().join(); c2.onEvent(RelayEvent.Connected); c2.awaitSendsIdle()
+        assertEquals(2, posts)
+        assertEquals(failure, c2.pendingSends.value.single().failure)
+        c2.dismissSend(failed.id)
+        assertTrue(c2.pendingSends.value.isEmpty())
+        assertTrue(ChatOutbox(File(mediaDir, "outbox")).pending().isEmpty()); assertFalse(thumb.exists())
+        assertTrue(mediaController(api).pendingSends.value.isEmpty())
+    }
+
+    @Test fun dismissIgnoresASendInProgress() = runTest {
+        val (fake, chat) = fakeWithChat()
+        val c = mediaController(FlakyUploads(fake, failChunk = 1))
+        c.send(chat, null, listOf(pick("a.bin", 5)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        val pending = c.pendingSends.value.single()
+        c.dismissSend(pending.id)
+        assertEquals(listOf(pending.id), c.pendingSends.value.map { it.id })
+        assertEquals(1, ChatOutbox(File(mediaDir, "outbox")).pending().size)
+    }
+
     @Test fun clearDropsPendingSends() = runTest {
         val (fake, chat) = fakeWithChat()
         val flaky = FlakyUploads(fake, failChunk = 1)

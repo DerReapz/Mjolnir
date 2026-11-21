@@ -182,6 +182,11 @@ data class OutgoingMessage(
      * messages of at most that many; [text] and [mentions] go with the first.
      */
     val posted: Int = 0,
+    /**
+     * Why the send failed for good (e.g. "Not sent: the relay is out of space."), else null. A failed send stays queued
+     * (thumbnails included) with its unposted attachments until the user dismisses it ([ChatOutbox.remove]); it is never retried.
+     */
+    val failure: String? = null,
 )
 
 sealed interface ChatOutboxResult {
@@ -189,8 +194,8 @@ sealed interface ChatOutboxResult {
     data class Done(val unconfirmed: Boolean) : ChatOutboxResult
     /** NETWORK, SERVER, RATE_LIMITED: state kept for the next try. Also returned for an id no longer queued. */
     data object Retry : ChatOutboxResult
-    /** Anything else: the send is removed. */
-    data class Failed(val error: RelayException) : ChatOutboxResult
+    /** Anything else, or a send that had already failed: it stays queued with [message] as its [OutgoingMessage.failure]. */
+    data class Failed(val message: String) : ChatOutboxResult
 }
 
 /**
@@ -220,7 +225,7 @@ class ChatOutbox(
         store.update { list -> list.filter { it.id != item.id } + item }
     }
 
-    /** Drops [id] and its thumbnails. */
+    /** Drops [id] and its thumbnails (a posted send, or a failed one the user dismissed). */
     fun remove(id: String) {
         var removed: OutgoingMessage? = null
         store.update { list -> list.filter { (it.id != id).also { keep -> if (!keep) removed = it } } }
@@ -244,6 +249,7 @@ class ChatOutbox(
         onPosted: (ChatMessage) -> Unit = {},
     ): ChatOutboxResult = lock.withLock {
         var item = get(id) ?: return ChatOutboxResult.Retry
+        item.failure?.let { return ChatOutboxResult.Failed(it) }
         val total = item.attachments.sumOf { it.totalBytes }
         var unconfirmed = false
         while (item.posted < item.attachments.size) {
@@ -331,8 +337,9 @@ class ChatOutbox(
     private fun failure(item: OutgoingMessage, e: RelayException): ChatOutboxResult = when (e.kind) {
         RelayErrorKind.NETWORK, RelayErrorKind.SERVER, RelayErrorKind.RATE_LIMITED -> ChatOutboxResult.Retry
         else -> {
-            remove(item.id)
-            ChatOutboxResult.Failed(e)
+            val message = Messages.mediaNotSent(e)
+            persist(item.id) { it.copy(failure = message) }
+            ChatOutboxResult.Failed(message)
         }
     }
 
