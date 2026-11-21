@@ -59,6 +59,7 @@ The relay listens on port 8080. Settings are environment variables:
 | `MJOLNIR_DB` | `./mjolnir.db` | SQLite database file |
 | `MJOLNIR_FILES` | `./files` | Directory for uploaded files |
 | `MJOLNIR_MAX_FILE_MB` | `100` | Per-file cap (can only lower the 100 MiB limit) |
+| `MJOLNIR_MAX_CHAT_FILE_MB` | per-file cap | Per-file cap for chat attachments; may be set above `MJOLNIR_MAX_FILE_MB` (e.g. for videos). Deliveries and guest rooms keep the per-file cap |
 | `MJOLNIR_MAX_STORAGE_MB` | `2048` | Total storage cap for unsent and undelivered files |
 | `MJOLNIR_MAX_SPACES` | `50` | Spaces a device can be in (at least 1) |
 | `MJOLNIR_MAX_MEMBERS` | `50` | Members per space (at least 2) |

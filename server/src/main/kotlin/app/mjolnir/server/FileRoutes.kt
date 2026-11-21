@@ -64,7 +64,9 @@ fun Route.fileRoutes(deps: RelayDeps) {
             val me = call.principal<DevicePrincipal>()!!
             val req = call.receive<CreateUploadRequest>()
             if (req.sizeBytes < 0) return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("bad_size"))
-            if (req.sizeBytes > files.maxFileBytes) {
+            // Only chat attachments may exceed the per-file limit (checked again when a file is attached to a delivery).
+            val ceiling = if (me.kind == DeviceKind.GUEST) files.maxFileBytes else files.maxUploadBytes
+            if (req.sizeBytes > ceiling) {
                 return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("file_too_large"))
             }
             if (me.kind == DeviceKind.GUEST && store.roomBytes(me.deviceId) + req.sizeBytes > deps.roomCapBytes()) {

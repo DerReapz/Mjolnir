@@ -16,11 +16,14 @@ fun main() {
     val filesDir = System.getenv("MJOLNIR_FILES") ?: "./files"
     val maxFileMb = System.getenv("MJOLNIR_MAX_FILE_MB")?.toLongOrNull() ?: 100L
     val maxStorageMb = System.getenv("MJOLNIR_MAX_STORAGE_MB")?.toLongOrNull() ?: 2048L
+    val maxChatFileBytes = System.getenv("MJOLNIR_MAX_CHAT_FILE_MB")?.toLongOrNull()?.coerceAtLeast(1)?.let { it * MIB }
+    val maxFileBytes = (maxFileMb * MIB).coerceIn(0L, Limits.MAX_FILE_BYTES)
     val files = FileStorage(
         dir = File(filesDir),
         // The env var can only lower the protocol cap, never raise it.
-        maxFileBytes = (maxFileMb * MIB).coerceIn(0L, Limits.MAX_FILE_BYTES),
+        maxFileBytes = maxFileBytes,
         maxTotalBytes = maxStorageMb * MIB,
+        maxUploadBytes = maxOf(maxFileBytes, maxChatFileBytes ?: 0L),
     )
     val log = LoggerFactory.getLogger("app.mjolnir.server.Main")
     val push: PushSender = if (!System.getenv("GOOGLE_APPLICATION_CREDENTIALS").isNullOrBlank()) {
@@ -40,7 +43,7 @@ fun main() {
     val limits = defaults.copy(
         maxSpacesPerDevice = System.getenv("MJOLNIR_MAX_SPACES")?.toIntOrNull()?.coerceAtLeast(1) ?: defaults.maxSpacesPerDevice,
         maxMembersPerSpace = System.getenv("MJOLNIR_MAX_MEMBERS")?.toIntOrNull()?.coerceAtLeast(2) ?: defaults.maxMembersPerSpace,
-        maxChatFileBytes = System.getenv("MJOLNIR_MAX_CHAT_FILE_MB")?.toLongOrNull()?.coerceAtLeast(1)?.let { it * MIB },
+        maxChatFileBytes = maxChatFileBytes,
         guestMaxBytes = System.getenv("MJOLNIR_GUEST_MAX_MB")?.toLongOrNull()?.coerceAtLeast(1)?.let { it * MIB },
     )
     val deps = RelayDeps(store = Store("jdbc:sqlite:$db"), limits = limits, files = files, push = push)

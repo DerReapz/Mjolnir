@@ -1236,13 +1236,13 @@ class Store(jdbcUrl: String) {
      * INVALID when any id is unknown, someone else's, duplicated, or already sent elsewhere.
      */
     @Synchronized
-    fun attachFiles(ids: List<String>, ownerId: String, to: String, deliveryId: String): AttachResult = transaction {
+    fun attachFiles(ids: List<String>, ownerId: String, to: String, deliveryId: String, maxFileBytes: Long = Long.MAX_VALUE): AttachResult = transaction {
         if (ids.isEmpty() || ids.toSet().size != ids.size) return@transaction AttachResult.INVALID
         val rows = ids.map { id ->
-            conn.prepareStatement("SELECT owner_id, delivery_id, sent_to, acked_at, chat_message_id FROM files WHERE id=?").use {
+            conn.prepareStatement("SELECT owner_id, delivery_id, sent_to, acked_at, chat_message_id, size FROM files WHERE id=?").use {
                 it.setString(1, id)
                 it.executeQuery().use { rs ->
-                    if (!rs.next() || rs.getString(5) != null) null
+                    if (!rs.next() || rs.getString(5) != null || rs.getLong(6) > maxFileBytes) null
                     else {
                         val sent = rs.getString(2) != null || rs.getObject(4) != null
                         Triple(rs.getString(1), sent, rs.getString(3))
@@ -1265,7 +1265,7 @@ class Store(jdbcUrl: String) {
     @Synchronized
     fun createFileDelivery(
         fromId: String, toId: String, fileIds: List<String>, nowMs: Long,
-        spaceId: String? = null, spaceName: String? = null,
+        spaceId: String? = null, spaceName: String? = null, maxFileBytes: Long = Long.MAX_VALUE,
     ): Pair<AttachResult, DeliveryRow?> =
         transaction {
             // The route checked the link (or the shared space) before; re-check it here, under the lock, so a send
@@ -1274,7 +1274,7 @@ class Store(jdbcUrl: String) {
                 (if (spaceId != null) shareSpace(fromId, toId, spaceId) else areLinked(fromId, toId))
             if (!allowed) return@transaction AttachResult.NOT_ALLOWED to null
             val id = newId()
-            val result = attachFiles(fileIds, fromId, toId, id)
+            val result = attachFiles(fileIds, fromId, toId, id, maxFileBytes)
             if (result != AttachResult.OK) return@transaction result to null
             createDelivery(fromId, toId, emptyList(), nowMs, id, spaceId, spaceName)
             result to DeliveryRow(id, fromId, toId, emptyList(), nowMs, filesOfDelivery(id), spaceId, spaceName)

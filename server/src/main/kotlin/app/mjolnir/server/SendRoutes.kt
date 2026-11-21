@@ -66,7 +66,7 @@ fun Route.sendRoutes(deps: RelayDeps) {
                     ) {
                         return@post call.respond(HttpStatusCode.InsufficientStorage, ErrorResponse("relay_full"))
                     }
-                    val (result, row) = store.createFileDelivery(me.deviceId, req.to, req.fileIds, now, ref?.id, ref?.name)
+                    val (result, row) = store.createFileDelivery(me.deviceId, req.to, req.fileIds, now, ref?.id, ref?.name, deps.files.maxFileBytes)
                     return@post when (result) {
                         AttachResult.INVALID -> call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_files"))
                         AttachResult.NOT_ALLOWED -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("not_paired"))

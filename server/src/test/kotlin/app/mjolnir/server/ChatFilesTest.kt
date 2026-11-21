@@ -253,6 +253,27 @@ class ChatFilesTest {
         assertEquals(HttpStatusCode.Created, postWith(k.owner, k.chat.id, "x", Attachment(small.id, AttachmentKind.FILE, "small.bin", 10, "application/octet-stream")).status)
     }
 
+    @Test fun chatLimitAbovePerFileLimitOnlyAppliesToChat() {
+        val files = FileStorage(createTempDirectory("mjolnir-files").toFile(), maxFileBytes = 10, maxUploadBytes = 20)
+        relayTest(files = files, limits = RelayLimits(maxChatFileBytes = 20, registrationsPerHourPerIp = 100)) {
+            val k = cast()
+            val big = upload(k.owner, "big.bin", ByteArray(20))
+            assertEquals(HttpStatusCode.PayloadTooLarge, createUploadResponse(k.owner, "huge.bin", "application/octet-stream", 21).status)
+            // as a delivery the same file is over the per-file limit
+            val (pc, phone) = pairedPcAndPhone()
+            val bigForSend = upload(pc, "big2.bin", ByteArray(20))
+            assertEquals(HttpStatusCode.BadRequest, sendFiles(pc, phone.deviceId, listOf(bigForSend.id)).status)
+            assertEquals(AttachResult.INVALID, deps.store.attachFiles(listOf(big.id), k.owner.deviceId, k.member.deviceId, "d", files.maxFileBytes))
+            // a guest room keeps the per-file limit
+            val (_, guest) = guestOf(pc)
+            assertEquals(HttpStatusCode.PayloadTooLarge, createUploadResponse(guest, "g.bin", "application/octet-stream", 11).status)
+            // in a chat it posts
+            val a = postOk(k.owner, k.chat.id, null, Attachment(big.id, AttachmentKind.FILE, "big.bin", 20, "application/octet-stream")).attachments.single()
+            assertEquals(20L, a.sizeBytes)
+            assertEquals(HttpStatusCode.OK, fetch(k.member, big.id).status)
+        }
+    }
+
     @Test fun storageFullIs507() {
         val files = FileStorage(createTempDirectory("mjolnir-files").toFile(), maxTotalBytes = 150)
         relayTest(files = files) {

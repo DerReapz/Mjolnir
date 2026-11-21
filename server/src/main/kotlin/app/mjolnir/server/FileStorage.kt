@@ -21,6 +21,8 @@ class FileStorage(
     val dir: File,
     val maxFileBytes: Long = Limits.MAX_FILE_BYTES,
     val maxTotalBytes: Long = 2_147_483_648L,
+    /** Largest upload accepted at all: [maxFileBytes], or more when chat attachments may be larger than a delivered file. */
+    val maxUploadBytes: Long = maxFileBytes,
 ) {
     init {
         dir.mkdirs()
@@ -39,7 +41,7 @@ class FileStorage(
      */
     @Synchronized
     fun create(id: String, size: Long): Boolean {
-        require(size in 0..maxFileBytes) { "bad_size" }
+        require(size in 0..maxUploadBytes) { "bad_size" }
         if (committedBytes() + size > maxTotalBytes) return false
         RandomAccessFile(part(id), "rw").use { it.setLength(size) }
         return true

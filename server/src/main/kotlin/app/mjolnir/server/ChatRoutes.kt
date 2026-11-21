@@ -312,7 +312,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
                 if (req.attachments.size > Limits.MAX_ATTACHMENTS_PER_MESSAGE) return@post call.error(HttpStatusCode.BadRequest, "too_many_attachments")
                 val body = raw?.let { text(it) ?: return@post call.error(HttpStatusCode.BadRequest, "too_long") }
                 val mentions = validMentions(a.chat, req.mentions) ?: return@post call.error(HttpStatusCode.BadRequest, "invalid_mention")
-                val maxFile = minOf(deps.limits.maxChatFileBytes ?: Long.MAX_VALUE, deps.files.maxFileBytes)
+                val maxFile = deps.limits.maxChatFileBytes ?: deps.files.maxFileBytes
                 val row = try {
                     store.postMessage(a.chat.id, a.me, body, deps.clock.nowMs(), mentions, req.attachments, maxFile)
                 } catch (e: AttachmentsRejected) {
