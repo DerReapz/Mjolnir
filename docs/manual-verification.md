@@ -58,3 +58,14 @@ Needs three devices (any mix of PCs and phones, call them A, B and C) on one rel
 - **Leave:** C rejoins, then uses *Leave space*; C disappears from everyone's lists. A cannot leave while admin until it uses *Make admin* on B or deletes the space.
 - **Delete the space:** on A choose *Delete space*; PCs show `Friends was deleted.`; phones show `You're no longer in Friends.` when they next open Devices, Spaces or Throw. The group heading disappears from Send and *Throw to*.
 - **Take over:** unit-tested only. The 30-day silence threshold is on the relay clock, which cannot be shortened with an environment variable, so it is not checked on devices.
+
+## Guest room
+Needs the PC app, a phone with Mjolnir, and a second phone or computer with a browser and no Mjolnir (the guest). The relay must be reachable over HTTPS from the guest.
+- **Open and scan:** on the PC, *Guest room* tab → *Open a guest room*; scan the QR code with the guest's phone. The guest page opens with nothing to install and the PC shows the guest as connected.
+- **Send both ways:** send a file, a folder and a link from the PC to the guest (it appears on the guest page within about 3 s; the folder downloads as a `.zip` that opens). From the guest page send a file and a link back; they appear in the PC's list, and the link is not opened automatically.
+- **Drag and drop:** with a room open, drag files onto the PC Guest tab; they are sent to the guest. This could not be automated.
+- **Resume:** close the guest tab and open the link again in the same browser; the page resumes with its items.
+- **Second browser:** open the link in a different browser; it shows `This room is already in use.`
+- **End room:** *End room* on the PC makes the guest page show "closed". Items sent to the guest are gone; what the guest sent you is still in the PC's Received tab.
+- **From the phone:** repeat from Devices → *Guest room* on the phone, using *Copy link* and *Share…* to pass the link to the guest.
+- **Browser script:** `./gradlew :server:installDist && node server/src/test/e2e/guest.e2e.mjs` exercises the guest page in a browser.

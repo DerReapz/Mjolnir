@@ -46,11 +46,23 @@ The relay listens on port 8080. Settings are environment variables:
 | `MJOLNIR_MAX_STORAGE_MB` | `2048` | Total storage cap for unsent and undelivered files |
 | `MJOLNIR_MAX_SPACES` | `50` | Spaces a device can be in (at least 1) |
 | `MJOLNIR_MAX_MEMBERS` | `50` | Members per space (at least 2) |
+| `MJOLNIR_GUEST_MAX_MB` | unset | Cap on the total size of one guest room (at least 1); never above the relay's total storage cap |
 | `GOOGLE_APPLICATION_CREDENTIALS` | unset | Path to a Firebase service-account JSON; enables push |
 
 Check it with `curl localhost:8080/health` (prints `ok`). Without Firebase credentials the log says `FCM disabled` and phones only get tabs while the app is open or on its periodic check.
 
 To build and run the fat jar: `./gradlew :server:buildFatJar` then `java -jar server/build/libs/server-all.jar`.
+
+## Guest room
+
+A guest room lets someone with no Mjolnir exchange files, folders and links with you through a web page. It needs nothing installed on their side.
+
+- **Open one:** on the PC, the sidebar *Guest room* tab → *Open a guest room*. On the phone, Devices → *Guest room* → *Open a guest room*. You get an invite link (`/g/{secret}` on your relay), a QR code on the PC, and a countdown. Share the link with *Copy link* (PC and phone), *Share…* (phone) or by showing the QR code.
+- **The guest page:** the guest opens the link in any modern browser. The page checks for new items every 3 seconds. Folders you send download as a `.zip`. If the guest closes the tab they can rejoin from the same browser; a second browser sees `This room is already in use.`
+- **Sending to the guest:** the guest appears as `Guest` under a `Guest room` heading in *Send* and *Throw to*. It is never chosen by default, so a send never goes to the guest by accident.
+- **Rules:** a room lasts one hour, a device can have one room, and a room has one guest. Links the guest sends you are never opened automatically. Unpairing the guest ends the room. *End room* (or the hour running out) deletes everything you sent to the guest; what the guest sent you is kept.
+- **Relay:** the invite link points at your relay, so the relay must be reachable over HTTPS from the guest's network (a relay that is only on your LAN will not work for someone elsewhere). `MJOLNIR_GUEST_MAX_MB` caps the size of one room; see the table above.
+- **Browser test:** `./gradlew :server:installDist && node server/src/test/e2e/guest.e2e.mjs` runs the guest page end to end in a browser.
 
 ## Deploy the relay to Fly.io
 
