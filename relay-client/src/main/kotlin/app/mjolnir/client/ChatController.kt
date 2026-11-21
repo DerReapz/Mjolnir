@@ -102,7 +102,7 @@ class ChatController(
             val c = store.read(s.id)
             if (c.name != s.name || c.readRev < s.readRev) store.update(s.id) { it.copy(name = s.name, readRev = maxOf(it.readRev, s.readRev)) }
         }
-        val known = _chats.value.mapTo(HashSet()) { it.id } // listed before, so an empty cache means an empty chat, not unseen history
+        val known = _chats.value.filter { it.rev == 0L }.mapTo(HashSet()) { it.id } // listed empty before: its first messages are news (a chat listed with history and no cache is unseen history)
         _chats.value = summaries
         listed = true
         recountUnread()
@@ -185,7 +185,7 @@ class ChatController(
                 if (s.id != chatId) s else s.copy(
                     name = (renamed ?: s.name).also { name = it },
                     ownerId = cached.ownerId,
-                    rev = cached.rev,
+                    rev = maxOf(s.rev, cached.rev), // a failed sync must not make a chat with history look empty
                     member = me()?.let { id -> cached.members.any { it.deviceId == id } } ?: s.member,
                     lastMessage = last,
                 )

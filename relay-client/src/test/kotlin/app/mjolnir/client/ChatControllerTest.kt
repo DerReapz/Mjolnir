@@ -432,4 +432,16 @@ class ChatControllerTest {
         assertEquals(listOf("hello new member"), seen.map { it.text })
         assertEquals(listOf("history", "hello new member"), c.messages(book).value.mapNotNull { it.text })
     }
+
+    @Test fun failedFirstSyncThenRefreshAnnouncesNothing() = runTest {
+        val (api, _) = fakeWithChat()
+        val other = api.addChat("s1", "Old", owner = sam, members = listOf(sam, api.me))
+        repeat(5) { api.incoming(other, sam, "history $it") }
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        api.failSyncOnCall = api.syncCalls.size + 1
+        c.refresh() // lists the chats at their revs; the first sync fails, so the cache stays empty
+        c.refresh()
+        assertEquals(emptyList(), seen.map { it.text }) // history stays silent
+    }
 }
