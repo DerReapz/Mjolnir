@@ -29,6 +29,22 @@ A space is a named group of devices (for example "Friends"). Any member can send
 
 The relay limits are `MJOLNIR_MAX_SPACES` and `MJOLNIR_MAX_MEMBERS` (see the table above). The apps' limit messages (`You're in the most spaces allowed (50).`, `This space is full (50 devices).`) always say 50, even if you change these settings.
 
+## Chats
+
+Chats are private text conversations inside a space. Only the chat's members and the space admin can see one. Photos, GIFs, files and video in chats are coming in the next updates; for now a chat carries text and links.
+
+- **Start one:** on the PC, the *Chats* tab → *New chat…*; on the phone, the *Chats* tab → *New chat*. Pick the space and name the chat. You become its owner.
+- **Invite:** any member of the chat can choose *Invite…* and pick people from the same space. If the owner invites, the invitee just taps *Join*. If another member invites, the owner first sees `{inviter} wants to add {name}` and chooses *Approve* or *Deny*; only after approval does the invitee see `You're invited to {chat}` with *Join* and *Decline*. An invite that nobody answers expires after 7 days.
+- **Write:** messages are text only, up to 4,000 characters (counted in characters, so an emoji counts as one). The relay accepts 60 messages a minute from a device. Links are clickable.
+- **@mentions:** type `@` and pick a person from the list. A name typed without picking stays plain text and mentions nobody. A mentioned person gets a notification (`{name} mentioned you in {chat}: …`) and an `@` marker on the chat in the list. Each device shows the mention by its own nickname for that person.
+- **Seen and read:** under your latest message you see `Read by … · Seen by …`, or `Read by everyone`. *Seen* means the message reached that person's device; *read* means it was on their screen. *Info* on your own message (PC: the message's ⋯ menu) shows per-person times for who has read and who has seen it.
+- **Edit and delete:** on the PC, the message's ⋯ menu has *Copy link* (for messages with links), *Edit*, *Delete* and *Info*. On the phone, long-press a message for *Share…*, *Edit*, *Delete* and *Info*. You can edit your own messages and delete your own (the space admin can delete any). An edited message shows `(edited)`; a deleted one is replaced by `Message deleted`.
+- **Owner:** the owner can rename the chat, remove members and use *Make owner* on another member. An owner cannot just leave: hand over ownership first. If you are the only member, *Delete chat* instead; it removes the messages for everyone.
+- **Space admin oversight:** the admin of a space sees every chat in that space, can read them and can delete messages and remove members (shown as `Deleted by the space admin` and `Removed by the space admin`). An admin who is not a member sees `You see this chat as the space admin. Join to write in it.` and must join to post.
+- **Leaving the space:** a member who leaves or is removed from the space loses access to its chats.
+- **Retention:** messages are kept on the relay until the chat is deleted.
+- **Relay update:** chats need the new relay. Rebuild with `./gradlew :server:buildFatJar` and replace the jar on the Synology (or `fly deploy`), then update the apps. Defaults: 60 messages a minute (`chatMessagesPerMinute`), 7-day invite expiry.
+
 ## Run the relay locally
 
 ```
