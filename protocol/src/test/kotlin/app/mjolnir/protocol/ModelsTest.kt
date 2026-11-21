@@ -92,6 +92,11 @@ class ChatModelsTest {
         assertEquals(emptyList(), MjolnirJson.decodeFromString(ChatSync.serializer(), """{"chatId":"c","rev":1,"ownerId":"o","members":[],"messages":[],"hasMore":false}""").receipts)
         assertEquals(PostMessageRequest("hi", listOf("d1")), MjolnirJson.decodeFromString(PostMessageRequest.serializer(), """{"text":"hi","mentions":["d1"]}"""))
         assertEquals(PostMessageRequest("hi"), MjolnirJson.decodeFromString(PostMessageRequest.serializer(), """{"text":"hi"}"""))
+        // Media-only requests and a message from before attachments both read.
+        assertEquals(PostMessageRequest(null, emptyList(), emptyList()), MjolnirJson.decodeFromString(PostMessageRequest.serializer(), "{}"))
+        val att = Attachment("f", AttachmentKind.GIF, "a.gif", 3, "image/gif", 1, 2, null, "t", "dir/a.gif")
+        assertEquals(PostMessageRequest(null, emptyList(), listOf(att)), MjolnirJson.decodeFromString(PostMessageRequest.serializer(), MjolnirJson.encodeToString(PostMessageRequest.serializer(), PostMessageRequest(null, emptyList(), listOf(att)))))
+        assertEquals(emptyList(), MjolnirJson.decodeFromString(ChatMessage.serializer(), """{"id":"m","chatId":"c","author":{"deviceId":"a","name":"A","kind":"PC"},"rev":1,"sentAtEpochMs":1}""").attachments)
         assertEquals("""{"type":"chat_deleted","chatId":"c"}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.ChatDeleted("c")))
         assertEquals("""{"type":"chat_invites_changed"}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.ChatInvitesChanged))
         roundTrip(RelayEvent.ChatChanged("c", 3)); roundTrip(RelayEvent.ChatDeleted("c")); roundTrip(RelayEvent.ChatInvitesChanged)

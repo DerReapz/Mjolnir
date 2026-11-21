@@ -60,6 +60,8 @@ data class RelayLimits(
     val guestJoinsPerMinutePerIp: Int = 10,
     val roomsPerHourPerDevice: Int = 30,
     val chatMessagesPerMinute: Int = 60,
+    /** Per-file cap for chat attachments from `MJOLNIR_MAX_CHAT_FILE_MB`; null: the relay's per-file upload limit (it can only lower that). */
+    val maxChatFileBytes: Long? = null,
 )
 
 data class RelayDeps(

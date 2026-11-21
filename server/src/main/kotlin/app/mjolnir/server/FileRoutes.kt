@@ -47,6 +47,12 @@ suspend fun purge(deps: RelayDeps) {
     withContext(Dispatchers.IO) { ids.forEach(deps.files::delete) }
 }
 
+/** Deletes the blobs of chat messages, chats and spaces whose deletion has committed (see [Store.takeFreedBlobs]). */
+suspend fun freeChatBlobs(deps: RelayDeps) {
+    val ids = deps.store.takeFreedBlobs()
+    if (ids.isNotEmpty()) withContext(Dispatchers.IO) { ids.forEach(deps.files::delete) }
+}
+
 fun Route.fileRoutes(deps: RelayDeps) {
     val store = deps.store
     val files = deps.files

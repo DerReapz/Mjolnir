@@ -2,7 +2,10 @@ package app.mjolnir.server
 
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.CodeKind
+import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.FileRef
+import app.mjolnir.protocol.safeFileName
+import app.mjolnir.protocol.safeRelativePath
 import app.mjolnir.protocol.ChatEvent
 import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Receipt
@@ -90,6 +93,8 @@ data class ChatMessageRow(
     val mentions: List<String> = emptyList(),
     /** The chat rev this entry was created at; edits and deletes change [rev], never this. */
     val createdRev: Long = rev,
+    /** Files attached to this message (empty once deleted); their blobs go with the message. */
+    val attachments: List<Attachment> = emptyList(),
 )
 
 /** Who to notify after a device left a space: chat id to the device ids that should hear about it. */
@@ -106,9 +111,16 @@ data class SpaceRemoval(val result: Store.Removed, val chats: LeftSpaceResult = 
 /** A deleted space: its [memberIds] and the chats that went with it (chat id to member ids). */
 data class DeletedSpace(val memberIds: List<String>, val chats: Map<String, List<String>>, val invites: Set<String> = emptySet())
 
-/** What `chat_messages.body_json` holds; attachments join it in the media plan. */
+/** What `chat_messages.body_json` holds. */
 @Serializable
-private data class StoredChatBody(val text: String? = null, val mentions: List<String> = emptyList())
+private data class StoredChatBody(
+    val text: String? = null,
+    val mentions: List<String> = emptyList(),
+    val attachments: List<Attachment> = emptyList(),
+)
+
+/** Thrown inside [Store.postMessage]'s transaction (rolling it back) when the attachments are unusable. */
+class AttachmentsRejected(val tooLarge: Boolean) : RuntimeException(if (tooLarge) "too_large" else "invalid_files")
 
 fun DeviceRow.toPeer(): Peer = Peer(id, name, kind)
 
@@ -266,6 +278,8 @@ class Store(jdbcUrl: String) {
         addColumnIfMissing("deliveries", "space_id", "TEXT NULL")
         addColumnIfMissing("deliveries", "space_name", "TEXT NULL")
         addColumnIfMissing("files", "downloaded_at", "INTEGER NULL")
+        addColumnIfMissing("files", "chat_message_id", "TEXT NULL")
+        conn.createStatement().use { it.executeUpdate("CREATE INDEX IF NOT EXISTS files_chat_message ON files(chat_message_id)") }
         // Relays that already hold the chat tables from an earlier build of this feature.
         addColumnIfMissing("chat_messages", "deleted_by_admin", "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("chat_messages", "event_json", "TEXT NULL")
@@ -581,6 +595,7 @@ class Store(jdbcUrl: String) {
             getString("event_json")?.let { MjolnirJson.decodeFromString(ChatEvent.serializer(), it) },
             body.mentions,
             getLong("created_rev").takeIf { !wasNull() } ?: getLong("rev"),
+            body.attachments,
         )
     }
 
@@ -655,6 +670,7 @@ class Store(jdbcUrl: String) {
     @Synchronized
     fun deleteChat(id: String): List<String> = transaction {
         val ids = chatMembers(id).map { it.id }
+        freeFiles("chat_message_id IN (SELECT id FROM chat_messages WHERE chat_id=?)", id)
         update("DELETE FROM chat_messages WHERE chat_id=?", id)
         update("DELETE FROM chat_receipt_marks WHERE chat_id=?", id)
         update("DELETE FROM chat_members WHERE chat_id=?", id)
@@ -815,8 +831,55 @@ class Store(jdbcUrl: String) {
         }
     }
 
-    private fun bodyJson(text: String?, mentions: List<String> = emptyList()) =
-        MjolnirJson.encodeToString(StoredChatBody.serializer(), StoredChatBody(text, mentions))
+    private fun bodyJson(text: String?, mentions: List<String> = emptyList(), attachments: List<Attachment> = emptyList()) =
+        MjolnirJson.encodeToString(StoredChatBody.serializer(), StoredChatBody(text, mentions, attachments))
+
+    /** Deletes the file rows matching [where] and stages their blob ids for [takeFreedBlobs] (released on commit). */
+    private fun freeFiles(where: String, vararg args: String) {
+        conn.prepareStatement("SELECT id FROM files WHERE $where").use { st ->
+            args.forEachIndexed { i, a -> st.setString(i + 1, a) }
+            st.executeQuery().use { rs -> while (rs.next()) stagedBlobs += rs.getString(1) }
+        }
+        conn.prepareStatement("DELETE FROM files WHERE $where").use { st ->
+            args.forEachIndexed { i, a -> st.setString(i + 1, a) }
+            st.executeUpdate()
+        }
+    }
+
+    /**
+     * Stamps the files of [attachments] (and their thumbnails) onto message [messageId] and returns the attachments as
+     * stored: name length, size and mime come from the file rows, not the client. Every file must be a complete, unsent
+     * upload of [ownerId] not yet attached anywhere, used once; throws [AttachmentsRejected] otherwise (or when one is
+     * larger than [maxFileBytes]). Call inside a transaction.
+     */
+    private fun attachToMessage(messageId: String, ownerId: String, attachments: List<Attachment>, maxFileBytes: Long): List<Attachment> {
+        val used = HashSet<String>()
+        fun claim(id: String): FileRef {
+            if (!used.add(id)) throw AttachmentsRejected(false)
+            val free = conn.prepareStatement(
+                "SELECT * FROM files WHERE id=? AND owner_id=? AND delivery_id IS NULL AND acked_at IS NULL AND chat_message_id IS NULL",
+            ).use {
+                it.setString(1, id); it.setString(2, ownerId)
+                it.executeQuery().use { rs -> if (rs.next()) rs.toFileRef() else null }
+            } ?: throw AttachmentsRejected(false)
+            if (free.sizeBytes > maxFileBytes) throw AttachmentsRejected(true)
+            return free
+        }
+        val stored = attachments.map { a ->
+            val file = claim(a.fileId)
+            a.thumbFileId?.let { claim(it) }
+            a.copy(
+                name = safeFileName(a.name), sizeBytes = file.sizeBytes, mime = file.mimeType,
+                relativePath = a.relativePath?.let(::safeRelativePath),
+            )
+        }
+        for (id in used) update("UPDATE files SET chat_message_id=? WHERE id=?", messageId, id)
+        return stored
+    }
+
+    /** Blob ids freed by committed transactions (deleted messages, chats and spaces) since the last call: delete them from storage. */
+    @Synchronized
+    fun takeFreedBlobs(): List<String> = freedBlobs.toList().also { freedBlobs.clear() }
 
     /** A real message (not a system entry) of [chatId]. */
     private fun chatMessage(chatId: String, id: String): ChatMessageRow? =
@@ -837,12 +900,16 @@ class Store(jdbcUrl: String) {
 
     /** Appends a message at a new chat revision; null when the chat is gone or [authorId] is not a member. */
     @Synchronized
-    fun postMessage(chatId: String, authorId: String, text: String, nowMs: Long, mentions: List<String> = emptyList()): ChatMessageRow? = transaction {
+    fun postMessage(
+        chatId: String, authorId: String, text: String?, nowMs: Long, mentions: List<String> = emptyList(),
+        attachments: List<Attachment> = emptyList(), maxFileBytes: Long = Long.MAX_VALUE,
+    ): ChatMessageRow? = transaction {
         if (!isChatMember(chatId, authorId)) return@transaction null
         val rev = nextRev(chatId)
         val id = newId()
-        update("INSERT INTO chat_messages(id,chat_id,author_id,rev,created_rev,sent_at,body_json) VALUES(?,?,?,?,?,?,?)", id, chatId, authorId, rev, rev, nowMs, bodyJson(text, mentions))
-        ChatMessageRow(id, chatId, authorId, rev, nowMs, null, false, false, text, mentions = mentions)
+        val stored = attachToMessage(id, authorId, attachments, maxFileBytes)
+        update("INSERT INTO chat_messages(id,chat_id,author_id,rev,created_rev,sent_at,body_json) VALUES(?,?,?,?,?,?,?)", id, chatId, authorId, rev, rev, nowMs, bodyJson(text, mentions, stored))
+        ChatMessageRow(id, chatId, authorId, rev, nowMs, null, false, false, text, mentions = mentions, attachments = stored)
     }
 
     /** Appends a system entry at a new revision, authored by [actorId]. */
@@ -860,7 +927,7 @@ class Store(jdbcUrl: String) {
         val m = chatMessage(chatId, id) ?: return@transaction false
         if (m.authorId != authorId || m.deleted) return@transaction false
         val rev = nextRev(m.chatId)
-        update("UPDATE chat_messages SET rev=?, edited_at=?, body_json=? WHERE id=?", rev, nowMs, bodyJson(text, mentions), id)
+        update("UPDATE chat_messages SET rev=?, edited_at=?, body_json=? WHERE id=?", rev, nowMs, bodyJson(text, mentions, m.attachments), id)
         true
     }
 
@@ -874,6 +941,7 @@ class Store(jdbcUrl: String) {
             "UPDATE chat_messages SET rev=?, deleted=1, deleted_by_admin=?, body_json=? WHERE id=?",
             rev, if (byAdmin && m.authorId != byDeviceId) 1 else 0, bodyJson(null), id,
         )
+        freeFiles("chat_message_id=?", id)
         true
     }
 
@@ -1171,10 +1239,10 @@ class Store(jdbcUrl: String) {
     fun attachFiles(ids: List<String>, ownerId: String, to: String, deliveryId: String): AttachResult = transaction {
         if (ids.isEmpty() || ids.toSet().size != ids.size) return@transaction AttachResult.INVALID
         val rows = ids.map { id ->
-            conn.prepareStatement("SELECT owner_id, delivery_id, sent_to, acked_at FROM files WHERE id=?").use {
+            conn.prepareStatement("SELECT owner_id, delivery_id, sent_to, acked_at, chat_message_id FROM files WHERE id=?").use {
                 it.setString(1, id)
                 it.executeQuery().use { rs ->
-                    if (!rs.next()) null
+                    if (!rs.next() || rs.getString(5) != null) null
                     else {
                         val sent = rs.getString(2) != null || rs.getObject(4) != null
                         Triple(rs.getString(1), sent, rs.getString(3))
@@ -1212,14 +1280,27 @@ class Store(jdbcUrl: String) {
             result to DeliveryRow(id, fromId, toId, emptyList(), nowMs, filesOfDelivery(id), spaceId, spaceName)
         }
 
-    /** A file [deviceId] may download: its own, or one sent to it in a live delivery; never an acked tombstone. */
+    /**
+     * A file [deviceId] may download: its own, or one sent to it in a live delivery, never an acked tombstone; a chat
+     * attachment only for a member of its chat or the admin of the chat's space.
+     */
     @Synchronized
     fun fileForDownload(id: String, deviceId: String): FileRef? =
         conn.prepareStatement(
             """SELECT f.* FROM files f LEFT JOIN deliveries d ON d.id=f.delivery_id
-               WHERE f.id=? AND f.acked_at IS NULL AND (f.owner_id=? OR (f.sent_to=? AND d.to_id=?))"""
+               WHERE f.id=? AND f.acked_at IS NULL AND (
+                 (f.chat_message_id IS NULL AND (f.owner_id=? OR (f.sent_to=? AND d.to_id=?)))
+                 OR (f.chat_message_id IS NOT NULL AND EXISTS(
+                   SELECT 1 FROM chat_messages m JOIN chats c ON c.id=m.chat_id
+                   WHERE m.id=f.chat_message_id AND m.deleted=0 AND (
+                     EXISTS(SELECT 1 FROM chat_members cm WHERE cm.chat_id=c.id AND cm.device_id=?)
+                     OR EXISTS(SELECT 1 FROM spaces sp WHERE sp.id=c.space_id AND sp.admin_id=?)
+                   )
+                 ))
+               )"""
         ).use {
             it.setString(1, id); it.setString(2, deviceId); it.setString(3, deviceId); it.setString(4, deviceId)
+            it.setString(5, deviceId); it.setString(6, deviceId)
             it.executeQuery().use { rs -> if (rs.next()) rs.toFileRef() else null }
         }
 
@@ -1239,11 +1320,11 @@ class Store(jdbcUrl: String) {
         val deliveryCutoff = nowMs - Limits.DELIVERY_TTL_MS
         val out = buildList {
             addAll(ids("SELECT id FROM uploads WHERE created_at<=?", uploadCutoff))
-            addAll(ids("SELECT id FROM files WHERE delivery_id IS NULL AND acked_at IS NULL AND created_at<=?", unsentCutoff))
+            addAll(ids("SELECT id FROM files WHERE delivery_id IS NULL AND acked_at IS NULL AND chat_message_id IS NULL AND created_at<=?", unsentCutoff))
             addAll(ids("SELECT f.id FROM files f JOIN deliveries d ON d.id=f.delivery_id WHERE d.sent_at<=?", deliveryCutoff))
         }
         exec("DELETE FROM uploads WHERE created_at<=?", uploadCutoff)
-        exec("DELETE FROM files WHERE delivery_id IS NULL AND acked_at IS NULL AND created_at<=?", unsentCutoff)
+        exec("DELETE FROM files WHERE delivery_id IS NULL AND acked_at IS NULL AND chat_message_id IS NULL AND created_at<=?", unsentCutoff)
         exec("DELETE FROM files WHERE acked_at IS NOT NULL AND acked_at<=?", deliveryCutoff) // blobs went on ack
         exec("DELETE FROM files WHERE delivery_id IN (SELECT id FROM deliveries WHERE sent_at<=?)", deliveryCutoff)
         exec("DELETE FROM deliveries WHERE sent_at<=?", deliveryCutoff)
@@ -1440,14 +1521,21 @@ class Store(jdbcUrl: String) {
         return conn.createStatement().use { st -> st.executeQuery("SELECT COUNT(*) FROM $table").use { rs -> rs.next(); rs.getInt(1) } }
     }
 
+    /** Blob ids staged by the running transaction, and those released by commits awaiting [takeFreedBlobs]. */
+    private val stagedBlobs = ArrayList<String>()
+    private val freedBlobs = ArrayList<String>()
+
     private inline fun <T> transaction(block: () -> T): T {
         if (!conn.autoCommit) return block()
         conn.autoCommit = false
         try {
             val r = block()
             conn.commit()
+            freedBlobs += stagedBlobs
+            stagedBlobs.clear()
             return r
         } catch (e: Throwable) {
+            stagedBlobs.clear()
             conn.rollback()
             throw e
         } finally {

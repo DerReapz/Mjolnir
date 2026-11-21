@@ -83,7 +83,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
     fun peer(id: String): Peer = store.device(id)?.toPeer() ?: Peer(id, "Unknown device", DeviceKind.PC)
 
     fun ChatMessageRow.toWire() = ChatMessage(
-        id, chatId, peer(authorId), rev, sentAtMs, editedAtMs, deleted, deletedByAdmin, if (deleted) null else text, event, mentions, createdRev,
+        id, chatId, peer(authorId), rev, sentAtMs, editedAtMs, deleted, deletedByAdmin, if (deleted) null else text, event, mentions, createdRev, attachments,
     )
 
     fun summary(chat: ChatRow, me: String): ChatSummary = ChatSummary(
@@ -187,6 +187,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
             val before = audience(a.chat)
             val parties = store.inviteParties(a.chat.id)
             store.deleteChat(a.chat.id)
+            freeChatBlobs(deps)
             before.forEach { deps.hub.emit(it, RelayEvent.ChatDeleted(a.chat.id)) }
             emitInvites(parties)
             call.respond(HttpStatusCode.NoContent)
@@ -265,7 +266,9 @@ fun Route.chatRoutes(deps: RelayDeps) {
             if (!self && !a.isAdmin) return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
             val before = audience(a.chat) + target
             val parties = store.inviteParties(a.chat.id, target, asInviter = !self)
-            when (store.removeChatMember(a.chat.id, target, byAdmin = !self, nowMs = deps.clock.nowMs(), actorId = a.me)) {
+            val removal = store.removeChatMember(a.chat.id, target, byAdmin = !self, nowMs = deps.clock.nowMs(), actorId = a.me)
+            freeChatBlobs(deps)
+            when (removal) {
                 Store.RemoveResult.NOT_MEMBER -> return@delete call.error(HttpStatusCode.NotFound, "not_found")
                 Store.RemoveResult.OWNER_MUST_TRANSFER -> return@delete call.error(HttpStatusCode.Conflict, "owner_must_transfer")
                 Store.RemoveResult.REMOVED -> {
@@ -304,11 +307,17 @@ fun Route.chatRoutes(deps: RelayDeps) {
                 val a = call.access() ?: return@post
                 if (!a.isMember) return@post call.error(HttpStatusCode.Forbidden, "not_member")
                 val req = call.receive<PostMessageRequest>()
-                if (req.text.isBlank()) return@post call.error(HttpStatusCode.BadRequest, "empty")
-                val body = text(req.text) ?: return@post call.error(HttpStatusCode.BadRequest, "too_long")
+                val raw = req.text?.takeIf { it.isNotBlank() }
+                if (raw == null && req.attachments.isEmpty()) return@post call.error(HttpStatusCode.BadRequest, "empty")
+                if (req.attachments.size > Limits.MAX_ATTACHMENTS_PER_MESSAGE) return@post call.error(HttpStatusCode.BadRequest, "too_many_attachments")
+                val body = raw?.let { text(it) ?: return@post call.error(HttpStatusCode.BadRequest, "too_long") }
                 val mentions = validMentions(a.chat, req.mentions) ?: return@post call.error(HttpStatusCode.BadRequest, "invalid_mention")
-                val row = store.postMessage(a.chat.id, a.me, body, deps.clock.nowMs(), mentions)
-                    ?: return@post call.error(HttpStatusCode.Forbidden, "not_member")
+                val maxFile = minOf(deps.limits.maxChatFileBytes ?: Long.MAX_VALUE, deps.files.maxFileBytes)
+                val row = try {
+                    store.postMessage(a.chat.id, a.me, body, deps.clock.nowMs(), mentions, req.attachments, maxFile)
+                } catch (e: AttachmentsRejected) {
+                    return@post if (e.tooLarge) call.error(HttpStatusCode.PayloadTooLarge, "too_large") else call.error(HttpStatusCode.BadRequest, "invalid_files")
+                } ?: return@post call.error(HttpStatusCode.Forbidden, "not_member")
                 fanOut(a.chat, a.me, mentions.toSet())
                 call.respond(HttpStatusCode.Created, row.toWire())
             }
@@ -331,6 +340,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
                 val msg = store.message(a.chat.id, call.parameters["msgId"]!!) ?: return@delete call.error(HttpStatusCode.NotFound, "not_found")
                 if (msg.authorId != a.me && !a.isAdmin) return@delete call.error(HttpStatusCode.Forbidden, "not_author")
                 if (!store.deleteMessage(a.chat.id, msg.id, a.me, byAdmin = a.isAdmin)) return@delete call.error(HttpStatusCode.Conflict, "deleted")
+                freeChatBlobs(deps)
                 fanOut(a.chat, a.me)
                 call.respond(HttpStatusCode.NoContent)
             }

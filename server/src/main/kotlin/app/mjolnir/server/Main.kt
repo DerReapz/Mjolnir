@@ -40,6 +40,7 @@ fun main() {
     val limits = defaults.copy(
         maxSpacesPerDevice = System.getenv("MJOLNIR_MAX_SPACES")?.toIntOrNull()?.coerceAtLeast(1) ?: defaults.maxSpacesPerDevice,
         maxMembersPerSpace = System.getenv("MJOLNIR_MAX_MEMBERS")?.toIntOrNull()?.coerceAtLeast(2) ?: defaults.maxMembersPerSpace,
+        maxChatFileBytes = System.getenv("MJOLNIR_MAX_CHAT_FILE_MB")?.toLongOrNull()?.coerceAtLeast(1)?.let { it * MIB },
         guestMaxBytes = System.getenv("MJOLNIR_GUEST_MAX_MB")?.toLongOrNull()?.coerceAtLeast(1)?.let { it * MIB },
     )
     val deps = RelayDeps(store = Store("jdbc:sqlite:$db"), limits = limits, files = files, push = push)

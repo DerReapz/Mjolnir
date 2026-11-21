@@ -108,6 +108,21 @@ sealed interface ChatEvent {
     @Serializable @SerialName("owner_changed") data class OwnerChanged(val deviceId: String) : ChatEvent
     @Serializable @SerialName("renamed") data class Renamed(val name: String) : ChatEvent
 }
+@Serializable enum class AttachmentKind { IMAGE, GIF, VIDEO, FILE }
+/** A file attached to a chat message: [fileId] (and [thumbFileId]) name relay files downloadable by the chat's members. */
+@Serializable data class Attachment(
+    val fileId: String,
+    val kind: AttachmentKind,
+    val name: String,
+    val sizeBytes: Long,
+    val mime: String,
+    val width: Int? = null,
+    val height: Int? = null,
+    val durationMs: Long? = null,
+    val thumbFileId: String? = null,
+    /** Path inside a sent folder (top folder first); null for a single file. */
+    val relativePath: String? = null,
+)
 @Serializable data class ChatMessage(
     val id: String,
     val chatId: String,
@@ -123,6 +138,7 @@ sealed interface ChatEvent {
     val mentions: List<String> = emptyList(),
     /** The chat rev at which this message first appeared; edits and deletes change [rev] but never this. Receipts compare against it (null: use [rev]). */
     val createdRev: Long? = null,
+    val attachments: List<Attachment> = emptyList(),
 )
 @Serializable data class ChatSummary(
     val id: String,
@@ -168,7 +184,11 @@ sealed interface ChatEvent {
 @Serializable data class RenameChatRequest(val name: String)
 @Serializable data class InviteRequest(val deviceId: String)
 @Serializable data class TransferOwnerRequest(val deviceId: String)
-@Serializable data class PostMessageRequest(val text: String, val mentions: List<String> = emptyList())
+@Serializable data class PostMessageRequest(
+    val text: String? = null,
+    val mentions: List<String> = emptyList(),
+    val attachments: List<Attachment> = emptyList(),
+)
 @Serializable data class EditMessageRequest(val text: String, val mentions: List<String> = emptyList())
 @Serializable data class ReadRequest(val rev: Long)
 @Serializable data class SeenRequest(val rev: Long)
