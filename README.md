@@ -15,6 +15,20 @@ Every pairing is accepted on the code-showing device. Once paired, each device l
 
 Modules: `:protocol` (shared models), `:server` (the Ktor relay), `:relay-client`, `:desktop` (Windows app), `:android`.
 
+## Spaces: shared groups
+
+A space is a named group of devices (for example "Friends"). Any member can send to any other member without pairing with each of them. Your own paired devices stay private: space members never see them, and you choose which of your devices join which spaces. A device can be in several spaces. A device that is both paired with you and in a space with you appears once, under *My devices*.
+
+- **Create:** on the PC, Devices tab → *Spaces* → *New space…*; on the phone, Devices → *Spaces* → *New space*. The name can be up to 40 characters. The device that creates a space is its admin.
+- **Invite:** the admin chooses *Invite…* on the space's card and shows a code with a countdown. It has the same format and 5-minute lifetime as a pairing code and is used up when claimed.
+- **Join:** on the joining device choose *Join a space*, enter the code and wait for the admin. The admin sees `{device} wants to join {space}` and chooses *Accept* or *Reject*; on accept the joiner sees `Joined {space}`.
+- **Admin controls:** only the admin can invite, accept or reject joins, remove members, *Rename space*, *Delete space* and *Make admin* (with a confirmation) on another member. The relay checks this on every request.
+- **Leave:** other members see the member list and *Leave space*. An admin cannot just leave: first *Make admin* on another member, or delete the space. If the admin device has not connected to the relay for 30 days, any member can choose *Take over as admin* (with a confirmation).
+- **Removal and deletion:** a member who leaves or is removed disappears from everyone's lists at once and can no longer send to the space; deliveries the relay already accepted still complete. Deleting a space drops it from everyone's lists (`{space} was deleted.`).
+- **Sending:** the Send tab and the phone's *Throw to* group devices under `My devices` and then one heading per space; the card you click decides which space the send goes through. Notifications and the Received lists read `From {name} · {space}` for space deliveries; deliveries between paired devices are labelled as before.
+
+The relay limits are `MJOLNIR_MAX_SPACES` and `MJOLNIR_MAX_MEMBERS` (see the table above).
+
 ## Run the relay locally
 
 ```
@@ -30,6 +44,8 @@ The relay listens on port 8080. Settings are environment variables:
 | `MJOLNIR_FILES` | `./files` | Directory for uploaded files |
 | `MJOLNIR_MAX_FILE_MB` | `100` | Per-file cap (can only lower the 100 MiB limit) |
 | `MJOLNIR_MAX_STORAGE_MB` | `2048` | Total storage cap for unsent and undelivered files |
+| `MJOLNIR_MAX_SPACES` | `50` | Spaces a device can be in (at least 1) |
+| `MJOLNIR_MAX_MEMBERS` | `50` | Members per space (at least 2) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | unset | Path to a Firebase service-account JSON; enables push |
 
 Check it with `curl localhost:8080/health` (prints `ok`). Without Firebase credentials the log says `FCM disabled` and phones only get tabs while the app is open or on its periodic check.
