@@ -163,6 +163,7 @@ class ThrowWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
         return when (result) {
             is OutboxResult.Done -> {
+                if (container.guestTraffic.isGuest(result.item.to)) container.guestTraffic.recordSent(result.item)
                 notifyResult(item.id, Messages.thrown(0, result.item.files.size, shownName(result.item), result.item.spaceName))
                 Result.success()
             }

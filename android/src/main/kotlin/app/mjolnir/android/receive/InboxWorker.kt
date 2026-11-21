@@ -147,6 +147,7 @@ class InboxWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                 }
             },
             onProgress = progress::report,
+            recordGuest = c.guestRoom::record,
         )
         val drainer = InboxDrainer(c.api, c.seen) { d ->
             current = d

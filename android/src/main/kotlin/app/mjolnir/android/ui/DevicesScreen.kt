@@ -95,12 +95,13 @@ class DevicesViewModel(private val api: RelayApi, private val session: PhoneSess
 }
 
 @Composable
-fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, spaces: SpacesViewModel, modifier: Modifier = Modifier) {
+fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, spaces: SpacesViewModel, guestRoom: GuestRoomViewModel, modifier: Modifier = Modifier) {
     val state by vm.state.collectAsState()
     val pairingState by pairing.state.collectAsState()
     val spacesState by spaces.state.collectAsState()
     var showPairing by rememberSaveable { mutableStateOf(false) }
     var spacesStart by rememberSaveable { mutableStateOf<SpacesStart?>(null) } // non-null: the Spaces screen is open
+    var showGuestRoom by rememberSaveable { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<Peer?>(null) }
     var renaming by remember { mutableStateOf<Peer?>(null) }
     LaunchedEffect(Unit) { vm.refresh(); spaces.refresh() }
@@ -108,6 +109,10 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, spaces: Space
 
     spacesStart?.let { start ->
         SpacesScreen(spaces, start, onBack = { spacesStart = null; vm.refresh() }, modifier)
+        return
+    }
+    if (showGuestRoom) {
+        GuestRoomScreen(guestRoom, onBack = { showGuestRoom = false }, modifier)
         return
     }
     Column(modifier.padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -134,6 +139,13 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, spaces: Space
                     Text("Spaces", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium))
                     val n = spacesState.spaces.size
                     Text(if (n == 0) "Share with a group of devices" else "$n ${if (n == 1) "space" else "spaces"}", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
+                }
+            }
+            val room by guestRoom.state.collectAsState()
+            ForgeCard(onClick = { showGuestRoom = true }) {
+                Column(Modifier.weight(1f)) {
+                    Text("Guest room", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium))
+                    Text(if (room is app.mjolnir.client.GuestRoomUi.Open) "Open" else "Share files with anyone, in their browser", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

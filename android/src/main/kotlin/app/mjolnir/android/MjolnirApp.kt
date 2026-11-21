@@ -17,6 +17,9 @@ import app.mjolnir.android.send.scheduleOutgoing
 import app.mjolnir.android.session.PhoneSession
 import app.mjolnir.android.session.SwitchingRelayApi
 import app.mjolnir.client.FileSeenDeliveries
+import app.mjolnir.client.GuestRoomController
+import app.mjolnir.client.guestRoomSecretStore
+import app.mjolnir.android.ui.GuestTraffic
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.LocalUpload
 import app.mjolnir.client.Nicknames
@@ -106,6 +109,16 @@ class AppContainer(context: Context) {
         open = ::openUpload,
         cleanup = ::cleanupUpload,
     )
+
+    /** The guest room this phone owns; its rows and state live here so background work can record into it. */
+    val guestRoom = GuestRoomController(
+        api = { api },
+        relayUrl = { config.read().relayUrl },
+        secrets = guestRoomSecretStore(File(filesDir, "guest-room.json")),
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        clock = System::currentTimeMillis,
+    )
+    val guestTraffic = GuestTraffic(guestRoom)
 
     private fun openUpload(upload: LocalUpload, offset: Long): InputStream {
         if (upload.path.startsWith("content://")) {

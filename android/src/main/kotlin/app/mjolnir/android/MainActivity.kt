@@ -41,6 +41,7 @@ import app.mjolnir.android.ui.CaughtScreen
 import app.mjolnir.android.ui.CaughtViewModel
 import app.mjolnir.android.ui.DevicesScreen
 import app.mjolnir.android.ui.DevicesViewModel
+import app.mjolnir.android.ui.GuestRoomViewModel
 import app.mjolnir.android.ui.MjolnirNav
 import app.mjolnir.android.ui.PairingViewModel
 import app.mjolnir.android.ui.Screen
@@ -88,6 +89,7 @@ class MainActivity : ComponentActivity() {
                     PairingViewModel(c.api, c.config, onUnauthorized = { session.reset() }, onPaired = { throwing.refreshTargets() })
                 }
                 CaughtViewModel::class.java -> CaughtViewModel(c.caught, c.caughtChanged, Dispatchers.IO, c.nicknames)
+                GuestRoomViewModel::class.java -> GuestRoomViewModel(c.guestRoom, c.guestTraffic) { c.api.events() }
                 SettingsViewModel::class.java -> SettingsViewModel(c.api, c.config, session, onRelayUrlChanged = c::invalidateRelayClient)
                 else -> error("Unknown ViewModel $modelClass")
             } as T
@@ -121,7 +123,7 @@ class MainActivity : ComponentActivity() {
                         when (screen) {
                             Screen.THROW -> ThrowScreen(throwVm, importer, onPairDevice = { screen = Screen.DEVICES })
                             Screen.CAUGHT -> CaughtScreen(viewModel(factory = factory))
-                            Screen.DEVICES -> DevicesScreen(viewModel(factory = factory), viewModel(factory = factory), viewModel(factory = factory))
+                            Screen.DEVICES -> DevicesScreen(viewModel(factory = factory), viewModel(factory = factory), viewModel(factory = factory), viewModel(factory = factory))
                             Screen.SETTINGS -> SettingsScreen(viewModel(factory = factory))
                         }
                     }
@@ -152,6 +154,7 @@ class MainActivity : ComponentActivity() {
                 container.session.ensureRegistered()
                 syncPushToken(applicationContext)
             } catch (_: Exception) { }
+            container.guestRoom.restore() // a room still open on the relay comes back (its secret is stored)
             enqueueInboxDrain(applicationContext) // pick up anything the push didn't announce (or no Firebase)
             throwVm.refreshTargets()
         }

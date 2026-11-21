@@ -4,12 +4,14 @@ import app.mjolnir.android.data.CaughtItem
 import app.mjolnir.android.data.SavedFile
 import app.mjolnir.android.data.SavedFolder
 import app.mjolnir.android.send.NetDecision
+import app.mjolnir.client.Exchanged
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.Messages
 import app.mjolnir.client.ReceivedPath
 import app.mjolnir.client.RelayApi
 import app.mjolnir.client.receiveFiles
 import app.mjolnir.protocol.Delivery
+import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.FileRef
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.cleanTabs
@@ -50,6 +52,8 @@ class PhoneCatcher(
     private val beforeDownload: suspend (Delivery) -> Unit = {},
     /** Bytes of [FileRef] held locally so far, for a progress notification. */
     private val onProgress: (Delivery, FileRef, Long) -> Unit = { _, _, _ -> },
+    /** Gets the guest room's FROM GUEST rows for what a guest sent. */
+    private val recordGuest: (Exchanged) -> Unit = {},
 ) {
     private val waitingList = mutableListOf<Delivery>()
 
@@ -81,6 +85,7 @@ class PhoneCatcher(
             }
             for (tab in tabs) add(CaughtItem(tab = tab, fromName = d.from.name, caughtAtEpochMs = at, fromDeviceId = d.from.deviceId, spaceName = d.space?.name))
         }
+        if (d.from.kind == DeviceKind.GUEST) recordGuestRows(d, published)
         if (items.isEmpty()) return
         try {
             caught.update { (items + it).take(MAX_CAUGHT_ITEMS) }
@@ -96,5 +101,20 @@ class PhoneCatcher(
         } catch (e: Exception) {
             // A failed notification must not fail the delivery.
         }
+    }
+
+    /** One FROM GUEST row per received folder, file and link. */
+    private fun recordGuestRows(d: Delivery, published: List<Pair<ReceivedPath, SavedFile>>) {
+        val rows = mutableListOf<Exchanged>()
+        val folders = published.filter { it.first.folder != null }.groupBy { it.first.folder!!.substringBefore('/') }
+        for ((name, files) in folders) {
+            val n = files.size
+            rows += Exchanged("in:${d.id}:${rows.size}", true, name, "Folder · $n ${if (n == 1) "file" else "files"} · ${Messages.size(files.sumOf { it.second.sizeBytes })}", null, false, null)
+        }
+        for ((target, saved) in published) {
+            if (target.folder == null) rows += Exchanged("in:${d.id}:${rows.size}", true, saved.name, Messages.size(saved.sizeBytes), null, false, null)
+        }
+        for (tab in cleanTabs(d.tabs)) rows += Exchanged("in:${d.id}:${rows.size}", true, tab.url, "Link", null, false, null)
+        rows.forEach(recordGuest)
     }
 }
