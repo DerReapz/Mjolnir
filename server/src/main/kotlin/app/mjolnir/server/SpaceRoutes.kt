@@ -100,7 +100,7 @@ fun Route.spaceRoutes(deps: RelayDeps) {
 
         delete("/v1/spaces/{id}") {
             val (row, me) = call.adminSpace() ?: return@delete
-            val members = store.deleteSpace(row.id, me) ?: return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
+            val members = store.deleteSpace(row.id, me)?.memberIds ?: return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
             members.filter { it != me }.forEach { deps.hub.emit(it, RelayEvent.SpaceDeleted(row.toRef())) }
             call.respond(HttpStatusCode.NoContent)
         }
@@ -114,7 +114,7 @@ fun Route.spaceRoutes(deps: RelayDeps) {
         delete("/v1/spaces/{id}/members/{deviceId}") {
             val (row, me) = call.memberSpace() ?: return@delete
             val target = call.parameters["deviceId"]!!
-            when (store.removeMember(row.id, target, me)) {
+            when (store.removeMember(row.id, target, me, deps.clock.nowMs()).result) {
                 Store.Removed.NOT_ADMIN -> return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
                 Store.Removed.ADMIN_MUST_TRANSFER -> return@delete call.error(HttpStatusCode.Conflict, "admin_must_transfer")
                 Store.Removed.NOT_MEMBER -> return@delete call.error(HttpStatusCode.NotFound, "not_found")

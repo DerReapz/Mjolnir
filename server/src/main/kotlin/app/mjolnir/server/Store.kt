@@ -3,6 +3,7 @@ package app.mjolnir.server
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.FileRef
+import app.mjolnir.protocol.ChatEvent
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.MjolnirJson
@@ -81,7 +82,21 @@ data class ChatMessageRow(
     val deleted: Boolean,
     val deletedByAdmin: Boolean,
     val text: String?,
+    /** Set for system entries (membership and settings changes), which have no text; the author is the actor. */
+    val event: ChatEvent? = null,
 )
+
+/** Who to notify after a device left a space: chat id to the device ids that should hear about it. */
+data class LeftSpaceResult(
+    val changed: Map<String, List<String>> = emptyMap(),
+    val deleted: Map<String, List<String>> = emptyMap(),
+)
+
+/** [result] of removing a space member, plus the chat fallout in [chats] (empty unless REMOVED). */
+data class SpaceRemoval(val result: Store.Removed, val chats: LeftSpaceResult = LeftSpaceResult())
+
+/** A deleted space: its [memberIds] and the chats that went with it (chat id to member ids). */
+data class DeletedSpace(val memberIds: List<String>, val chats: Map<String, List<String>>)
 
 /** What `chat_messages.body_json` holds; attachments join it in the media plan. */
 @Serializable
@@ -196,7 +211,6 @@ class Store(jdbcUrl: String) {
                     device_id TEXT NOT NULL,
                     joined_at INTEGER NOT NULL,
                     read_rev INTEGER NOT NULL DEFAULT 0,
-                    removed_by_admin INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(chat_id, device_id))"""
             )
             it.executeUpdate("CREATE INDEX IF NOT EXISTS chat_members_device ON chat_members(device_id)")
@@ -221,7 +235,8 @@ class Store(jdbcUrl: String) {
                     edited_at INTEGER NULL,
                     deleted INTEGER NOT NULL DEFAULT 0,
                     deleted_by_admin INTEGER NOT NULL DEFAULT 0,
-                    body_json TEXT NOT NULL)"""
+                    body_json TEXT NOT NULL,
+                    event_json TEXT NULL)"""
             )
             it.executeUpdate("CREATE INDEX IF NOT EXISTS chat_messages_chat_rev ON chat_messages(chat_id, rev)")
         }
@@ -232,8 +247,8 @@ class Store(jdbcUrl: String) {
         addColumnIfMissing("deliveries", "space_name", "TEXT NULL")
         addColumnIfMissing("files", "downloaded_at", "INTEGER NULL")
         // Relays that already hold the chat tables from an earlier build of this feature.
-        addColumnIfMissing("chat_members", "removed_by_admin", "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("chat_messages", "deleted_by_admin", "INTEGER NOT NULL DEFAULT 0")
+        addColumnIfMissing("chat_messages", "event_json", "TEXT NULL")
         // Databases created before tombstones existed lack acked_at.
         val hasAckedAt = conn.createStatement().use { st ->
             st.executeQuery("PRAGMA table_info(files)").use { rs ->
@@ -492,15 +507,14 @@ class Store(jdbcUrl: String) {
      * under one lock, so a transfer racing a leave cannot orphan the admin seat.
      */
     @Synchronized
-    fun removeMember(spaceId: String, deviceId: String, actingId: String): Removed = transaction {
-        val space = space(spaceId) ?: return@transaction Removed.NOT_MEMBER
-        if (deviceId == space.adminId) return@transaction Removed.ADMIN_MUST_TRANSFER
-        if (actingId != deviceId && actingId != space.adminId) return@transaction Removed.NOT_ADMIN
+    fun removeMember(spaceId: String, deviceId: String, actingId: String, nowMs: Long): SpaceRemoval = transaction {
+        val space = space(spaceId) ?: return@transaction SpaceRemoval(Removed.NOT_MEMBER)
+        if (deviceId == space.adminId) return@transaction SpaceRemoval(Removed.ADMIN_MUST_TRANSFER)
+        if (actingId != deviceId && actingId != space.adminId) return@transaction SpaceRemoval(Removed.NOT_ADMIN)
         val removed = conn.prepareStatement("DELETE FROM space_members WHERE space_id=? AND device_id=?").use {
             it.setString(1, spaceId); it.setString(2, deviceId); it.executeUpdate() > 0
         }
-        if (removed) onLeftSpace(spaceId, deviceId)
-        if (removed) Removed.REMOVED else Removed.NOT_MEMBER
+        if (removed) SpaceRemoval(Removed.REMOVED, onLeftSpace(spaceId, deviceId, nowMs, actingId)) else SpaceRemoval(Removed.NOT_MEMBER)
     }
 
     /** Renames only when [actingId] is the current admin; false otherwise. */
@@ -510,16 +524,16 @@ class Store(jdbcUrl: String) {
             it.setString(1, name); it.setString(2, id); it.setString(3, actingId); it.executeUpdate() > 0
         }
 
-    /** Deletes the space, its memberships and its invite codes when [actingId] is the admin; returns the member ids to notify, or null. */
+    /** Deletes the space, its memberships, chats and invite codes when [actingId] is the admin; returns who to notify, or null. */
     @Synchronized
-    fun deleteSpace(id: String, actingId: String): List<String>? = transaction {
+    fun deleteSpace(id: String, actingId: String): DeletedSpace? = transaction {
         if (space(id)?.adminId != actingId) return@transaction null
         val ids = members(id).map { it.id }
-        chatsIn(id).forEach { deleteChat(it.id) }
+        val chats = chatsIn(id).associate { it.id to deleteChat(it.id) }
         conn.prepareStatement("DELETE FROM space_members WHERE space_id=?").use { it.setString(1, id); it.executeUpdate() }
         conn.prepareStatement("DELETE FROM pairings WHERE space_id=?").use { it.setString(1, id); it.executeUpdate() }
         conn.prepareStatement("DELETE FROM spaces WHERE id=?").use { it.setString(1, id); it.executeUpdate() }
-        ids
+        DeletedSpace(ids, chats)
     }
 
     // ---- Chats ----
@@ -538,6 +552,7 @@ class Store(jdbcUrl: String) {
         return ChatMessageRow(
             getString("id"), getString("chat_id"), getString("author_id"), getLong("rev"), getLong("sent_at"),
             edited, deleted, getInt("deleted_by_admin") != 0, text,
+            getString("event_json")?.let { MjolnirJson.decodeFromString(ChatEvent.serializer(), it) },
         )
     }
 
@@ -556,9 +571,10 @@ class Store(jdbcUrl: String) {
         st.executeUpdate()
     }
 
-    /** Creates a chat in [spaceId] with [ownerId] as its first member. */
+    /** Creates a chat in [spaceId] with [ownerId] as its first member; null unless [ownerId] is in that space. */
     @Synchronized
-    fun createChat(spaceId: String, ownerId: String, name: String, nowMs: Long): ChatRow = transaction {
+    fun createChat(spaceId: String, ownerId: String, name: String, nowMs: Long): ChatRow? = transaction {
+        if (!isSpaceMember(spaceId, ownerId)) return@transaction null
         val row = ChatRow(newId(), spaceId, name, ownerId, nowMs, 0)
         update("INSERT INTO chats(id,space_id,name,owner_id,created_at,rev) VALUES(?,?,?,?,?,0)", row.id, spaceId, name, ownerId, nowMs)
         update("INSERT INTO chat_members(chat_id,device_id,joined_at) VALUES(?,?,?)", row.id, ownerId, nowMs)
@@ -601,7 +617,11 @@ class Store(jdbcUrl: String) {
         }
 
     @Synchronized
-    fun renameChat(id: String, name: String): Boolean = update("UPDATE chats SET name=? WHERE id=?", name, id) > 0
+    fun renameChat(id: String, name: String, actorId: String, nowMs: Long): Boolean = transaction {
+        if (update("UPDATE chats SET name=? WHERE id=?", name, id) == 0) return@transaction false
+        recordEvent(id, actorId, ChatEvent.Renamed(name), nowMs)
+        true
+    }
 
     /** Deletes the chat with its messages, members and invites; returns the member ids that were in it (to notify). */
     @Synchronized
@@ -619,33 +639,53 @@ class Store(jdbcUrl: String) {
     fun addChatMember(chatId: String, deviceId: String, nowMs: Long): Boolean = transaction {
         val chat = chat(chatId) ?: return@transaction false
         if (!isSpaceMember(chat.spaceId, deviceId)) return@transaction false
-        update("INSERT OR IGNORE INTO chat_members(chat_id,device_id,joined_at) VALUES(?,?,?)", chatId, deviceId, nowMs) > 0
+        if (update("INSERT OR IGNORE INTO chat_members(chat_id,device_id,joined_at) VALUES(?,?,?)", chatId, deviceId, nowMs) == 0) return@transaction false
+        recordEvent(chatId, deviceId, ChatEvent.MemberJoined(deviceId), nowMs)
+        true
     }
 
     enum class RemoveResult { REMOVED, NOT_MEMBER, OWNER_MUST_TRANSFER, LAST_MEMBER_DELETED }
 
     /**
-     * Removes [deviceId] from the chat (a leave, or an admin removal when [byAdmin]). The owner can't be removed
-     * until ownership is handed over; the last member leaving deletes the chat.
+     * Removes [deviceId] from the chat: a leave, or by [actorId] when [byAdmin]. An owner can't leave until ownership is
+     * handed over, but the admin may remove the owner, which passes ownership to the longest-standing remaining member.
+     * The last member going deletes the chat. The change is recorded as a chat event authored by [actorId].
      */
     @Synchronized
-    fun removeChatMember(chatId: String, deviceId: String, byAdmin: Boolean): RemoveResult = transaction {
+    fun removeChatMember(chatId: String, deviceId: String, byAdmin: Boolean, nowMs: Long, actorId: String = deviceId): RemoveResult = transaction {
         val chat = chat(chatId) ?: return@transaction RemoveResult.NOT_MEMBER
         if (!isChatMember(chatId, deviceId)) return@transaction RemoveResult.NOT_MEMBER
-        if (chat.ownerId == deviceId) return@transaction RemoveResult.OWNER_MUST_TRANSFER
+        if (chat.ownerId == deviceId && !byAdmin) return@transaction RemoveResult.OWNER_MUST_TRANSFER
         update("DELETE FROM chat_members WHERE chat_id=? AND device_id=?", chatId, deviceId)
         update("DELETE FROM chat_invites WHERE chat_id=? AND invitee_id=?", chatId, deviceId)
-        if (chatMembers(chatId).isEmpty()) { deleteChat(chatId); RemoveResult.LAST_MEMBER_DELETED } else RemoveResult.REMOVED
+        if (byAdmin) update("DELETE FROM chat_invites WHERE chat_id=? AND inviter_id=?", chatId, deviceId)
+        if (afterMemberGone(chat, deviceId, byAdmin, actorId, nowMs)) RemoveResult.REMOVED else RemoveResult.LAST_MEMBER_DELETED
     }
 
-    /** One UPDATE guarded by the current owner and the target's membership. */
+    /** Record that [deviceId] is no longer in [chat] and hand over ownership if needed; deletes the chat and returns false if nobody is left. */
+    private fun afterMemberGone(chat: ChatRow, deviceId: String, removed: Boolean, actorId: String, nowMs: Long): Boolean {
+        val remaining = chatMembers(chat.id)
+        if (remaining.isEmpty()) { deleteChat(chat.id); return false }
+        recordEvent(chat.id, actorId, if (removed) ChatEvent.MemberRemoved(deviceId, byAdmin = true) else ChatEvent.MemberLeft(deviceId), nowMs)
+        if (chat.ownerId == deviceId) {
+            val next = remaining.first().id
+            update("UPDATE chats SET owner_id=? WHERE id=?", next, chat.id)
+            recordEvent(chat.id, actorId, ChatEvent.OwnerChanged(next), nowMs)
+        }
+        return true
+    }
+
+    /** One UPDATE guarded by the current owner and the target's membership; records the change. */
     @Synchronized
-    fun transferChatOwner(chatId: String, from: String, to: String): Boolean =
-        update(
+    fun transferChatOwner(chatId: String, from: String, to: String, nowMs: Long): Boolean = transaction {
+        val changed = update(
             """UPDATE chats SET owner_id=? WHERE id=? AND owner_id=?
                AND EXISTS(SELECT 1 FROM chat_members WHERE chat_id=? AND device_id=?)""",
             to, chatId, from, chatId, to,
         ) > 0
+        if (changed) recordEvent(chatId, from, ChatEvent.OwnerChanged(to), nowMs)
+        changed
+    }
 
     private fun inviteExpired(inv: ChatInviteRow, chat: ChatRow, nowMs: Long): Boolean =
         nowMs >= inv.createdAtMs + Limits.CHAT_INVITE_TTL_MS ||
@@ -697,10 +737,20 @@ class Store(jdbcUrl: String) {
             chat != null && !inviteExpired(inv, chat, nowMs) && !isChatMember(inv.chatId, inv.inviteeId)
         }
 
-    /** Moves the invite from [from] to [to] only if it is still in [from]. */
+    /**
+     * Moves the invite from [from] to [to] only if it is still in [from], the move is allowed (PENDING_APPROVAL to
+     * APPROVED or DENIED, APPROVED to DECLINED) and the invite has not expired.
+     */
     @Synchronized
-    fun setInviteState(id: String, from: InviteState, to: InviteState): Boolean =
+    fun setInviteState(id: String, from: InviteState, to: InviteState, nowMs: Long): Boolean = transaction {
+        val allowed = (from == InviteState.PENDING_APPROVAL && (to == InviteState.APPROVED || to == InviteState.DENIED)) ||
+            (from == InviteState.APPROVED && to == InviteState.DECLINED)
+        if (!allowed) return@transaction false
+        val inv = invite(id) ?: return@transaction false
+        val chat = chat(inv.chatId) ?: return@transaction false
+        if (inv.state != from || inviteExpired(inv, chat, nowMs)) return@transaction false
         update("UPDATE chat_invites SET state=? WHERE id=? AND state=?", to.name, id, from.name) > 0
+    }
 
     /** Turns [deviceId]'s unexpired APPROVED invite into membership (and consumes it). */
     @Synchronized
@@ -724,24 +774,35 @@ class Store(jdbcUrl: String) {
 
     private fun bodyJson(text: String?) = MjolnirJson.encodeToString(StoredChatBody.serializer(), StoredChatBody(text))
 
-    private fun chatMessage(id: String): ChatMessageRow? =
-        conn.prepareStatement("SELECT * FROM chat_messages WHERE id=?").use {
-            it.setString(1, id); it.executeQuery().use { rs -> if (rs.next()) rs.toChatMessage() else null }
+    /** A real message (not a system entry) of [chatId]. */
+    private fun chatMessage(chatId: String, id: String): ChatMessageRow? =
+        conn.prepareStatement("SELECT * FROM chat_messages WHERE id=? AND chat_id=? AND event_json IS NULL").use {
+            it.setString(1, id); it.setString(2, chatId); it.executeQuery().use { rs -> if (rs.next()) rs.toChatMessage() else null }
         }
 
-    /** Appends a message at a new chat revision. Membership of [authorId] is the caller's check. */
+    /** Appends a message at a new chat revision; null when the chat is gone or [authorId] is not a member. */
     @Synchronized
-    fun postMessage(chatId: String, authorId: String, text: String, nowMs: Long): ChatMessageRow = transaction {
+    fun postMessage(chatId: String, authorId: String, text: String, nowMs: Long): ChatMessageRow? = transaction {
+        if (!isChatMember(chatId, authorId)) return@transaction null
         val rev = nextRev(chatId)
         val id = newId()
         update("INSERT INTO chat_messages(id,chat_id,author_id,rev,sent_at,body_json) VALUES(?,?,?,?,?,?)", id, chatId, authorId, rev, nowMs, bodyJson(text))
         ChatMessageRow(id, chatId, authorId, rev, nowMs, null, false, false, text)
     }
 
-    /** Replaces the text of [authorId]'s own undeleted message; false when it is not theirs, deleted or missing. */
+    /** Appends a system entry at a new revision, authored by [actorId]. */
+    private fun recordEvent(chatId: String, actorId: String, event: ChatEvent, nowMs: Long) {
+        val rev = nextRev(chatId)
+        update(
+            "INSERT INTO chat_messages(id,chat_id,author_id,rev,sent_at,body_json,event_json) VALUES(?,?,?,?,?,?,?)",
+            newId(), chatId, actorId, rev, nowMs, bodyJson(null), MjolnirJson.encodeToString(ChatEvent.serializer(), event),
+        )
+    }
+
+    /** Replaces the text of [authorId]'s own undeleted message in [chatId]; false when it is not theirs, deleted or missing. */
     @Synchronized
-    fun editMessage(id: String, authorId: String, text: String, nowMs: Long): Boolean = transaction {
-        val m = chatMessage(id) ?: return@transaction false
+    fun editMessage(chatId: String, id: String, authorId: String, text: String, nowMs: Long): Boolean = transaction {
+        val m = chatMessage(chatId, id) ?: return@transaction false
         if (m.authorId != authorId || m.deleted) return@transaction false
         val rev = nextRev(m.chatId)
         update("UPDATE chat_messages SET rev=?, edited_at=?, body_json=? WHERE id=?", rev, nowMs, bodyJson(text), id)
@@ -750,8 +811,8 @@ class Store(jdbcUrl: String) {
 
     /** Tombstones the message (row kept, body dropped) when [byDeviceId] wrote it, or [byAdmin]; false if missing or already deleted. */
     @Synchronized
-    fun deleteMessage(id: String, byDeviceId: String, byAdmin: Boolean): Boolean = transaction {
-        val m = chatMessage(id) ?: return@transaction false
+    fun deleteMessage(chatId: String, id: String, byDeviceId: String, byAdmin: Boolean): Boolean = transaction {
+        val m = chatMessage(chatId, id) ?: return@transaction false
         if (m.deleted || (m.authorId != byDeviceId && !byAdmin)) return@transaction false
         val rev = nextRev(m.chatId)
         update(
@@ -787,19 +848,22 @@ class Store(jdbcUrl: String) {
         }
 
     /**
-     * Cleans up after [deviceId] stopped being a member of [spaceId]: it leaves the space's chats (ownership goes to the
-     * longest-standing remaining member, a chat left empty is deleted) and its invites in them, as invitee or inviter, go.
+     * Cleans up after [deviceId] stopped being a member of [spaceId] (by [actingId]: itself, or the admin): it leaves the
+     * space's chats (ownership goes to the longest-standing remaining member, a chat left empty is deleted) and its invites
+     * in them, as invitee or inviter, go. Returns who to notify about each changed or deleted chat.
      */
     @Synchronized
-    fun onLeftSpace(spaceId: String, deviceId: String) = transaction {
+    fun onLeftSpace(spaceId: String, deviceId: String, nowMs: Long, actingId: String = deviceId): LeftSpaceResult = transaction {
+        val changed = LinkedHashMap<String, List<String>>()
+        val deleted = LinkedHashMap<String, List<String>>()
         for (chat in chatsIn(spaceId)) {
             update("DELETE FROM chat_invites WHERE chat_id=? AND (invitee_id=? OR inviter_id=?)", chat.id, deviceId, deviceId)
             if (!isChatMember(chat.id, deviceId)) continue
+            val before = chatMembers(chat.id).map { it.id }
             update("DELETE FROM chat_members WHERE chat_id=? AND device_id=?", chat.id, deviceId)
-            val remaining = chatMembers(chat.id)
-            if (remaining.isEmpty()) deleteChat(chat.id)
-            else if (chat.ownerId == deviceId) update("UPDATE chats SET owner_id=? WHERE id=?", remaining.first().id, chat.id)
+            if (afterMemberGone(chat, deviceId, actingId != deviceId, actingId, nowMs)) changed[chat.id] = before else deleted[chat.id] = before
         }
+        LeftSpaceResult(changed, deleted)
     }
 
     /** One UPDATE guarded by the current admin and the target's membership, so of two racing transfers exactly one wins. */

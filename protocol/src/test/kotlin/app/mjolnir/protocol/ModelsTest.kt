@@ -103,3 +103,16 @@ class ChatModelsTest {
         assertFalse(m.deleted); assertFalse(m.deletedByAdmin); assertEquals(null, m.text); assertEquals(null, m.editedAtEpochMs)
     }
 }
+
+class ChatEventModelsTest {
+    @Test fun chatEventsRoundTripAndDefaultToNull() {
+        val peer = Peer("d", "n", DeviceKind.PC)
+        val m = ChatMessage("m", "c", peer, 2, 3, event = ChatEvent.MemberRemoved("x", true))
+        assertEquals(m, MjolnirJson.decodeFromString<ChatMessage>(MjolnirJson.encodeToString(ChatMessage.serializer(), m)))
+        listOf(ChatEvent.MemberLeft("x"), ChatEvent.MemberJoined("x"), ChatEvent.OwnerChanged("x"), ChatEvent.Renamed("N")).forEach {
+            assertEquals(it, MjolnirJson.decodeFromString(ChatEvent.serializer(), MjolnirJson.encodeToString(ChatEvent.serializer(), it)))
+        }
+        assertEquals("""{"type":"member_removed","deviceId":"x","byAdmin":true}""", MjolnirJson.encodeToString(ChatEvent.serializer(), ChatEvent.MemberRemoved("x", true)))
+        assertEquals(null, MjolnirJson.decodeFromString<ChatMessage>("""{"id":"m","chatId":"c","author":{"deviceId":"d","name":"n","kind":"PC"},"rev":1,"sentAtEpochMs":2}""").event)
+    }
+}

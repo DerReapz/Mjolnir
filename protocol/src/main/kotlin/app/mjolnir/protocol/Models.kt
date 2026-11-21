@@ -99,6 +99,15 @@ object DeviceKindSerializer : KSerializer<DeviceKind> {
 )
 
 @Serializable enum class InviteState { PENDING_APPROVAL, APPROVED, DENIED, DECLINED }
+/** A membership or settings change shown inline in the chat; recorded as a body-less [ChatMessage] authored by the actor. */
+@Serializable
+sealed interface ChatEvent {
+    @Serializable @SerialName("member_removed") data class MemberRemoved(val deviceId: String, val byAdmin: Boolean) : ChatEvent
+    @Serializable @SerialName("member_left") data class MemberLeft(val deviceId: String) : ChatEvent
+    @Serializable @SerialName("member_joined") data class MemberJoined(val deviceId: String) : ChatEvent
+    @Serializable @SerialName("owner_changed") data class OwnerChanged(val deviceId: String) : ChatEvent
+    @Serializable @SerialName("renamed") data class Renamed(val name: String) : ChatEvent
+}
 @Serializable data class ChatMessage(
     val id: String,
     val chatId: String,
@@ -109,6 +118,7 @@ object DeviceKindSerializer : KSerializer<DeviceKind> {
     val deleted: Boolean = false,
     val deletedByAdmin: Boolean = false,
     val text: String? = null,
+    val event: ChatEvent? = null,
 )
 @Serializable data class ChatSummary(
     val id: String,

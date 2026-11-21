@@ -40,8 +40,8 @@ class SpacesStoreTest {
         val a = device(); val b = device(); val o = device()
         val s = store.createSpace(a.id, "Home", 10)
         store.addMember(s.id, b.id, 20)
-        assertEquals(Store.Removed.REMOVED, store.removeMember(s.id, b.id, a.id))
-        assertEquals(Store.Removed.NOT_MEMBER, store.removeMember(s.id, b.id, a.id))
+        assertEquals(Store.Removed.REMOVED, store.removeMember(s.id, b.id, a.id, 500).result)
+        assertEquals(Store.Removed.NOT_MEMBER, store.removeMember(s.id, b.id, a.id, 500).result)
         assertEquals(listOf(a.id), store.members(s.id).map { it.id })
         assertFalse(store.shareSpace(a.id, b.id, s.id))
         assertFalse(store.shareSpace(a.id, o.id, s.id))
@@ -52,7 +52,7 @@ class SpacesStoreTest {
         val a = device(); val b = device()
         val s = store.createSpace(a.id, "Home", 10)
         store.addMember(s.id, b.id, 20)
-        assertEquals(setOf(a.id, b.id), store.deleteSpace(s.id, a.id)!!.toSet())
+        assertEquals(setOf(a.id, b.id), store.deleteSpace(s.id, a.id)!!.memberIds.toSet())
         assertNull(store.space(s.id))
         assertTrue(store.members(s.id).isEmpty())
         assertTrue(store.spacesOf(a.id).isEmpty())
@@ -137,10 +137,10 @@ class SpacesStoreTest {
         assertEquals(1, s.rowCount("rooms"))
         assertEquals(0, s.rowCount("chats")) // upgradeAddsChatTables
         val space = s.createSpace("d1", "S", 10)
-        val chat = s.createChat(space.id, "d1", "Plans", 11)
+        val chat = s.createChat(space.id, "d1", "Plans", 11)!!
         assertTrue(s.isChatMember(chat.id, "d1"))
-        val msg = s.postMessage(chat.id, "d1", "hi", 12)
-        assertTrue(s.deleteMessage(msg.id, "d1", false))
+        val msg = s.postMessage(chat.id, "d1", "hi", 12)!!
+        assertTrue(s.deleteMessage(chat.id, msg.id, "d1", false))
         assertEquals(1, s.rowCount("chat_messages"))
         // reopening an already-upgraded db is a no-op
         Store("jdbc:sqlite:$file")
@@ -163,8 +163,8 @@ class SpacesStoreTest {
         val s = store.createSpace(a.id, "Home", 10)
         store.addMember(s.id, b.id, 20)
         assertTrue(store.transferAdmin(s.id, a.id, b.id))
-        assertEquals(Store.Removed.ADMIN_MUST_TRANSFER, store.removeMember(s.id, b.id, b.id))
-        assertEquals(Store.Removed.ADMIN_MUST_TRANSFER, store.removeMember(s.id, b.id, a.id))
+        assertEquals(Store.Removed.ADMIN_MUST_TRANSFER, store.removeMember(s.id, b.id, b.id, 500).result)
+        assertEquals(Store.Removed.ADMIN_MUST_TRANSFER, store.removeMember(s.id, b.id, a.id, 500).result)
         assertEquals(listOf(a.id, b.id), store.members(s.id).map { it.id })
     }
 
@@ -173,7 +173,7 @@ class SpacesStoreTest {
         val a = device(); val b = device()
         val s = store.createSpace(a.id, "Home", 10)
         store.addMember(s.id, b.id, 20)
-        assertEquals(Store.Removed.REMOVED, store.removeMember(s.id, b.id, b.id))
+        assertEquals(Store.Removed.REMOVED, store.removeMember(s.id, b.id, b.id, 500).result)
         assertFalse(store.transferAdmin(s.id, a.id, b.id))
         assertEquals(a.id, store.space(s.id)!!.adminId)
     }
@@ -184,7 +184,7 @@ class SpacesStoreTest {
         store.addMember(s.id, b.id, 20); store.addMember(s.id, c.id, 30)
         assertTrue(store.transferAdmin(s.id, a.id, b.id)) // lands after A's checks passed
         assertFalse(store.renameSpace(s.id, a.id, "Mine"))
-        assertEquals(Store.Removed.NOT_ADMIN, store.removeMember(s.id, c.id, a.id))
+        assertEquals(Store.Removed.NOT_ADMIN, store.removeMember(s.id, c.id, a.id, 500).result)
         assertNull(store.deleteSpace(s.id, a.id))
         assertEquals("Home", store.space(s.id)!!.name)
         assertEquals(3, store.members(s.id).size)
