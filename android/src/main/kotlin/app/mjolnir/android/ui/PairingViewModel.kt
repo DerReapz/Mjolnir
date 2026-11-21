@@ -116,7 +116,7 @@ class PairingViewModel(
             val finished = withTimeoutOrNull(remaining) {
               try {
                 api.events().collect { event ->
-                    if (event is RelayEvent.PairRequested) {
+                    if (event is RelayEvent.PairRequested && event.space == null) { // a space join request belongs to an invite, not to this code
                         _state.value.let { s ->
                             if (s is PairingUi.Showing && s.request == null) {
                                 requestId = event.pairingId

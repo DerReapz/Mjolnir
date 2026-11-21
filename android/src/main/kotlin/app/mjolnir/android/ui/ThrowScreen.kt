@@ -84,6 +84,7 @@ import app.mjolnir.android.send.sendNow
 import app.mjolnir.android.send.throwWorkFinished
 import app.mjolnir.android.send.uniqueThrowWork
 import app.mjolnir.client.OutgoingFiles
+import app.mjolnir.client.destinationKey
 import app.mjolnir.android.share.UriImporter
 import app.mjolnir.android.throwing.FlickSensor
 import app.mjolnir.android.throwing.ThrowDetector
@@ -199,14 +200,14 @@ fun ThrowScreen(
                 if (state.outgoing.isNotEmpty()) {
                     item(key = "on-the-way") { SectionLabel("On the way", Modifier.padding(top = 8.dp)) }
                     items(state.outgoing, key = { "out-" + it.id }) { item ->
-                        OutgoingRow(item, state.targets.find { it.deviceId == item.to }?.let(state::nameOf) ?: state.nicknames[item.to] ?: item.toName, onFinished = { vm.refreshOutgoing() }, onSendNow = {
+                        OutgoingRow(item, outgoingTarget(state, item), onFinished = { vm.refreshOutgoing() }, onSendNow = {
                             scope.launch(Dispatchers.IO) { sendNow(context, item.id) }
                         })
                     }
                 }
             }
             HammerButton(
-                vm, sensor, state.phase, hasTarget = state.targetId != null, flight = flight,
+                vm, sensor, state.phase, hasTarget = state.targetKey != null, flight = flight,
                 modifier = Modifier.padding(vertical = 12.dp), onCentre = { hammerCentre = it },
             )
         }
@@ -287,9 +288,9 @@ private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: 
         return
     }
     var open by remember { mutableStateOf(false) }
-    val current = state.targets.find { it.deviceId == state.targetId } ?: state.targets.first()
+    val current = state.target ?: state.targets.first()
     Box {
-        TargetCard(state.nameOf(current), kindLabel(current), onClick = { open = true })
+        TargetCard(state.nameOf(current) + (current.space?.let { " · ${it.name}" } ?: ""), kindLabel(current), onClick = { open = true })
         DropdownMenu(
             expanded = open, onDismissRequest = { open = false },
             containerColor = Forge.Surface, border = BorderStroke(1.dp, Forge.Border),
@@ -299,7 +300,7 @@ private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: 
                 for (device in group.peers) {
                     DropdownMenuItem(
                         text = { Text("${state.nameOf(device)} (${kindLabel(device)})", maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        onClick = { vm.selectTarget(device.deviceId); open = false },
+                        onClick = { vm.selectTarget(device.destinationKey); open = false },
                     )
                 }
             }
@@ -395,4 +396,13 @@ private fun describe(item: TrayItem): RowText = when (item) {
         val n = item.files.size
         RowText(item.name, "${Messages.items(0, n)}, ${Messages.size(item.files.sumOf { it.sizeBytes })}")
     }
+}
+
+/** Who an *On the way* row goes to: the device's shown name, then ` · {space}` for a throw made in a space. */
+internal fun outgoingTarget(state: ThrowUiState, item: OutgoingFiles): String {
+    val peer = state.targets.find { it.deviceId == item.to && it.space?.id == item.spaceId }
+        ?: state.targets.find { it.deviceId == item.to }
+    val name = peer?.let(state::nameOf) ?: state.nicknames[item.to] ?: item.toName
+    val space = item.spaceId?.let { id -> state.targets.firstNotNullOfOrNull { it.space?.takeIf { s -> s.id == id } } }
+    return if (space == null) name else "$name · ${space.name}"
 }

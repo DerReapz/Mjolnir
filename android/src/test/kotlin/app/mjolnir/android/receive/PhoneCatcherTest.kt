@@ -11,6 +11,7 @@ import app.mjolnir.protocol.Delivery
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.FileRef
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.SpaceRef
 import app.mjolnir.protocol.Tab
 import java.io.File
 import kotlin.io.path.createTempDirectory
@@ -53,6 +54,12 @@ class PhoneCatcherTest {
         assertEquals(listOf("Caught 1 tab from Work PC"), notes)
         assertEquals(listOf("pc1"), store.read().map { it.fromDeviceId })
         assertEquals(listOf("DESKTOP-4F2K"), store.read().map { it.fromName })
+    }
+
+    @Test fun notificationIncludesSpace() = runTest {
+        c.handle(Delivery("d1", pc, listOf(Tab("https://a.com")), 0, space = SpaceRef("s1", "Friends")))
+        assertEquals(listOf("Caught 1 tab from DESKTOP-4F2K · Friends"), notes)
+        assertEquals(listOf("Friends"), store.read().map { it.spaceName })
     }
 
     @Test fun savesLooseFileAndNotifies() = runTest {

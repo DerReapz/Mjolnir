@@ -13,6 +13,7 @@ import app.mjolnir.protocol.PairingState
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.PairingStatus
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.SpaceRef
 import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -58,6 +59,12 @@ class PairingViewModelTest {
 
     @Test fun showCodeDisplaysTheCode() = runTest {
         assertEquals(PairingUi.Showing("K7M2QX", 300_000, null), showing())
+    }
+
+    @Test fun aSpaceJoinRequestIsNotAPairRequest() = runTest {
+        showing()
+        api.events.emit(RelayEvent.PairRequested("p9", phone, SpaceRef("s1", "Friends"))); runCurrent()
+        assertEquals(PairingUi.Showing("K7M2QX", 300_000, null), vm.state.value)
     }
 
     @Test fun showCodeAcceptOnceThenPaired() = runTest {

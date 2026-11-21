@@ -10,6 +10,8 @@ import app.mjolnir.android.share.Imported
 import app.mjolnir.android.throwing.Sensitivity
 import app.mjolnir.protocol.Tab
 import app.mjolnir.client.DestinationGroup
+import app.mjolnir.client.DestinationKey
+import app.mjolnir.client.destinationKey
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.Nicknames
 import app.mjolnir.client.groupDestinations
@@ -49,7 +51,8 @@ data class ThrowUiState(
     val nicknames: Map<String, String> = emptyMap(),
     /** The device thrown to last (remembered in settings); it leads the selector. Not the current selection, so tapping does not reshuffle. */
     val lastUsedId: String? = null,
-    val targetId: String? = null,
+    /** The chosen card: a device in the context of one space (null: a paired device). */
+    val targetKey: DestinationKey? = null,
     val phase: ThrowPhase = ThrowPhase.Idle,
     val notice: String? = null,
     val outgoing: List<OutgoingFiles> = emptyList(),
@@ -58,10 +61,19 @@ data class ThrowUiState(
     /** [targets] grouped for the selector; a single group has no title. */
     val groups: List<DestinationGroup> get() = groupDestinations(targets, lastUsedId, ::nameOf)
 
+    /** The chosen device; its cards under every heading are highlighted (see [isSelected]). */
+    val targetId: String? get() = targetKey?.deviceId
+
+    /** The chosen card's peer; its `space` is the space a throw is made in. */
+    val target: Peer? get() = targets.find { it.destinationKey == targetKey }
+
+    /** True for every card of the chosen device, whichever heading it sits under. */
+    fun isSelected(peer: Peer): Boolean = peer.deviceId == targetKey?.deviceId
+
     /** The name to show for [peer]: its nickname, else its real name. */
     fun nameOf(peer: Peer): String = nicknames[peer.deviceId] ?: peer.name
 
-    val canThrow: Boolean get() = targetId != null && selected.isNotEmpty() && phase == ThrowPhase.Idle
+    val canThrow: Boolean get() = targetKey != null && selected.isNotEmpty() && phase == ThrowPhase.Idle
 }
 
 /**
@@ -178,19 +190,29 @@ class ThrowViewModel(
         if (item is TrayItem.LocalFile) viewModelScope.launch(io) { File(item.path).delete() }
     }
 
+    /** Selects [deviceId]'s paired card, else its first card. */
     fun selectTarget(deviceId: String) {
-        if (_state.value.targets.none { it.deviceId == deviceId }) return
-        _state.update { it.copy(targetId = deviceId) }
+        val cards = _state.value.targets.filter { it.deviceId == deviceId }.map { it.destinationKey }
+        (cards.firstOrNull { it.spaceId == null } ?: cards.firstOrNull())?.let(::selectTarget)
+    }
+
+    /** Selects the card [key] (a device under one heading); unknown cards change nothing. */
+    fun selectTarget(key: DestinationKey) {
+        if (_state.value.targets.none { it.destinationKey == key }) return
+        _state.update { it.copy(targetKey = key) }
         viewModelScope.launch(writes) {
             try {
-                config.update { it.copy(targetPcId = deviceId) } // persisted key keeps its old name
+                config.update { it.copy(targetPcId = key.deviceId, targetSpaceId = key.spaceId) } // persisted key keeps its old name
             } catch (e: IOException) {
                 // Only the default for next time is lost.
             }
         }
     }
 
-    /** Loads every paired device (PC or phone) and picks the target: current, remembered, or the first. */
+    /**
+     * Loads every destination (paired devices and space members) and picks the target: the current card, the
+     * remembered one (its space too), the remembered device's paired card, or the first.
+     */
     fun refreshTargets() {
         viewModelScope.launch {
             val peers = try {
@@ -198,15 +220,20 @@ class ThrowViewModel(
             } catch (e: RelayException) {
                 return@launch
             }
-            val remembered = try {
-                withContext(io) { config.read().targetPcId }
+            val (rememberedId, rememberedSpace) = try {
+                withContext(io) { config.read().let { it.targetPcId to it.targetSpaceId } }
             } catch (e: IOException) {
-                null
+                null to null
             }
-            val ids = peers.mapTo(HashSet()) { it.deviceId }
+            val keys = peers.map { it.destinationKey }
+            val remembered = rememberedId?.let { id ->
+                keys.firstOrNull { it.deviceId == id && it.spaceId == rememberedSpace }
+                    ?: keys.firstOrNull { it.deviceId == id && it.spaceId == null }
+                    ?: keys.firstOrNull { it.deviceId == id }
+            }
             _state.update { s ->
-                val target = s.targetId?.takeIf { it in ids } ?: remembered?.takeIf { it in ids } ?: peers.firstOrNull()?.deviceId
-                s.copy(targets = peers, targetId = target, lastUsedId = remembered)
+                val target = s.targetKey?.takeIf { it in keys } ?: remembered ?: keys.firstOrNull()
+                s.copy(targets = peers, targetKey = target, lastUsedId = rememberedId)
             }
         }
     }
@@ -269,7 +296,8 @@ class ThrowViewModel(
 
     private suspend fun throwSelected() {
         val s = _state.value
-        val pc = s.targets.find { it.deviceId == s.targetId } ?: return
+        val pc = s.target ?: return
+        val space = pc.space
         val shown = s.nameOf(pc) // for messages; the queued item keeps the real name (pc.name)
         val chosen = s.tray.filter { it.id in s.selected }
         val links = chosen.filterIsInstance<TrayItem.Link>()
@@ -278,10 +306,10 @@ class ThrowViewModel(
         val gone = HashSet<String>()
 
         if (links.isNotEmpty()) {
-            val outcome = sendInBatches(api, pc.deviceId, links.map { it.tab })
+            val outcome = sendInBatches(api, pc.deviceId, links.map { it.tab }, spaceId = space?.id)
             val sentUrls = outcome.sentTabs.mapTo(HashSet()) { it.url }
             links.filter { it.tab.url in sentUrls }.mapTo(gone) { it.id }
-            if (outcome.sentTabs.isNotEmpty()) parts += Messages.thrown(outcome.sentTabs.size, 0, shown)
+            if (outcome.sentTabs.isNotEmpty()) parts += Messages.thrown(outcome.sentTabs.size, 0, shown, space?.name)
             outcome.error?.let { error ->
                 if (error.kind == RelayErrorKind.UNAUTHORIZED) {
                     parts += Messages.RESET
@@ -304,7 +332,7 @@ class ThrowViewModel(
             for (group in groupForOutbox(fileItems)) {
                 val uploads = group.flatMap { it.toUploads() }
                 val item = OutgoingFiles(UUID.randomUUID().toString(), pc.deviceId, pc.name, uploads,
-                    createdAtEpochMs = System.currentTimeMillis())
+                    createdAtEpochMs = System.currentTimeMillis(), spaceId = space?.id)
                 try {
                     withContext(io) { outbox.enqueue(item) }
                 } catch (e: IOException) {

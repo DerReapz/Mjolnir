@@ -42,7 +42,7 @@ class PhoneSession(private val api: RelayApi, private val config: JsonFileStore<
 
     /** Forgets the credentials and the chosen PC, then registers again. */
     suspend fun reset(): PhoneConfig = lock.withLock {
-        withContext(io) { config.update { it.copy(deviceId = null, token = null, targetPcId = null) } }
+        withContext(io) { config.update { it.copy(deviceId = null, token = null, targetPcId = null, targetSpaceId = null) } }
         onReset()
         registerLocked()
     }

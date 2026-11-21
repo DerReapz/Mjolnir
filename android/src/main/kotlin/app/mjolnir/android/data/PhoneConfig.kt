@@ -13,6 +13,8 @@ data class PhoneConfig(
     val token: String? = null,
     val deviceName: String,
     val targetPcId: String? = null,
+    /** The space whose card [targetPcId] was chosen under; null for a paired device. */
+    val targetSpaceId: String? = null,
     val sensitivity: Sensitivity = Sensitivity.MEDIUM,
     val largeFilePolicy: LargeFilePolicy = LargeFilePolicy.WAIT_FOR_WIFI,
     val largeFileThresholdMb: Int = 25,

@@ -15,6 +15,8 @@ import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.SendRequest
 import app.mjolnir.protocol.SendResponse
+import app.mjolnir.protocol.SpaceRef
+import app.mjolnir.client.DestinationKey
 import app.mjolnir.protocol.Tab
 import java.io.File
 import kotlin.test.assertEquals
@@ -174,6 +176,52 @@ class ThrowViewModelTest {
         vm.selectTarget("pc2"); advanceUntilIdle()
         assertEquals("pc2", vm.state.value.targetId)
         assertEquals("pc2", configStore.read().targetPcId)
+    }
+
+    private val friends = SpaceRef("s1", "Friends")
+    private fun withSpaces() = api.peers.addAll(listOf(Peer("zed", "Zed", DeviceKind.PHONE, friends), Peer("pc2", "Laptop", DeviceKind.PC, friends)))
+
+    @Test fun groupedTargets() = runTest {
+        withSpaces()
+        vm.refreshTargets(); advanceUntilIdle()
+        val groups = vm.state.value.groups
+        assertEquals(listOf("My devices", "Friends"), groups.map { it.title })
+        assertEquals(listOf("mine", "space:s1"), groups.map { it.key })
+        assertEquals(listOf("pc1", "pc2", "ph"), groups[0].peers.map { it.deviceId })
+        assertEquals(listOf("pc2", "zed"), groups[1].peers.map { it.deviceId }) // a device in two places has a card under each heading
+    }
+
+    @Test fun throwCarriesSpaceId() = runTest {
+        withSpaces()
+        vm.addShared(listOf(a, f)); vm.refreshTargets(); advanceUntilIdle()
+        vm.selectTarget(DestinationKey("pc2", "s1")); advanceUntilIdle()
+        assertEquals(DestinationKey("pc2", "s1"), vm.state.value.targetKey)
+        vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
+        assertEquals(listOf(SendRequest("pc2", listOf(a.tab), spaceId = "s1")), api.sent)
+        assertEquals("s1", outbox.pending().single().spaceId)
+        assertEquals("Thrown 1 tab to Laptop · Friends", vm.state.value.notice?.substringBefore(". Throwing"))
+        assertEquals("pc2", configStore.read().targetPcId)
+        assertEquals("s1", configStore.read().targetSpaceId)
+    }
+
+    @Test fun selectingAPairedCardClearsTheSpace() = runTest {
+        withSpaces()
+        vm.refreshTargets(); advanceUntilIdle()
+        vm.selectTarget(DestinationKey("pc2", "s1")); advanceUntilIdle()
+        vm.selectTarget("pc2"); advanceUntilIdle()
+        assertEquals(DestinationKey("pc2", null), vm.state.value.targetKey)
+        assertNull(configStore.read().targetSpaceId)
+    }
+
+    @Test fun persistedTargetRestoresSpace() = runTest {
+        withSpaces()
+        configStore.write(configStore.read().copy(targetPcId = "pc2", targetSpaceId = "s1"))
+        val restored = newVm(); restored.refreshTargets(); advanceUntilIdle()
+        assertEquals(DestinationKey("pc2", "s1"), restored.state.value.targetKey)
+
+        configStore.write(configStore.read().copy(targetPcId = "pc2", targetSpaceId = "gone")) // the space is gone: its paired card
+        val fallback = newVm(); fallback.refreshTargets(); advanceUntilIdle()
+        assertEquals(DestinationKey("pc2", null), fallback.state.value.targetKey)
     }
 
     @Test fun throwSendsSelectedLinksToTargetAndClearsThem() = runTest {

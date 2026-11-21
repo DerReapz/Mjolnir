@@ -26,7 +26,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.mjolnir.android.send.scheduleOutgoing
 import app.mjolnir.android.share.UriImporter
@@ -44,6 +46,7 @@ import app.mjolnir.android.ui.PairingViewModel
 import app.mjolnir.android.ui.Screen
 import app.mjolnir.android.ui.SettingsScreen
 import app.mjolnir.android.ui.SettingsViewModel
+import app.mjolnir.android.ui.SpacesViewModel
 import app.mjolnir.android.ui.ThrowScreen
 import app.mjolnir.android.ui.ThrowViewModel
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +57,18 @@ class MainActivity : ComponentActivity() {
     private val container get() = (application as MjolnirApp).container
 
     private val factory = object : ViewModelProvider.Factory {
+        /** The Spaces view model keeps its invite code in the saved state, which only the extras can reach. */
+        override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
+            if (modelClass != SpacesViewModel::class.java) return create(modelClass)
+            val c = container
+            val throwing = throwVm
+            @Suppress("UNCHECKED_CAST")
+            return SpacesViewModel(
+                c.api, c.nicknames, extras.createSavedStateHandle(),
+                onPeersAffected = { throwing.refreshTargets() }, onUnauthorized = { resetQuietly(c.session) },
+            ) as T
+        }
+
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             val c = container
@@ -106,7 +121,7 @@ class MainActivity : ComponentActivity() {
                         when (screen) {
                             Screen.THROW -> ThrowScreen(throwVm, importer, onPairDevice = { screen = Screen.DEVICES })
                             Screen.CAUGHT -> CaughtScreen(viewModel(factory = factory))
-                            Screen.DEVICES -> DevicesScreen(viewModel(factory = factory), viewModel(factory = factory))
+                            Screen.DEVICES -> DevicesScreen(viewModel(factory = factory), viewModel(factory = factory), viewModel(factory = factory))
                             Screen.SETTINGS -> SettingsScreen(viewModel(factory = factory))
                         }
                     }

@@ -58,12 +58,15 @@ class DevicesViewModel(private val api: RelayApi, private val session: PhoneSess
     private val _state = MutableStateFlow(DevicesUi(nicknames = nicknames.changes.value))
     val state: StateFlow<DevicesUi> = _state.asStateFlow()
 
-    fun refresh() = run("Couldn't load devices") { _state.value = _state.value.copy(peers = api.peers(), notice = null) }
+    /** Paired devices only: a device that is just in one of your spaces is managed under Spaces. */
+    fun refresh() = run("Couldn't load devices") { _state.value = _state.value.copy(peers = api.peers().filter { it.space == null }, notice = null) }
 
     fun unpair(deviceId: String) = run("Couldn't unpair") {
         api.unpair(deviceId)
-        nicknames.remove(deviceId)
-        _state.value = _state.value.copy(peers = api.peers(), nicknames = nicknames.changes.value, notice = null)
+        val all = api.peers()
+        // A nickname goes with the pairing, unless a shared space still links you to the device.
+        if (all.none { it.deviceId == deviceId }) nicknames.remove(deviceId)
+        _state.value = _state.value.copy(peers = all.filter { it.space == null }, nicknames = nicknames.changes.value, notice = null)
     }
 
     /** Sets the private nickname for [deviceId]; empty clears it. */
@@ -91,15 +94,21 @@ class DevicesViewModel(private val api: RelayApi, private val session: PhoneSess
 }
 
 @Composable
-fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Modifier = Modifier) {
+fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, spaces: SpacesViewModel, modifier: Modifier = Modifier) {
     val state by vm.state.collectAsState()
     val pairingState by pairing.state.collectAsState()
+    val spacesState by spaces.state.collectAsState()
     var showPairing by rememberSaveable { mutableStateOf(false) }
+    var spacesStart by rememberSaveable { mutableStateOf<SpacesStart?>(null) } // non-null: the Spaces screen is open
     var confirm by remember { mutableStateOf<Peer?>(null) }
     var renaming by remember { mutableStateOf<Peer?>(null) }
-    LaunchedEffect(Unit) { vm.refresh() }
+    LaunchedEffect(Unit) { vm.refresh(); spaces.refresh() }
     LaunchedEffect(pairingState) { if (pairingState is PairingUi.Paired) vm.refresh() }
 
+    spacesStart?.let { start ->
+        SpacesScreen(spaces, start, onBack = { spacesStart = null; vm.refresh() }, modifier)
+        return
+    }
     Column(modifier.padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (showPairing) {
             PairingFlow(pairing, pairingState) { pairing.restart(); showPairing = false }
@@ -119,7 +128,18 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, modifier: Mod
                     }
                 }
             }
-            Button(onClick = { pairing.restart(); showPairing = true }, shape = ButtonShape) { Text("Pair a device") }
+            ForgeCard(onClick = { spacesStart = SpacesStart.NONE }) {
+                Column(Modifier.weight(1f)) {
+                    Text("Spaces", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium))
+                    val n = spacesState.spaces.size
+                    Text(if (n == 0) "Share with a group of devices" else "$n ${if (n == 1) "space" else "spaces"}", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { pairing.restart(); showPairing = true }, shape = ButtonShape) { Text("Pair a device") }
+                Button(onClick = { spacesStart = SpacesStart.NEW }, shape = ButtonShape) { Text("New space") }
+                Button(onClick = { spacesStart = SpacesStart.JOIN }, shape = ButtonShape) { Text("Join a space") }
+            }
         }
     }
 

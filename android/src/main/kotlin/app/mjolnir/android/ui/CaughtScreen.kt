@@ -126,7 +126,7 @@ internal fun CaughtRow(item: CaughtItem, from: String, now: Long, onClick: () ->
                 Text(it, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Text(
-                "from $from · $ago",
+                listOfNotNull("from $from", item.spaceName, ago.toString()).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
                 color = Forge.Muted,
             )
