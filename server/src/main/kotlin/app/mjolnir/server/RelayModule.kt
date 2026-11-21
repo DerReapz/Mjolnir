@@ -181,5 +181,6 @@ fun Application.relayModule(deps: RelayDeps) {
         sendRoutes(deps)
         fileRoutes(deps)
         roomRoutes(deps)
+        guestPageRoutes()
     }
 }

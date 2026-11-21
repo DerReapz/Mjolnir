@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#141414">
+<title>Mjolnir guest room</title>
+<link rel="icon" href="/guest/hammer-white.png">
+<link rel="preload" href="/guest/fonts/Inter.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="/guest/app.css">
+<script src="/guest/app.js" defer></script>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <img src="/guest/hammer-white.png" alt="" width="28" height="28">
+    <span class="brand">MJOLNIR</span>
+    <span id="time" class="time" aria-live="off"></span>
+  </header>
+
+  <p id="status" class="status" role="status">Connecting…</p>
+
+  <p id="intro" class="intro" hidden>You're connected to <strong id="owner"></strong>. Send files or folders, and download what they send you.</p>
+
+  <main id="room" class="room" hidden>
+    <div id="drop" class="drop" tabindex="0" aria-label="Drop files or paste links here">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#F5A524" stroke-width="2" aria-hidden="true"><path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M4 3h16"/></svg>
+      <span class="drop-hint">Drop files here, or</span>
+      <div class="pickers">
+        <button type="button" id="pick-files" class="btn btn-primary">Choose files</button>
+        <button type="button" id="pick-folder" class="btn btn-secondary">Choose folder</button>
+      </div>
+      <input type="file" id="file-input" multiple hidden>
+      <input type="file" id="folder-input" webkitdirectory multiple hidden>
+    </div>
+
+    <section id="for-you-section" class="list-section" hidden>
+      <h2>For you</h2>
+      <div id="for-you" class="list"></div>
+    </section>
+
+    <section id="sent-section" class="list-section" hidden>
+      <h2>You sent</h2>
+      <div id="sent" class="list"></div>
+    </section>
+  </main>
+
+  <footer id="footer" class="footer" hidden></footer>
+</div>
+</body>
+</html>
