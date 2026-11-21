@@ -19,6 +19,7 @@ import app.mjolnir.client.isPaired
 import app.mjolnir.client.Messages
 import app.mjolnir.client.OutgoingFiles
 import app.mjolnir.client.Outbox
+import app.mjolnir.client.GuestRoomUi
 import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.sendInBatches
@@ -59,7 +60,13 @@ data class ThrowUiState(
     val notice: String? = null,
     val outgoing: List<OutgoingFiles> = emptyList(),
     val sensitivity: Sensitivity = Sensitivity.MEDIUM,
+    /** When the open guest room closes (device clock); null while no room is open. */
+    val guestExpiresAtEpochMs: Long? = null,
 ) {
+    /** The subtitle of the guest card: `Guest room · mm:ss left`. */
+    fun guestSubtitle(now: Long): String =
+        guestExpiresAtEpochMs?.let { "Guest room · ${formatCountdown(it - now)} left" } ?: "Guest room"
+
     /** [targets] grouped for the selector; a single group has no title. */
     val groups: List<DestinationGroup> get() = groupDestinations(targets, lastUsedId, ::nameOf)
 
@@ -73,7 +80,7 @@ data class ThrowUiState(
     fun isSelected(peer: Peer): Boolean = peer.deviceId == targetKey?.deviceId
 
     /** The name to show for [peer]: its nickname, else its real name. */
-    fun nameOf(peer: Peer): String = nicknames[peer.deviceId] ?: peer.name
+    fun nameOf(peer: Peer): String = if (peer.kind == DeviceKind.GUEST) "Guest" else nicknames[peer.deviceId] ?: peer.name
 
     val canThrow: Boolean get() = targetKey != null && selected.isNotEmpty() && phase == ThrowPhase.Idle
 }
@@ -92,6 +99,10 @@ class ThrowViewModel(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** Called when the relay rejects this device's token, so the registration is reset (must not throw). */
     private val onUnauthorized: suspend () -> Unit = {},
+    /** The guest room's state, for the countdown on the guest card. */
+    guestRoom: StateFlow<GuestRoomUi> = MutableStateFlow(GuestRoomUi.Closed),
+    /** Called with the links that were sent to the guest, to show them in the room's exchange list. */
+    private val onLinksSentToGuest: (List<Tab>) -> Unit = {},
 ) : ViewModel() {
     private val _state = MutableStateFlow(ThrowUiState())
 
@@ -108,6 +119,9 @@ class ThrowViewModel(
     private val everWritten = HashSet<String>()
 
     init {
+        viewModelScope.launch {
+            guestRoom.collect { room -> _state.update { it.copy(guestExpiresAtEpochMs = (room as? GuestRoomUi.Open)?.expiresAtEpochMs) } }
+        }
         viewModelScope.launch {
             nicknames.changes.collect { shown -> _state.update { s -> s.copy(nicknames = shown) } }
         }
@@ -202,6 +216,8 @@ class ThrowViewModel(
     fun selectTarget(key: DestinationKey) {
         if (_state.value.targets.none { it.destinationKey == key }) return
         _state.update { it.copy(targetKey = key) }
+        // A guest is a stranger for an hour: never the default for next time.
+        if (_state.value.targets.any { it.destinationKey == key && it.kind == DeviceKind.GUEST }) return
         viewModelScope.launch(writes) {
             try {
                 config.update { it.copy(targetPcId = key.deviceId, targetSpaceId = key.spaceId) } // persisted key keeps its old name
@@ -228,14 +244,15 @@ class ThrowViewModel(
                 null to null
             }
             val keys = peers.map { it.destinationKey }
-            val remembered = rememberedId?.let { id ->
+            val guestIds = peers.filter { it.kind == DeviceKind.GUEST }.mapTo(HashSet()) { it.deviceId }
+            val remembered = rememberedId?.takeIf { it !in guestIds }?.let { id ->
                 keys.firstOrNull { it.deviceId == id && it.spaceId == rememberedSpace }
                     ?: keys.firstOrNull { it.deviceId == id && it.isPaired }
                     ?: keys.firstOrNull { it.deviceId == id }
             }
             _state.update { s ->
                 val target = s.targetKey?.takeIf { it in keys } ?: remembered ?: peers.firstOrNull { it.kind != DeviceKind.GUEST }?.destinationKey
-                s.copy(targets = peers, targetKey = target, lastUsedId = rememberedId)
+                s.copy(targets = peers, targetKey = target, lastUsedId = rememberedId?.takeIf { it !in guestIds })
             }
         }
     }
@@ -311,6 +328,7 @@ class ThrowViewModel(
             val outcome = sendInBatches(api, pc.deviceId, links.map { it.tab }, spaceId = space?.id)
             val sentUrls = outcome.sentTabs.mapTo(HashSet()) { it.url }
             links.filter { it.tab.url in sentUrls }.mapTo(gone) { it.id }
+            if (outcome.sentTabs.isNotEmpty() && pc.kind == DeviceKind.GUEST) onLinksSentToGuest(outcome.sentTabs)
             if (outcome.sentTabs.isNotEmpty()) parts += Messages.thrown(outcome.sentTabs.size, 0, shown, space?.name)
             outcome.error?.let { error ->
                 if (error.kind == RelayErrorKind.UNAUTHORIZED) {

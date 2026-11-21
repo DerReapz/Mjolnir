@@ -8,13 +8,11 @@ import app.mjolnir.client.Messages
 import app.mjolnir.client.OutgoingFiles
 import app.mjolnir.client.RelayException
 import app.mjolnir.protocol.RelayEvent
+import app.mjolnir.protocol.Tab
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
-
-/** The text the system share sheet gets for the invite link. */
-fun shareIntentText(link: String): String = link
 
 /** The top-level file or folder name of [relativePath] (a folder's name for anything inside one). */
 private fun unitName(relativePath: String) = if ('/' in relativePath) relativePath.substringBefore('/') else relativePath
@@ -44,6 +42,12 @@ class GuestTraffic(private val controller: GuestRoomController) {
             is RelayEvent.RoomEnded -> { rowOfFile.clear(); rowFiles.clear(); downloaded.clear() }
             else -> Unit
         }
+    }
+
+    /** One YOU SENT row per link in [tabs], which was sent to the guest. */
+    fun recordLinks(tabs: List<Tab>) {
+        val at = System.nanoTime()
+        tabs.forEachIndexed { i, tab -> controller.record(Exchanged("out:link:$at:$i", false, tab.title?.takeIf { it.isNotBlank() } ?: tab.url, "Link", null, false, null)) }
     }
 
     /** One YOU SENT row per top-level file or folder of [item], which has been uploaded and sent to the guest. */
@@ -81,7 +85,10 @@ class GuestRoomViewModel(
     /** Feeds relay events to the room until cancelled (while the screen is open). A dropped or rejected connection just ends it. */
     suspend fun collectEvents() {
         try {
-            events().collect(traffic::onEvent)
+            events().collect { e ->
+                if (e is RelayEvent.Connected) controller.restore() // events may have been missed while reconnecting
+                traffic.onEvent(e)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (_: RelayException) {

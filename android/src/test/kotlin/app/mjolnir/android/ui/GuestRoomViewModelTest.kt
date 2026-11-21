@@ -55,7 +55,6 @@ class GuestRoomViewModelTest {
         val open = assertIs<GuestRoomUi.Open>(vm.state.value)
         assertEquals("https://relay.example/g/secret-1", open.link)
         assertEquals(1_000L + Limits.GUEST_ROOM_TTL_MS, open.expiresAtEpochMs)
-        assertEquals("https://relay.example/g/secret-1", shareIntentText(open.link))
     }
 
     @Test fun restoreOnStart() = runTest {
@@ -114,5 +113,74 @@ class GuestRoomViewModelTest {
         assertEquals("Guest room", groups.first().title)
         assertEquals(listOf("g1"), groups.first().peers.map { it.deviceId })
         assertEquals("pc1", throwing.state.value.targetId)
+    }
+
+    private fun newThrowVm(
+        room: kotlinx.coroutines.flow.StateFlow<GuestRoomUi> = kotlinx.coroutines.flow.MutableStateFlow(GuestRoomUi.Closed),
+        onLinks: (List<app.mjolnir.protocol.Tab>) -> Unit = {},
+        config: JsonFileStore<PhoneConfig> = JsonFileStore(File(temp.root, "config.json"), PhoneConfig.serializer()) { PhoneConfig("https://relay.example", deviceName = "Pixel") },
+    ) = ThrowViewModel(
+        api,
+        JsonFileStore(File(temp.root, "tray.json"), ListSerializer(TrayItem.serializer())) { emptyList() },
+        config,
+        Outbox(JsonFileStore(File(temp.root, "outbox.json"), ListSerializer(OutgoingFiles.serializer())) { emptyList() }, api = { api }, open = { u, _ -> File(u.path).inputStream() }),
+        Nicknames(JsonFileStore(File(temp.root, "nicknames.json"), MapSerializer(String.serializer(), String.serializer())) { emptyMap() }),
+        {}, main.dispatcher, {}, room, onLinks,
+    )
+
+    @Test fun rememberedGuestIsNeverTheDefault() = runTest {
+        api.peers += listOf(Peer("pc1", "Desktop", DeviceKind.PC), Peer("g1", "Guest", DeviceKind.GUEST))
+        val config = JsonFileStore(File(temp.root, "config.json"), PhoneConfig.serializer()) { PhoneConfig("https://relay.example", deviceName = "Pixel", targetPcId = "g1") }
+        val vm = newThrowVm(config = config)
+        vm.refreshTargets(); advanceUntilIdle()
+        assertEquals("pc1", vm.state.value.targetId)
+        vm.selectTarget("g1"); advanceUntilIdle()
+        assertEquals("g1", vm.state.value.targetId)
+        assertEquals("g1", config.read().targetPcId) // untouched: the guest pick is not persisted
+    }
+
+    @Test fun guestSelectionIsNotPersisted() = runTest {
+        api.peers += listOf(Peer("pc1", "Desktop", DeviceKind.PC), Peer("g1", "Guest", DeviceKind.GUEST))
+        val config = JsonFileStore(File(temp.root, "config.json"), PhoneConfig.serializer()) { PhoneConfig("https://relay.example", deviceName = "Pixel", targetPcId = "pc1") }
+        val vm = newThrowVm(config = config)
+        vm.refreshTargets(); advanceUntilIdle()
+        vm.selectTarget("g1"); advanceUntilIdle()
+        assertEquals("pc1", config.read().targetPcId)
+    }
+
+    @Test fun guestCardShowsTheRoomCountdown() = runTest {
+        val room = kotlinx.coroutines.flow.MutableStateFlow<GuestRoomUi>(GuestRoomUi.Open("r", "l", 100_000L + 41 * 60_000L + 12_000L, null))
+        val vm = newThrowVm(room)
+        advanceUntilIdle()
+        assertEquals("Guest room · 41:12 left", vm.state.value.guestSubtitle(100_000L))
+        room.value = GuestRoomUi.Closed; advanceUntilIdle()
+        assertEquals("Guest room", vm.state.value.guestSubtitle(100_000L))
+        assertEquals("Guest", vm.state.value.nameOf(Peer("g1", "Whoever", DeviceKind.GUEST)))
+    }
+
+    @Test fun connectedEventRestoresTheRoom() = runTest {
+        val vm = newVm(); advanceUntilIdle()
+        assertEquals(GuestRoomUi.Closed, vm.state.value)
+        val job = launch(main.dispatcher) { vm.collectEvents() }
+        advanceUntilIdle()
+        api.room = RoomResponse("r9", "s9", api.serverNowEpochMs + 60_000)
+        secrets.write(mapOf("r9" to "s9"))
+        api.events.emit(RelayEvent.Connected); advanceUntilIdle()
+        assertEquals("https://relay.example/g/s9", assertIs<GuestRoomUi.Open>(vm.state.value).link)
+        job.cancel()
+    }
+
+    @Test fun linksThrownToTheGuestGetYouSentRows() = runTest {
+        api.peers += listOf(Peer("pc1", "Desktop", DeviceKind.PC), Peer("g1", "Guest", DeviceKind.GUEST))
+        val controller = GuestRoomController({ api }, { "https://relay.example" }, secrets, kotlinx.coroutines.CoroutineScope(main.dispatcher)) { 1_000L }
+        val traffic = GuestTraffic(controller)
+        val vm = newThrowVm(onLinks = traffic::recordLinks)
+        vm.addShared(listOf(TrayItem.Link(app.mjolnir.protocol.Tab("https://a.com", "A")))); vm.refreshTargets(); advanceUntilIdle()
+        vm.selectTarget("g1"); advanceUntilIdle()
+        vm.onHoldStart(); vm.onFlick(); advanceUntilIdle()
+        val row = controller.exchanged.value.single()
+        assertEquals(false, row.fromGuest)
+        assertEquals("A", row.title)
+        assertEquals("Link", row.detail)
     }
 }

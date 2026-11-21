@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.mjolnir.android.session.PhoneSession
+import app.mjolnir.client.GuestRoomUi
 import app.mjolnir.client.Messages
 import app.mjolnir.client.isPaired
 import app.mjolnir.client.Nicknames
@@ -145,7 +146,7 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, spaces: Space
             ForgeCard(onClick = { showGuestRoom = true }) {
                 Column(Modifier.weight(1f)) {
                     Text("Guest room", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium))
-                    Text(if (room is app.mjolnir.client.GuestRoomUi.Open) "Open" else "Share files with anyone, in their browser", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
+                    Text(if (room is GuestRoomUi.Open) "Open" else "Share files with anyone, in their browser", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

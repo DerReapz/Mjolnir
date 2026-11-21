@@ -97,6 +97,28 @@ class PhoneCatcherTest {
         assertEquals(listOf("Caught 2 files from DESKTOP-4F2K"), notes)
     }
 
+    @Test fun guestDeliveryGetsFromGuestRows() = runTest {
+        val rows = mutableListOf<app.mjolnir.client.Exchanged>()
+        val guest = Peer("g1", "Guest", DeviceKind.GUEST)
+        val a = api.putBlob("f1", "Photos/a.jpg", byteArrayOf(1, 2, 3))
+        val b = api.putBlob("f2", "Photos/b.jpg", byteArrayOf(4))
+        val loose = api.putBlob("f3", "note.txt", byteArrayOf(5, 6))
+        PhoneCatcher(api, store, staging, publisher, notify = { notes += it }, decide = { NetDecision.GO }, now = { 1_000 }, recordGuest = { rows += it })
+            .handle(Delivery("d1", guest, listOf(Tab("https://a.com")), 0, listOf(a, b, loose)))
+        assertEquals(listOf("Photos", "note.txt", "https://a.com"), rows.map { it.title })
+        assertEquals(listOf("in:d1:0", "in:d1:1", "in:d1:2"), rows.map { it.id })
+        assertTrue(rows.all { it.fromGuest && !it.downloadedByGuest })
+        assertEquals("Folder · 2 files · 4 B", rows[0].detail)
+        assertEquals("Link", rows[2].detail)
+    }
+
+    @Test fun nonGuestDeliveryRecordsNoRows() = runTest {
+        val rows = mutableListOf<app.mjolnir.client.Exchanged>()
+        PhoneCatcher(api, store, staging, publisher, notify = { notes += it }, decide = { NetDecision.GO }, now = { 1_000 }, recordGuest = { rows += it })
+            .handle(Delivery("d1", pc, listOf(Tab("https://a.com")), 0))
+        assertTrue(rows.isEmpty())
+    }
+
     @Test fun largeDeliveryOnMobileDataWaits() = runTest {
         val c = catcher { NetDecision.WAIT_FOR_WIFI }
         val d = Delivery("d1", pc, emptyList(), 0, listOf(api.putBlob("f1", "big.bin", ByteArray(10))))

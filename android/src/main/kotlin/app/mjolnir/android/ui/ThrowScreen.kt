@@ -53,6 +53,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -295,7 +296,9 @@ private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: 
     var open by remember { mutableStateOf(false) }
     val current = state.target ?: state.targets.first()
     Box {
-        TargetCard(state.nameOf(current) + (current.space?.let { " · ${it.name}" } ?: ""), kindLabel(current), onClick = { open = true })
+        val now = rememberNowEverySecond(state.guestExpiresAtEpochMs != null)
+        TargetCard(state.nameOf(current) + (current.space?.let { " · ${it.name}" } ?: ""), kindLabel(current), onClick = { open = true },
+            subtitle = if (current.kind == app.mjolnir.protocol.DeviceKind.GUEST) state.guestSubtitle(now) else null)
         DropdownMenu(
             expanded = open, onDismissRequest = { open = false },
             containerColor = Forge.Surface, border = BorderStroke(1.dp, Forge.Border),
@@ -306,10 +309,15 @@ private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: 
                     DropdownMenuItem(
                         text = {
                             val chosen = state.isSelected(device) // every card of the chosen device, under each heading
-                            Text(
-                                "${state.nameOf(device)} (${kindLabel(device)})", maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                color = if (chosen) Forge.Accent else Color.Unspecified, fontWeight = if (chosen) FontWeight.SemiBold else null,
-                            )
+                            Column {
+                                Text(
+                                    "${state.nameOf(device)} (${kindLabel(device)})", maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    color = if (chosen) Forge.Accent else Color.Unspecified, fontWeight = if (chosen) FontWeight.SemiBold else null,
+                                )
+                                if (device.kind == app.mjolnir.protocol.DeviceKind.GUEST) {
+                                    Text(state.guestSubtitle(now), style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
+                                }
+                            }
                         },
                         onClick = { vm.selectTarget(device.destinationKey); open = false },
                     )
@@ -321,7 +329,7 @@ private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: 
 
 /** The target selector: `Throw to`, the device name, a `PC`/`Phone` badge and a chevron. [name] is null before any pairing. */
 @Composable
-internal fun TargetCard(name: String?, kind: String?, onClick: () -> Unit) {
+internal fun TargetCard(name: String?, kind: String?, onClick: () -> Unit, subtitle: String? = null) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -338,7 +346,10 @@ internal fun TargetCard(name: String?, kind: String?, onClick: () -> Unit) {
             Text("Pair a device first", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold))
         } else {
             Text("Throw to", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
-            Text(name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Column(Modifier.weight(1f)) {
+                Text(name, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1) }
+            }
             if (kind != null) {
                 Text(
                     kind,
@@ -417,4 +428,16 @@ internal fun outgoingTarget(state: ThrowUiState, item: OutgoingFiles): String {
     // The live name wins (a renamed space); the throw's own record keeps the label once the space has left the list.
     val spaceName = item.spaceId?.let { id -> state.targets.firstNotNullOfOrNull { it.space?.takeIf { s -> s.id == id } }?.name ?: item.spaceName }
     return if (spaceName == null) name else "$name · $spaceName"
+}
+
+/** The device clock, refreshed each second while [ticking] (for a countdown). */
+@Composable
+private fun rememberNowEverySecond(ticking: Boolean): Long {
+    val now by produceState(System.currentTimeMillis(), ticking) {
+        while (ticking) {
+            value = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+    return now
 }

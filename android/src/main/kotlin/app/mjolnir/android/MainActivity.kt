@@ -80,6 +80,7 @@ class MainActivity : ComponentActivity() {
                     ThrowViewModel(
                         c.api, c.tray, c.config, c.outbox, c.nicknames, scheduleOutgoing = { id -> scheduleOutgoing(appContext, id) },
                         io = Dispatchers.IO, onUnauthorized = { resetQuietly(session) },
+                        guestRoom = c.guestRoom.state, onLinksSentToGuest = c.guestTraffic::recordLinks,
                     )
                 }
                 DevicesViewModel::class.java -> DevicesViewModel(c.api, session, c.nicknames)

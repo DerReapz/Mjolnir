@@ -25,10 +25,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,20 +39,18 @@ import app.mjolnir.client.Exchanged
 import app.mjolnir.client.GuestRoomUi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.ui.platform.toClipEntry
 
 private val GuestGreen = androidx.compose.ui.graphics.Color(0xFF4ADE80)
 
 /** `41:12`: whole minutes and seconds left (never negative). */
 fun formatCountdown(msLeft: Long): String {
     val s = (msLeft.coerceAtLeast(0) + 999) / 1000
-    return "%02d:%02d".format(s / 60, s % 60)
+    return "%02d:%02d".format(java.util.Locale.ROOT, s / 60, s % 60)
 }
 
 /** The system share sheet for the invite link (text only; there is no QR code on the phone). */
 fun shareLinkIntent(link: String): Intent =
-    Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, shareIntentText(link)), null)
+    Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, link), null)
 
 /** The Guest room screen, opened from Devices. Listens for room events while it is open. */
 @Composable
@@ -130,6 +130,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.OpenRoom(room: GuestR
         items(exchanged, key = { it.id }) { ExchangedRow(it) }
     }
     Text("Only this phone can exchange with the guest.", color = Forge.Muted, style = MaterialTheme.typography.bodySmall)
+    Text("Unclaimed files are deleted when the room closes.", color = Forge.Muted, style = MaterialTheme.typography.bodySmall)
     OutlinedButton(onClick = onEnd, shape = ButtonShape, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text("End room") }
 }
 
