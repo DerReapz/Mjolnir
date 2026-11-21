@@ -97,6 +97,54 @@ object DeviceKindSerializer : KSerializer<DeviceKind> {
     val expiresAtEpochMs: Long,
     val maxFileMb: Int,
 )
+
+@Serializable enum class InviteState { PENDING_APPROVAL, APPROVED, DENIED, DECLINED }
+@Serializable data class ChatMessage(
+    val id: String,
+    val chatId: String,
+    val author: Peer,
+    val rev: Long,
+    val sentAtEpochMs: Long,
+    val editedAtEpochMs: Long? = null,
+    val deleted: Boolean = false,
+    val deletedByAdmin: Boolean = false,
+    val text: String? = null,
+)
+@Serializable data class ChatSummary(
+    val id: String,
+    val spaceId: String,
+    val spaceName: String,
+    val name: String,
+    val ownerId: String,
+    val rev: Long,
+    val readRev: Long,
+    val member: Boolean,
+    val lastMessage: ChatMessage?,
+)
+@Serializable data class ChatSync(
+    val chatId: String,
+    val rev: Long,
+    val ownerId: String,
+    val members: List<Peer>,
+    val messages: List<ChatMessage>,
+    val hasMore: Boolean,
+)
+@Serializable data class ChatInvite(
+    val id: String,
+    val chatId: String,
+    val chatName: String,
+    val spaceName: String,
+    val invitee: Peer,
+    val inviter: Peer,
+    val state: InviteState,
+)
+@Serializable data class CreateChatRequest(val name: String)
+@Serializable data class RenameChatRequest(val name: String)
+@Serializable data class InviteRequest(val deviceId: String)
+@Serializable data class TransferOwnerRequest(val deviceId: String)
+@Serializable data class PostMessageRequest(val text: String)
+@Serializable data class EditMessageRequest(val text: String)
+@Serializable data class ReadRequest(val rev: Long)
 @Serializable data class ErrorResponse(val error: String, val detail: String? = null)
 
 @Serializable
@@ -108,6 +156,12 @@ sealed interface RelayEvent {
 
     @Serializable @SerialName("space_changed") data class SpaceChanged(val spaceId: String) : RelayEvent
     @Serializable @SerialName("space_deleted") data class SpaceDeleted(val space: SpaceRef) : RelayEvent
+
+    /** Sent to a chat's members (and its space admin) when the chat's messages or members changed; [rev] is the chat's revision. */
+    @Serializable @SerialName("chat_changed") data class ChatChanged(val chatId: String, val rev: Long) : RelayEvent
+    @Serializable @SerialName("chat_deleted") data class ChatDeleted(val chatId: String) : RelayEvent
+    /** Sent when the receiver's list of actionable chat invites changed. */
+    @Serializable @SerialName("chat_invites_changed") data object ChatInvitesChanged : RelayEvent
 
     /** Sent to a room's owner when the guest redeems the invite. */
     @Serializable @SerialName("guest_joined") data class GuestJoined(val roomId: String, val guest: Peer) : RelayEvent

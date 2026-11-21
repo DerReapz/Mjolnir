@@ -116,6 +116,8 @@ class SpacesStoreTest {
                 // files as it was before tombstones and guest rooms (no acked_at, no downloaded_at); no rooms table.
                 it.executeUpdate("CREATE TABLE files(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL, relative_path TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, delivery_id TEXT NULL, sent_to TEXT NULL)")
                 it.executeUpdate("INSERT INTO files VALUES('f1','d1','a.txt','a.txt','text/plain',3,'abc',5,NULL,NULL)")
+                // chat tables as an earlier build might have left them: no removed_by_admin, no deleted_by_admin
+                it.executeUpdate("CREATE TABLE chat_members(chat_id TEXT NOT NULL, device_id TEXT NOT NULL, joined_at INTEGER NOT NULL, read_rev INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(chat_id, device_id))")
             }
         }
         val s = Store("jdbc:sqlite:$file")
@@ -133,6 +135,13 @@ class SpacesStoreTest {
         val room = s.createRoom("d1", "hash", 100, 1_000)!!
         assertEquals(room, s.openRoomOf("d1", 100))
         assertEquals(1, s.rowCount("rooms"))
+        assertEquals(0, s.rowCount("chats")) // upgradeAddsChatTables
+        val space = s.createSpace("d1", "S", 10)
+        val chat = s.createChat(space.id, "d1", "Plans", 11)
+        assertTrue(s.isChatMember(chat.id, "d1"))
+        val msg = s.postMessage(chat.id, "d1", "hi", 12)
+        assertTrue(s.deleteMessage(msg.id, "d1", false))
+        assertEquals(1, s.rowCount("chat_messages"))
         // reopening an already-upgraded db is a no-op
         Store("jdbc:sqlite:$file")
     }

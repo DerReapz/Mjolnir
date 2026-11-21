@@ -77,3 +77,29 @@ class GuestRoomModelsTest {
         assertEquals(s, MjolnirJson.decodeFromString<RoomStatus>(MjolnirJson.encodeToString(RoomStatus.serializer(), s)))
     }
 }
+
+class ChatModelsTest {
+    private fun roundTrip(e: RelayEvent) =
+        assertEquals(e, MjolnirJson.decodeFromString(RelayEvent.serializer(), MjolnirJson.encodeToString(RelayEvent.serializer(), e)))
+
+    @Test fun chatEventsUseTypeDiscriminator() {
+        assertEquals("""{"type":"chat_changed","chatId":"c","rev":3}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.ChatChanged("c", 3)))
+        assertEquals("""{"type":"chat_deleted","chatId":"c"}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.ChatDeleted("c")))
+        assertEquals("""{"type":"chat_invites_changed"}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.ChatInvitesChanged))
+        roundTrip(RelayEvent.ChatChanged("c", 3)); roundTrip(RelayEvent.ChatDeleted("c")); roundTrip(RelayEvent.ChatInvitesChanged)
+    }
+
+    @Test fun oldEventJsonStillDecodes() {
+        assertEquals(RelayEvent.Unpaired("d"), MjolnirJson.decodeFromString(RelayEvent.serializer(), """{"type":"unpaired","deviceId":"d"}"""))
+        // A new field on a known event and an unknown event type: the client's lenient decoding must not choke on the former
+        // and must be able to skip the latter.
+        assertEquals(RelayEvent.SpaceChanged("s"), MjolnirJson.decodeFromString(RelayEvent.serializer(), """{"type":"space_changed","spaceId":"s","extra":1}"""))
+        val unknown = runCatching { MjolnirJson.decodeFromString(RelayEvent.serializer(), """{"type":"from_the_future","x":1}""") }
+        assertTrue(unknown.isFailure) // callers skip undecodable events (see RelayClient)
+    }
+
+    @Test fun messageDefaults() {
+        val m = MjolnirJson.decodeFromString<ChatMessage>("""{"id":"m","chatId":"c","author":{"deviceId":"d","name":"n","kind":"PC"},"rev":1,"sentAtEpochMs":2}""")
+        assertFalse(m.deleted); assertFalse(m.deletedByAdmin); assertEquals(null, m.text); assertEquals(null, m.editedAtEpochMs)
+    }
+}
