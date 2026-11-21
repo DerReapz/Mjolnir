@@ -100,6 +100,8 @@ fun SendTabContent(
     onSend: () -> Unit = {},
     onOpen: (ItemPreview) -> Unit = {},
     onShowInFolder: (ItemPreview) -> Unit = {},
+    /** The open guest room's time left as `mm:ss`, shown on the guest card. */
+    guestLeft: String? = null,
     modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(emptySet<String>()) }
@@ -130,9 +132,14 @@ fun SendTabContent(
                                 .clickable { onUpdate { it.selectTarget(peer.destinationKey) } }.padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.Center,
                         ) {
-                            Text(nicknameOf(peer), style = TextStyle(fontFamily = ForgeFonts.inter600, fontSize = 14.sp, color = Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            val isGuest = peer.kind == DeviceKind.GUEST
+                            Text(if (isGuest) "Guest" else nicknameOf(peer), style = TextStyle(fontFamily = ForgeFonts.inter600, fontSize = 14.sp, color = Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text(
-                                if (peer.deviceId == state.lastUsedId) "$kind · last used" else kind,
+                                when {
+                                    isGuest -> guestLeft?.let { "Guest room · $it left" } ?: "Guest room"
+                                    peer.deviceId == state.lastUsedId -> "$kind · last used"
+                                    else -> kind
+                                },
                                 style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted), maxLines = 1,
                             )
                         }
@@ -315,7 +322,7 @@ private fun PreviewPanel(preview: ItemPreview?, onOpen: (ItemPreview) -> Unit, o
 
 private fun Modifier.height200() = this.then(Modifier.heightIn(min = 200.dp, max = 200.dp))
 
-private fun Modifier.dashedBorder(color: Color, radius: Dp): Modifier = drawBehind {
+internal fun Modifier.dashedBorder(color: Color, radius: Dp): Modifier = drawBehind {
     val stroke = Stroke(1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(5.dp.toPx(), 4.dp.toPx())))
     drawRoundRect(color, cornerRadius = CornerRadius(radius.toPx()), style = stroke)
 }

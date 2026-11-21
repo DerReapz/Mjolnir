@@ -143,4 +143,23 @@ class DesktopCatcherTest {
         assertEquals(listOf("Caught 1 tab from Pixel 8"), notes) // paired deliveries carry no label
         assertNull(history.entries.value.first { it.id.startsWith("d2") }.space)
     }
+
+    // the guest room lists what a guest sends: a progress row, replaced by one finished row per file or folder
+    @Test fun guestDeliveryIsRecordedForTheRoomAndNamedGuest(@TempDir dir: File) = runTest {
+        val api = FakeRelayApi()
+        val refs = listOf(api.putBlob("a", "Photos/a.jpg", "1".toByteArray()), api.putBlob("b", "Photos/b.jpg", "22".toByteArray()), api.putBlob("c", "note.txt", "333".toByteArray()))
+        val rows = mutableListOf<Exchanged>()
+        history = ReceivedHistory(JsonFileStore(File(dir.parentFile, "hist-g-${dir.name}.json"), ListSerializer(ReceivedEntry.serializer())) { emptyList() })
+        val guest = Peer("g1", "Guest 4F2A", DeviceKind.GUEST)
+        DesktopCatcher(api, opener, { dir }, { notes += it }, history, { openLinks }, { it.name }, { marked += it.name }, recordGuest = { rows += it })
+            .handle(Delivery("d9", guest, emptyList(), 0, refs))
+        val finished = rows.filter { it.progress == null }
+        assertEquals(listOf("in:d9:0", "in:d9:1"), finished.map { it.id })
+        assertEquals(listOf("Photos", "note.txt"), finished.map { it.title })
+        assertTrue(finished.all { it.fromGuest && !it.downloadedByGuest })
+        assertTrue(finished[0].detail.startsWith("Folder · 2 files · "), finished[0].detail)
+        assertEquals(File(dir, "Photos").absolutePath, finished[0].localPath)
+        assertTrue(rows.any { it.progress == 1f && it.id == "in:d9:0" }) // progress shares the first row's id, so it is replaced
+        assertEquals(listOf("Guest"), history.entries.value.map { it.fromName }.distinct())
+    }
 }

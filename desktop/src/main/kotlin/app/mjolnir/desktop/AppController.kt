@@ -1,6 +1,9 @@
 package app.mjolnir.desktop
 
 import app.mjolnir.client.FileSeenDeliveries
+import app.mjolnir.client.Exchanged
+import app.mjolnir.client.GuestRoomController
+import app.mjolnir.client.GuestRoomUi
 import app.mjolnir.client.InboxDrainer
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.LocalUpload
@@ -15,7 +18,9 @@ import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.RelayUrls
 import app.mjolnir.client.cleanStaging
+import app.mjolnir.client.guestRoomSecretStore
 import app.mjolnir.client.sendInBatches
+import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.SpaceRef
@@ -59,7 +64,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 
-/** Tabs of the main window; `GUEST` is unused until the guest-room plan. */
+/** Tabs of the main window. */
 enum class MainTab { SEND, GUEST, RECEIVED, DEVICES, SETTINGS }
 
 /** The sidebar's relay line. */
@@ -111,6 +116,13 @@ class AppController(
         api = ::api, scope = scope,
         onPeersAffected = { scope.launch { refreshAfterSpaceChange() } },
         onUnauthorized = { scope.launch { recoverUnauthorized(store.read().token) } },
+    )
+
+    /** The guest room this device owns: its link, countdown, guest and the list of what was exchanged. */
+    val guestRoom = GuestRoomController(
+        api = ::api, relayUrl = { RelayUrls.normalize(_config.value.relayUrl) ?: "" },
+        secrets = guestRoomSecretStore(File(dataDir, "guest-room.json")),
+        scope = scope, clock = System::currentTimeMillis,
     )
 
     private val _send = MutableStateFlow(SendState())
@@ -220,10 +232,11 @@ class AppController(
                     // Also after unpair, space change and space deletion events: the refreshed list decides which nicknames still have a link.
                     onPeersChanged = { refreshAfterSpaceChange() },
                     afterDrain = { cleanStagingFolder(api) },
-                    onConnected = { kickOutbox() },
+                    onConnected = { kickOutbox(); guestRoom.restore() },
                     onConnectionChange = { connected.value = it },
                     onSpaceChanged = { spaces.refresh() },
                     onSpaceDeleted = { onSpaceDeleted(it.space) },
+                    onGuestRoomEvent = ::onGuestRoomEvent,
                 ).run()
                 delay(RETRY_DELAY_MS) // the events flow ended (client closed): start over
             } catch (e: CancellationException) {
@@ -247,6 +260,7 @@ class AppController(
         history = history,
         openLinks = { _config.value.openLinksOnArrival },
         displayName = nicknames::displayName,
+        recordGuest = guestRoom::record,
     )
 
     private suspend fun cleanStagingFolder(api: RelayApi) {
@@ -343,22 +357,85 @@ class AppController(
         val token = store.read().token
         val name = displayName(item.files)
         val to = nicknames.get(item.to) ?: item.toName // the outbox keeps the real name; a nickname may have changed since
+        val toGuest = (guestRoom.state.value as? GuestRoomUi.Open)?.guest?.deviceId == item.to
         val result = try {
             outbox.process(item.id) { done, total ->
                 val pct = if (total <= 0) 100 else (done * 100 / total).toInt()
                 _tooltip.value = "Mjolnir: sending $name… $pct%"
+                if (toGuest) recordSentToGuest(item, progress = done to total)
             }
         } finally {
             _tooltip.value = TOOLTIP_IDLE
         }
         when (result) {
-            is OutboxResult.Done -> notify(Messages.sent(0, item.files.size, to, item.spaceName))
+            is OutboxResult.Done -> {
+                if (toGuest) recordSentToGuest(result.item, progress = null)
+                notify(Messages.sent(0, item.files.size, to, item.spaceName))
+            }
             is OutboxResult.Retry -> scheduleRetry()
             is OutboxResult.Failed -> {
                 notify(Messages.notSent(result.message ?: Messages.failureReason(result.kind, to)))
                 if (result.kind == RelayErrorKind.UNAUTHORIZED) recoverUnauthorized(token)
             }
         }
+    }
+
+    // ---- guest room ---------------------------------------------------------------------------------------------
+
+    /** Row id of each file sent to the guest, and the files of each row: a row counts as downloaded once all its files were. */
+    private val guestRowOfFile = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val guestRowFiles = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
+    private val guestDownloaded = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    internal fun onGuestRoomEvent(e: RelayEvent) {
+        guestRoom.onEvent(e)
+        when (e) {
+            is RelayEvent.Downloaded -> {
+                guestDownloaded += e.fileIds
+                for (id in e.fileIds.mapNotNull(guestRowOfFile::get).distinct()) {
+                    if (!guestDownloaded.containsAll(guestRowFiles[id].orEmpty())) continue
+                    guestRoom.exchanged.value.find { it.id == id }?.let { guestRoom.record(it.copy(downloadedByGuest = true)) }
+                }
+            }
+            is RelayEvent.RoomEnded -> { guestRowOfFile.clear(); guestRowFiles.clear(); guestDownloaded.clear() }
+            else -> Unit
+        }
+    }
+
+    /**
+     * Shows [item] (sent to the guest) in the room's exchange list: one row with its progress while uploading, then one
+     * row per top-level file or folder. The first row keeps the progress row's id, so it replaces it.
+     */
+    private fun recordSentToGuest(item: OutgoingFiles, progress: Pair<Long, Long>?) {
+        val units = item.files.groupBy { topFolder(it.relativePath) ?: it.relativePath }.entries.toList()
+        if (progress != null) {
+            val (done, total) = progress
+            val fraction = if (total > 0) done.toFloat() / total else 1f
+            val (title, _) = units.first()
+            guestRoom.record(Exchanged("out:${item.id}:0", false, title, "${Messages.size(done)} of ${Messages.size(total)} · ${(fraction * 100).toInt()}%", fraction, false, null))
+            return
+        }
+        units.forEachIndexed { i, (title, files) ->
+            val id = "out:${item.id}:$i"
+            val bytes = files.sumOf { it.sizeBytes }
+            val detail = if (files.first().relativePath.contains('/')) "Folder · ${files.size} ${if (files.size == 1) "file" else "files"} · ${Messages.size(bytes)}" else Messages.size(bytes)
+            val ids = files.mapNotNull { it.ref?.id }.toSet()
+            guestRowFiles[id] = ids
+            ids.forEach { guestRowOfFile[it] = id }
+            guestRoom.record(Exchanged(id, false, title, detail, null, ids.isNotEmpty() && guestDownloaded.containsAll(ids), null))
+        }
+    }
+
+    /** Sends files and folders to the guest of the open room through the normal outbox; with no guest yet, nothing is sent. */
+    fun sendToGuest(files: List<File>): Job = scope.launch {
+        val guest = (guestRoom.state.value as? GuestRoomUi.Open)?.guest ?: return@launch
+        val scan = withContext(Dispatchers.IO) { scanFiles(files) }
+        // The queue's own rules (duplicates, size limit) apply, but to this send alone, not to what is queued on the Send tab.
+        val staged = SendState().withScanned(scan)
+        staged.notice?.let { notify(it) }
+        if (staged.files.isEmpty()) return@launch
+        val result = send(guest, emptyList(), staged.files)
+        if (result.message.isNotBlank()) notify(result.message)
     }
 
     private fun scheduleRetry() {
@@ -455,7 +532,8 @@ class AppController(
             parts += Messages.notSent(Messages.failureReason(error.kind, shown))
             if (error.kind == RelayErrorKind.UNAUTHORIZED) scope.launch { recoverUnauthorized(token) }
         }
-        if (sentTabs.isNotEmpty() || files.isNotEmpty()) updateConfig { it.copy(lastPhoneId = target.deviceId, lastSpaceId = target.space?.id) }
+        // A guest is not a device to come back to: it never becomes the last-used (default) target.
+        if (target.kind != DeviceKind.GUEST && (sentTabs.isNotEmpty() || files.isNotEmpty())) updateConfig { it.copy(lastPhoneId = target.deviceId, lastSpaceId = target.space?.id) }
         return SendResult(parts.joinToString(" "), sentTabs, files.isNotEmpty())
     }
 

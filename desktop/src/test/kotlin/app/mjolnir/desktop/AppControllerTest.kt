@@ -695,4 +695,26 @@ class AppControllerTest {
         assertNull(c.config.value.lastSpaceId) // a paired card clears it
         scope.cancel()
     }
+
+    // files dropped on the Guest tab go to the guest through the outbox, show as YOU SENT, and never become the default target
+    @Test fun sendToGuestListsTheFileAndMarksDownload() = runTest {
+        val fake = FakeRelayApi()
+        val (c, scope) = controller(fake)
+        val guest = Peer("g1", "Guest 4F2A", DeviceKind.GUEST)
+        fake.peers += guest
+        c.guestRoom.open(); runCurrent()
+        c.guestRoom.onEvent(RelayEvent.GuestJoined((c.guestRoom.state.value as GuestRoomUi.Open).roomId, guest))
+        val file = File(dir, "Seating plan.pdf").apply { writeText("pdf") }
+
+        c.sendToGuest(listOf(file)).join()
+        repeat(200) { runCurrent(); if (fake.sent.isEmpty()) Thread.sleep(10) } // the upload reads the file on a real IO thread
+
+        val row = c.guestRoom.exchanged.value.single()
+        assertEquals("Seating plan.pdf", row.title); assertFalse(row.fromGuest); assertFalse(row.downloadedByGuest)
+        assertNull(c.config.value.lastPhoneId)
+        val fileId = fake.sent.single().fileIds.single()
+        c.onGuestRoomEvent(RelayEvent.Downloaded("d1", listOf(fileId)))
+        assertTrue(c.guestRoom.exchanged.value.single().downloadedByGuest)
+        scope.cancel()
+    }
 }

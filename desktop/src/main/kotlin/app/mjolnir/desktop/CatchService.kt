@@ -20,6 +20,8 @@ class CatchService(
     /** Runs when a space this device is in changed (members, name, admin) or was deleted; the peer list is refreshed after it. */
     private val onSpaceChanged: (spaceId: String) -> Unit = {},
     private val onSpaceDeleted: (RelayEvent.SpaceDeleted) -> Unit = {},
+    /** Runs for the guest room's events (guest joined, room ended, files downloaded by the guest). */
+    private val onGuestRoomEvent: (RelayEvent) -> Unit = {},
 ) {
     /** Collects relay events until cancelled; RelayException(UNAUTHORIZED) and any drain failure propagate. */
     suspend fun run() {
@@ -41,9 +43,9 @@ class CatchService(
                 is RelayEvent.Unpaired -> { onUnpaired(event.deviceId); onPeersChanged() }
                 is RelayEvent.SpaceChanged -> { onSpaceChanged(event.spaceId); onPeersChanged() }
                 is RelayEvent.SpaceDeleted -> { onSpaceDeleted(event); onPeersChanged() }
-                // The guest room UI arrives later; for now a guest joining or leaving just refreshes the peer list.
-                is RelayEvent.GuestJoined, is RelayEvent.RoomEnded -> onPeersChanged()
-                is RelayEvent.Downloaded -> Unit
+                // The guest joining or the room ending also changes the peer list (the guest peer comes and goes).
+                is RelayEvent.GuestJoined, is RelayEvent.RoomEnded -> { onGuestRoomEvent(event); onPeersChanged() }
+                is RelayEvent.Downloaded -> onGuestRoomEvent(event)
             }
         }
     }

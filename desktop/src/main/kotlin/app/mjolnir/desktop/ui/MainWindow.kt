@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -61,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.rememberWindowState
+import app.mjolnir.client.GuestRoomUi
 import app.mjolnir.desktop.AppController
 import app.mjolnir.desktop.ItemPreview
 import app.mjolnir.desktop.MainTab
@@ -69,12 +71,14 @@ import app.mjolnir.desktop.browseWithSystem
 import app.mjolnir.desktop.previewOf
 import app.mjolnir.desktop.scanFiles
 import app.mjolnir.desktop.uploadUnitKey
+import app.mjolnir.protocol.DeviceKind
 import java.awt.Desktop
 import java.awt.Dimension
 import java.awt.FileDialog
 import java.awt.Frame
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
+import java.awt.datatransfer.StringSelection
 import java.io.File
 import java.net.URI
 import javax.swing.JFileChooser
@@ -91,6 +95,9 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
     val send by c.send.collectAsState() // the queue is owned by the controller and outlives this window
     val nicknames by c.nicknames.changes.collectAsState()
     val relayStatus by c.relayStatus.collectAsState()
+    val guestUi by c.guestRoom.state.collectAsState()
+    val exchanged by c.guestRoom.exchanged.collectAsState()
+    val guestLeft = rememberRoomCountdown(guestUi)
     var pairOnOpen by remember { mutableStateOf(false) } // the Send tab's *Pair a device* opens Devices with pairing started
     val scope = rememberCoroutineScope()
     val previews = remember { mutableStateMapOf<String, ItemPreview>() }
@@ -152,12 +159,12 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
         LaunchedEffect(Unit) { c.openRequests.collect { bringToFront(awtWindow) } } // Explorer's *Send to*, tray: come to the front
         MjolnirTheme {
             Row(Modifier.fillMaxSize().dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget)) {
-                Sidebar(selected = tab, relayStatus = relayStatus.label, guestBadge = null, onSelect = onTab)
+                Sidebar(selected = tab, relayStatus = relayStatus.label, guestBadge = guestLeft, onSelect = onTab)
                 Box(Modifier.weight(1f).fillMaxHeight()) {
                     when (tab) {
                         MainTab.SEND -> SendTabContent(
                             state = send,
-                            nicknameOf = { peer -> nicknames.nicknameOr(peer.deviceId, peer.name) }, // reads the flow so renames recompose
+                            nicknameOf = { peer -> if (peer.kind == DeviceKind.GUEST) "Guest" else nicknames.nicknameOr(peer.deviceId, peer.name) }, // reads the flow so renames recompose
                             previews = previews,
                             sending = send.sending,
                             onUpdate = c::updateSend,
@@ -174,11 +181,28 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
                             onSend = { c.sendSelected() }, // runs in the controller's scope, so closing this window cannot cancel it
                             onOpen = ::openPreview,
                             onShowInFolder = ::showPreviewInFolder,
+                            guestLeft = guestLeft,
                         )
                         MainTab.RECEIVED -> ReceivedTab(c)
                         MainTab.DEVICES -> DevicesTab(c, openPairing = pairOnOpen, onPairingOpened = { pairOnOpen = false })
                         MainTab.SETTINGS -> SettingsTab(c, parent = awtWindow)
-                        MainTab.GUEST -> {} // arrives with the guest-room plan; the sidebar hides it until then
+                        MainTab.GUEST -> GuestTabContent(
+                            ui = guestUi, exchanged = exchanged,
+                            onOpen = c.guestRoom::open,
+                            onEnd = c.guestRoom::end,
+                            onCopy = { (guestUi as? GuestRoomUi.Open)?.link?.takeIf { it.isNotBlank() }?.let(::copyToClipboard) },
+                            onAddFiles = {
+                                val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
+                                dialog.isVisible = true
+                                c.sendToGuest(dialog.files.toList())
+                            },
+                            onAddFolder = {
+                                val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+                                if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) c.sendToGuest(listOf(chooser.selectedFile))
+                            },
+                            onDrop = c::sendToGuest,
+                            onOpenFolder = { path -> File(path).let { f -> if (f.isDirectory) openFile(f) else revealInFolder(f) } },
+                        )
                     }
                 }
             }
@@ -218,10 +242,7 @@ internal fun ForgeIcon(paths: List<String>, tint: Color, size: Dp) {
     }
 }
 
-/**
- * 208 px sidebar: wordmark, nav items, relay status. The Guest room item shows only while [guestBadge] is set (the
- * room's countdown); there is no room feature yet, so it stays hidden.
- */
+/** 208 px sidebar: wordmark, nav items, relay status. The Guest room item carries [guestBadge] (the room's countdown) while a room is open. */
 @Composable
 fun Sidebar(selected: MainTab, relayStatus: String, guestBadge: String?, onSelect: (MainTab) -> Unit) {
     Column(
@@ -235,7 +256,6 @@ fun Sidebar(selected: MainTab, relayStatus: String, guestBadge: String?, onSelec
             Text("MJOLNIR", style = TextStyle(fontFamily = ForgeFonts.grotesk700, fontSize = 18.sp, letterSpacing = 0.5.sp, color = Forge.text))
         }
         for (item in NAV) {
-            if (item.tab == MainTab.GUEST && guestBadge == null) continue
             if (item.tab == MainTab.SETTINGS) Spacer(Modifier.weight(1f))
             val active = item.tab == selected
             val tint = if (active) Forge.accent else Forge.muted
@@ -247,7 +267,12 @@ fun Sidebar(selected: MainTab, relayStatus: String, guestBadge: String?, onSelec
             ) {
                 ForgeIcon(item.icon, tint, 18.dp)
                 Text(item.label, style = TextStyle(fontFamily = if (active) ForgeFonts.inter600 else ForgeFonts.inter400, fontSize = 14.sp, color = tint), modifier = Modifier.weight(1f))
-                if (item.tab == MainTab.GUEST && guestBadge != null) Text(guestBadge, style = TextStyle(fontSize = 12.sp, color = Forge.accent))
+                if (item.tab == MainTab.GUEST && guestBadge != null) {
+                    Text(
+                        guestBadge, style = TextStyle(fontFamily = ForgeFonts.inter600, fontSize = 11.sp, color = Forge.onAccent),
+                        modifier = Modifier.background(Forge.accent, RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 1.dp),
+                    )
+                }
             }
         }
         Row(Modifier.padding(start = 10.dp, end = 10.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -256,6 +281,10 @@ fun Sidebar(selected: MainTab, relayStatus: String, guestBadge: String?, onSelec
             Text(relayStatus, style = TextStyle(fontFamily = ForgeFonts.inter400, fontSize = 12.sp, color = Forge.muted))
         }
     }
+}
+
+private fun copyToClipboard(text: String) {
+    try { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null) } catch (_: Exception) {}
 }
 
 private fun readClipboard(): Pair<List<File>, String?> = try {

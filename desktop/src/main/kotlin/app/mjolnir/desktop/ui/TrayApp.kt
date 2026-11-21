@@ -61,7 +61,7 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
         c.notifications.collect { trayState.sendNotification(Notification("Mjolnir", it)) }
     }
     LaunchedEffect(Unit) {
-        c.openRequests.collect { tab -> showMain = true; mainTab = if (tab == MainTab.GUEST) MainTab.SEND else tab }
+        c.openRequests.collect { tab -> showMain = true; mainTab = tab }
     }
     // Paths from Explorer's *Send to* (this launch or a later one): the controller queues them and asks for the window.
     LaunchedEffect(Unit) {

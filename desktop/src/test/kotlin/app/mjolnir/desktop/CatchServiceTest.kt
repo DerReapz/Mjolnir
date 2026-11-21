@@ -111,4 +111,14 @@ class CatchServiceTest {
         api.events.emit(RelayEvent.SpaceDeleted(SpaceRef("s1", "Friends"))); runCurrent()
         assertEquals(listOf("changed s1", "peers", "deleted Friends", "peers"), log); job.cancel()
     }
+
+    // guest room events reach the room, and a joining guest or an ended room also refreshes the peer list
+    @Test fun routesGuestRoomEvents() = runTest {
+        val api = FakeRelayApi(); val got = mutableListOf<RelayEvent>(); var changed = 0
+        val svc = CatchService(api, InboxDrainer(api, MemorySeen()) {}, {}, { changed++ }, onGuestRoomEvent = { got += it })
+        val job = launch { svc.run() }; runCurrent()
+        val joined = RelayEvent.GuestJoined("r1", Peer("g", "Guest", DeviceKind.GUEST)); val down = RelayEvent.Downloaded("d", listOf("f"))
+        api.events.emit(joined); api.events.emit(down); api.events.emit(RelayEvent.RoomEnded("r1")); runCurrent()
+        assertEquals(listOf(joined, down, RelayEvent.RoomEnded("r1")), got); assertEquals(2, changed); job.cancel()
+    }
 }

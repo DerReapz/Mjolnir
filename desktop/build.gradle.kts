@@ -14,6 +14,7 @@ dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
     implementation(libs.kotlinx.coroutines.swing)
+    implementation("io.nayuki:qrcodegen:1.8.0")
 
     testImplementation(testFixtures(project(":relay-client")))
     testImplementation(libs.kotlinx.coroutines.test)

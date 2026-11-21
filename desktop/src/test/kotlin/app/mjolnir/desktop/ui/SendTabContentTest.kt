@@ -116,4 +116,13 @@ class SendTabContentTest {
         assertEquals(DestinationKey("f", "s2"), state.targetKey)
         assertEquals(listOf(inFriends, inWork), state.targets.filter { state.isSelected(it) })
     }
+
+    @Test fun guestCardShowsTimeLeft() = runComposeUiTest {
+        val guest = Peer("g1", "Guest", DeviceKind.GUEST)
+        val state = SendState().withTargets(listOf(guest, fold), null)
+        setContent { MjolnirTheme { SendTabContent(state, nicknameOf = { it.name }, onUpdate = {}, guestLeft = "41:12") } }
+        onNodeWithText("GUEST ROOM").assertExists() // the destination group heading
+        onNodeWithText("Guest room · 41:12 left").assertExists()
+        onNodeWithText("Guest").assertExists()
+    }
 }
