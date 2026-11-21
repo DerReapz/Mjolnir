@@ -833,7 +833,7 @@ class AppControllerTest {
         val (fake, chat) = chatRelay()
         val (c, scope) = controller(fake, config = chatConfig)
         val notes = notes(c)
-        val m = IncomingMessage(chat, "Game night", "Fred's phone", "hi")
+        val m = IncomingMessage(chat, "Game night", "fred", "Fred's phone", "hi")
         c.chats.openChat.value = chat
         c.mainWindowVisible = false; c.mainWindowTab = MainTab.CHATS
         c.onIncomingChatMessage(m)
@@ -843,5 +843,67 @@ class AppControllerTest {
         c.onIncomingChatMessage(m)
         assertEquals(2, notes.size)
         scope.cancel()
+    }
+
+    @Test fun sameNamedDevicesGetTheirOwnNickname() = runTest {
+        val (fake, chat) = chatRelay()
+        val twin = Peer("fred2", "Fred's phone", DeviceKind.PHONE)
+        fake.addMember("s1", twin)
+        val (c, scope) = controller(fake, config = chatConfig)
+        val notes = notes(c)
+        c.nicknames.set("fred", "Fred A"); c.nicknames.set("fred2", "Fred B")
+        c.chats.refresh(); runCurrent()
+        c.onIncomingChatMessage(IncomingMessage(chat, "Game night", "fred2", "Fred's phone", "hi"))
+        assertEquals(listOf("Fred B in Game night: hi"), notes)
+        scope.cancel()
+    }
+
+    @Test fun reRegisterClearsChats() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        c.chats.refresh(); fake.incoming(chat, fred, "hi"); c.chats.sync(chat); runCurrent()
+        c.selectChat(chat); c.chats.openChat.value = chat
+        assertTrue(File(dir, "chats").listFiles()!!.isNotEmpty())
+        fake.failAllWith = RelayException(RelayErrorKind.UNAUTHORIZED, "unauthorized")
+        c.refreshPeers()
+        fake.failAllWith = null
+        runCurrent()
+        assertEquals(emptyList(), c.chats.chats.value)
+        assertEquals(emptyList(), c.chats.messages(chat).value)
+        assertEquals(emptyList(), File(dir, "chats").listFiles()!!.toList())
+        assertNull(c.selectedChat.value); assertNull(c.chats.openChat.value)
+        scope.cancel()
+    }
+
+    @Test fun changeRelayClearsChats() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        c.chats.refresh(); c.selectChat(chat); runCurrent()
+        c.changeRelay("https://b.example"); runCurrent()
+        assertEquals(emptyList(), c.chats.chats.value); assertNull(c.selectedChat.value)
+        scope.cancel()
+    }
+
+    @Test fun minimisedWindowCountsAsNotVisible() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        val notes = notes(c)
+        val m = IncomingMessage(chat, "Game night", "fred", "Fred's phone", "hi")
+        c.chats.openChat.value = chat; c.mainWindowTab = MainTab.CHATS
+        c.mainWindowVisible = true
+        c.onIncomingChatMessage(m); assertEquals(0, notes.size)
+        c.setWindowMinimized(true)
+        assertFalse(c.mainWindowVisible); assertFalse(c.windowShowing.value)
+        c.onIncomingChatMessage(m); assertEquals(1, notes.size)
+        c.setWindowMinimized(false)
+        assertTrue(c.windowShowing.value)
+        c.mainWindowVisible = false; c.setWindowMinimized(true); c.setWindowMinimized(false)
+        assertFalse(c.windowShowing.value) // restoring does not show a window that is hidden
+        scope.cancel()
+    }
+
+    @Test fun duplicateInviteErrorsHaveTheirOwnCopy() {
+        assertEquals("Already invited.", chatErrorCopy(RelayException(RelayErrorKind.ALREADY_SENT, "already_invited")))
+        assertEquals("Already in this chat.", chatErrorCopy(RelayException(RelayErrorKind.ALREADY_SENT, "already_member")))
     }
 }

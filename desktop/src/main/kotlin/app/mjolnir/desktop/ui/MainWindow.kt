@@ -157,6 +157,11 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
     ) {
         val awtWindow = window
         LaunchedEffect(awtWindow) { awtWindow.minimumSize = Dimension(900, 600) }
+        DisposableEffect(awtWindow) { // a minimised window is not one the user can see
+            val listener = java.awt.event.WindowStateListener { c.setWindowMinimized(it.newState and Frame.ICONIFIED != 0) }
+            awtWindow.addWindowStateListener(listener)
+            onDispose { awtWindow.removeWindowStateListener(listener) }
+        }
         LaunchedEffect(Unit) { c.openRequests.collect { bringToFront(awtWindow) } } // Explorer's *Send to*, tray: come to the front
         MjolnirTheme {
             Row(Modifier.fillMaxSize().dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget)) {

@@ -84,7 +84,7 @@ fun ChatSettingsDialog(s: ChatSettings, onClose: () -> Unit) {
     var mode by remember { mutableStateOf<Mode>(Mode.Main) }
     val owner = chat.ownerId == s.selfId
     val canDelete = owner || s.isSpaceAdmin
-    val soleOwner = owner && s.members.all { it.deviceId == s.selfId }
+    val soleOwner = owner && s.members.isNotEmpty() && s.members.all { it.deviceId == s.selfId }
     val canLeave = chat.member && !soleOwner
     ForgeModal(onDismiss = onClose, maxWidth = 460.dp) {
         when (val m = mode) {

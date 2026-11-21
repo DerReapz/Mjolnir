@@ -241,6 +241,19 @@ class ChatController(
         recountUnread()
     }
 
+    /** Forgets everything: lists, messages, cache files and the open chat (this device was re-registered or moved to another relay). */
+    fun clear() {
+        store.clearAll()
+        live.values.forEach { it.messages.value = emptyList(); it.members.value = emptyList() }
+        live.clear()
+        syncLocks.clear()
+        _chats.value = emptyList()
+        _invites.value = emptyList()
+        _unread.value = emptyMap()
+        openChat.value = null
+        listed = false
+    }
+
     private fun upsert(summary: ChatSummary) {
         _chats.update { list -> if (list.any { it.id == summary.id }) list.map { if (it.id == summary.id) summary else it } else list + summary }
         recountUnread()

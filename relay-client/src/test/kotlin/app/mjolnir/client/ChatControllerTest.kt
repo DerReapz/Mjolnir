@@ -136,6 +136,20 @@ class ChatControllerTest {
         assertEquals(mapOf(chat to 1), c.unread.value)
     }
 
+    @Test fun clearRemovesCacheFiles() = runTest {
+        val (api, chat) = fakeWithChat()
+        val d = Files.createTempDirectory("chat-clear").toFile()
+        val c = controller(api, ChatStore(d))
+        c.refresh(); api.incoming(chat, sam, "hi"); c.sync(chat)
+        c.openChat.value = chat
+        assertTrue(d.listFiles { f -> f.name.startsWith("chat-") }!!.isNotEmpty())
+        c.clear()
+        assertEquals(emptyList(), d.listFiles { f -> f.name.startsWith("chat-") }!!.toList())
+        assertEquals(emptyList(), c.chats.value); assertEquals(emptyList(), c.messages(chat).value)
+        assertEquals(emptyMap(), c.unread.value); assertNull(c.openChat.value); assertEquals(emptyList(), c.invites.value)
+        d.deleteRecursively()
+    }
+
     @Test fun openChatSuppressesIncoming() = runTest {
         val (api, chat) = fakeWithChat()
         val c = controller(api)

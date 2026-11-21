@@ -49,6 +49,12 @@ class ChatStore(private val dir: File) {
         File(file.parentFile, file.name + ".tmp").delete()
     }
 
+    /** Deletes every chat's cache file (and any half-written one). */
+    fun clearAll() {
+        stores.clear()
+        dir.listFiles { f -> f.isFile && f.name.startsWith("chat-") }.orEmpty().forEach { it.delete() }
+    }
+
     private companion object {
         val UNSAFE = Regex("[^A-Za-z0-9_-]")
     }

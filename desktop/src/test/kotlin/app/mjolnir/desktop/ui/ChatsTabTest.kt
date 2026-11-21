@@ -222,4 +222,15 @@ class ChatsTabTest {
         onNodeWithText("Remove").performClick()
         assertEquals(listOf("fred"), removed)
     }
+
+    @Test fun listPreviewNamesTheSubjectOfAnEvent() = runComposeUiTest {
+        val removed = msg("e1", me, null, 1, event = ChatEvent.MemberRemoved("zed", byAdmin = true))
+        show(ui(chats = listOf(chat(last = removed)), selected = null, members = listOf(me, fred, zed)))
+        onNodeWithText("Zed's laptop · Removed by the space admin").assertExists()
+    }
+
+    @Test fun emptyMemberListIsNotASoleOwner() = runComposeUiTest {
+        setContent { MjolnirTheme { ChatSettingsDialog(settings(members = emptyList()), onClose = {}) } }
+        onNodeWithText("Leave chat").assertExists() // members not loaded yet: do not claim the owner is alone
+    }
 }

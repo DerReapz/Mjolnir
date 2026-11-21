@@ -157,6 +157,13 @@ class AppController(
         scope.launch { chatCall { createChat(space.id, name) }?.let { selectChat(it.id); openWindow(MainTab.CHATS) } }
     }
 
+    /** Drops every chat, its cache and the screen state: after a re-registration or relay switch none of it is this device's any more. */
+    private fun clearChats() {
+        chats.clear()
+        _selectedChat.value = null
+        _chatNotice.value = null
+    }
+
     init {
         // Always on, and started before the first refresh: with no collector a new message would be dropped, not notified.
         scope.launch(start = CoroutineStart.UNDISPATCHED) { chats.newMessages.collect(::onIncomingChatMessage) }
@@ -165,8 +172,8 @@ class AppController(
     /** A message in a chat that isn't open: a tray notification, unless that chat is open in the visible Chats tab. */
     internal fun onIncomingChatMessage(m: IncomingMessage) {
         if (chats.openChat.value == m.chatId && mainWindowVisible && mainWindowTab == MainTab.CHATS) return
-        val author = chats.members(m.chatId).value.firstOrNull { it.name == m.authorName } // nicknames are by device
-        notify(Messages.chatNotification(author?.let(nicknames::displayName) ?: m.authorName, m.chatName, m.text))
+        val name = nicknames.get(m.authorId) ?: m.authorName
+        notify(Messages.chatNotification(name, m.chatName, m.text))
     }
 
     /** The guest room this device owns: its link, countdown, guest and the list of what was exchanged. */
@@ -185,7 +192,19 @@ class AppController(
     }
 
     /** Set by the main window while it is shown; then results appear in the window instead of as tray notifications. */
-    @Volatile var mainWindowVisible: Boolean = false
+    var mainWindowVisible: Boolean
+        get() = _showing.value
+        set(v) = synchronized(windowLock) { shown = v; if (!v) minimized = false; _showing.value = shown && !minimized }
+
+    private val windowLock = Any()
+    private var shown = false
+    private var minimized = false
+    private val _showing = MutableStateFlow(false)
+    /** True while the main window is shown and not minimised: the one rule for "the user can see it" (notifications, read marks). */
+    val windowShowing: StateFlow<Boolean> = _showing.asStateFlow()
+
+    /** The window was minimised or restored; a minimised window counts as not visible. */
+    fun setWindowMinimized(min: Boolean) = synchronized(windowLock) { minimized = min; _showing.value = shown && !minimized }
 
     /** The tab the main window is showing; a send result appears in the window only while this is [MainTab.SEND]. */
     @Volatile var mainWindowTab: MainTab = MainTab.SEND
@@ -339,6 +358,7 @@ class AppController(
             _config.value = reRegister(store, api)
             nicknames.clear() // the new registration has no pairings
             spaces.clear()
+            clearChats()
             setPeers(emptyList())
             notify(Messages.RESET)
             true
@@ -737,6 +757,7 @@ class AppController(
         updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null, lastSpaceId = null) }
         nicknames.clear() // every pairing is gone
         spaces.clear()
+        clearChats()
         setPeers(emptyList())
         restartService()
     }
@@ -830,6 +851,8 @@ fun chatErrorCopy(e: RelayException): String = when {
     e.message == "too_long" -> "That message is too long (4,000 characters at most)."
     e.message == "empty" -> "Write something first."
     e.message == "owner_must_transfer" -> "Make someone else the owner first."
+    e.message == "already_invited" -> "Already invited."
+    e.message == "already_member" -> "Already in this chat."
     e.message == "deleted" -> "That message was deleted."
     e.kind == RelayErrorKind.NOT_FOUND -> "That chat is no longer there."
     else -> "Something went wrong. Try again."

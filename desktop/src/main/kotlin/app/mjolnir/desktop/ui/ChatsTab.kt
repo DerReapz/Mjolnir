@@ -112,6 +112,11 @@ class ChatsUi(
     val notice: String?,
 ) {
     val selected: ChatSummary? get() = chats.firstOrNull { it.id == selectedId }
+
+    /** Names a device id of an event in [message]: the members, the message's author, else "Someone". */
+    fun nameResolver(message: ChatMessage): (String) -> String = { id ->
+        (members.firstOrNull { it.deviceId == id } ?: message.author.takeIf { it.deviceId == id })?.let(nicknameOf) ?: "Someone"
+    }
 }
 
 /** What the Chats tab can ask for. The suspending ones answer whether the relay took it, so the composer keeps its text on a refusal. */
@@ -245,7 +250,7 @@ private fun ChatListItem(chat: ChatSummary, selected: Boolean, unread: Int, ui: 
     val last = chat.lastMessage
     val preview = when {
         last == null -> "No messages yet"
-        last.event != null -> systemLine(last.event!!) { id -> if (id == last.author.deviceId) ui.nicknameOf(last.author) else "Someone" }
+        last.event != null -> systemLine(last.event!!, ui.nameResolver(last))
         else -> "${ui.nicknameOf(last.author)}: ${last.text.orEmpty()}"
     }
     Column(
@@ -559,6 +564,7 @@ fun ChatsTab(c: AppController) {
     val config by c.config.collectAsState()
     val nicknames by c.nicknames.changes.collectAsState()
     val notice by c.chatNotice.collectAsState()
+    val showing by c.windowShowing.collectAsState()
     val selected = chats.firstOrNull { it.id == selectedId }
     val id = selected?.id
     val messages by remember(id) { id?.let(c.chats::messages) ?: MutableStateFlow(emptyList()) }.collectAsState()
@@ -569,13 +575,13 @@ fun ChatsTab(c: AppController) {
 
     LaunchedEffect(Unit) { c.chats.refresh(); c.chats.refreshInvites(); c.spaces.refresh() }
     // The chat on screen is open: its messages are read, and do not notify.
-    DisposableEffect(id) {
-        if (id != null) c.chats.openChat.value = id
+    DisposableEffect(id, showing) { // a minimised window shows nothing: not open, not read
+        if (id != null && showing) c.chats.openChat.value = id
         onDispose { c.chats.openChat.compareAndSet(id, null) }
     }
     LaunchedEffect(id) { if (id != null) c.chats.sync(id) }
-    LaunchedEffect(id, messages.lastOrNull()?.rev, selected?.member) {
-        if (id != null && selected?.member == true) try { c.chats.markRead(id) } catch (_: RelayException) { /* the next change tries again */ }
+    LaunchedEffect(id, messages.lastOrNull()?.rev, selected?.member, showing) {
+        if (id != null && showing && selected?.member == true) try { c.chats.markRead(id) } catch (_: RelayException) { /* the next change tries again */ }
     }
 
     fun run(block: suspend app.mjolnir.client.ChatController.() -> Unit) { c.scope.launch { c.chatCall(block) } }
