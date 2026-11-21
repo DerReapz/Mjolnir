@@ -9,6 +9,8 @@ import app.mjolnir.protocol.PairingCodeResponse
 import app.mjolnir.protocol.PairingStatus
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.RegisterResponse
+import app.mjolnir.protocol.RoomResponse
+import app.mjolnir.protocol.RoomStatus
 import app.mjolnir.protocol.SendResponse
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.Tab
@@ -55,6 +57,12 @@ interface RelayApi {
     suspend fun takeOverAdmin(spaceId: String): Space
     /** Leaves [spaceId]: [removeMember] of this device. */
     suspend fun leaveSpace(spaceId: String) = removeMember(spaceId, me().deviceId)
+
+    /** Opens the guest room (ALREADY_SENT when one is open: 409 room_open). */
+    suspend fun openRoom(): RoomResponse
+    /** The open room, or null (204). */
+    suspend fun currentRoom(): RoomStatus?
+    suspend fun endRoom(id: String)
 
     suspend fun inbox(): List<Delivery>
     suspend fun ack(deliveryId: String)

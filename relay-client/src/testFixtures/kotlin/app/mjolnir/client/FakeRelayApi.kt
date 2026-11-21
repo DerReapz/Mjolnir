@@ -10,6 +10,8 @@ import app.mjolnir.protocol.PairingStatus
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.RegisterResponse
 import app.mjolnir.protocol.RelayEvent
+import app.mjolnir.protocol.RoomResponse
+import app.mjolnir.protocol.RoomStatus
 import app.mjolnir.protocol.SendRequest
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.SendResponse
@@ -174,6 +176,33 @@ class FakeRelayApi : RelayApi {
             throw err(RelayErrorKind.ALREADY_SENT, "admin_active")
         }
         return updateSpace(spaceId) { it.copy(adminId = me.deviceId, adminSilent = false) }
+    }
+
+    /** The open guest room, if any (test setup may assign it directly). */
+    var room: RoomResponse? = null
+    /** The guest in [room]; shown by [currentRoom]. */
+    var roomGuest: Peer? = null
+    /** The relay's clock as [currentRoom] reports it. */
+    var serverNowEpochMs = 0L
+    val endedRooms = mutableListOf<String>()
+    private var nextRoom = 0
+
+    override suspend fun openRoom(): RoomResponse {
+        check()
+        if (room != null) throw err(RelayErrorKind.ALREADY_SENT, "room_open")
+        return RoomResponse("room-${++nextRoom}", "secret-$nextRoom", serverNowEpochMs + Limits.GUEST_ROOM_TTL_MS).also { room = it }
+    }
+
+    override suspend fun currentRoom(): RoomStatus? {
+        check()
+        val r = room ?: return null
+        return RoomStatus(r.roomId, r.expiresAtEpochMs, serverNowEpochMs, roomGuest)
+    }
+
+    override suspend fun endRoom(id: String) {
+        check()
+        if (room?.roomId != id) throw err(RelayErrorKind.NOT_FOUND, "not_found")
+        endedRooms += id; room = null; roomGuest = null
     }
 
     override suspend fun inbox(): List<Delivery> { check(); return inbox.toList() }

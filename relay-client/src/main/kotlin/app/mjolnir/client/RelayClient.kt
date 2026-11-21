@@ -5,6 +5,8 @@ import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.CreateSpaceRequest
 import app.mjolnir.protocol.RenameSpaceRequest
+import app.mjolnir.protocol.RoomResponse
+import app.mjolnir.protocol.RoomStatus
 import app.mjolnir.protocol.Space
 import app.mjolnir.protocol.TransferAdminRequest
 import app.mjolnir.protocol.Delivery
@@ -259,6 +261,22 @@ class RelayClient(
     }
 
     override suspend fun deleteSpace(id: String) { call { http.delete("$base/v1/spaces/$id") { auth() } } }
+
+    override suspend fun openRoom(): RoomResponse = callBody { http.post("$base/v1/rooms") { auth() } }
+
+    override suspend fun currentRoom(): RoomStatus? {
+        val response = call(setOf(204)) { http.get("$base/v1/rooms/current") { auth() } }
+        if (response.status.value == 204) return null
+        return try {
+            response.body<RoomStatus>()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw RelayException(RelayErrorKind.SERVER, "unreadable response: ${e.message}", e)
+        }
+    }
+
+    override suspend fun endRoom(id: String) { call { http.delete("$base/v1/rooms/$id") { auth() } } }
 
     override suspend fun createInvite(spaceId: String): PairingCodeResponse = callBody { http.post("$base/v1/spaces/$spaceId/invites") { auth() } }
 

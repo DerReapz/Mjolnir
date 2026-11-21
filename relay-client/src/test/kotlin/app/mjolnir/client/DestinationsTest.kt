@@ -70,8 +70,16 @@ class DestinationsTest {
         assertFalse(DestinationKey("2", "s1").isPaired)
     }
 
-    @Test fun aGuestIsNeitherMineNorInASpace() {
-        val groups = groupDestinations(listOf(p("1", "A"), Peer("g", "Guest", DeviceKind.GUEST)), null)
-        assertEquals(listOf(listOf("1")), groups.map { g -> g.peers.map { it.deviceId } })
+    @Test fun aGuestFormsItsOwnGroupFirst() {
+        val groups = groupDestinations(listOf(p("1", "A"), Peer("g", "Guest", DeviceKind.GUEST), sp("2", "B", "s1", "Friends")), null)
+        assertEquals(listOf("guest", "mine", "space:s1"), groups.map { it.key })
+        assertEquals("Guest room", groups.first().title)
+        assertEquals(listOf("g"), groups.first().peers.map { it.deviceId })
+        assertEquals(listOf("1"), groups[1].peers.map { it.deviceId })
+    }
+
+    @Test fun aLoneGuestKeepsItsTitle() {
+        val groups = groupDestinations(listOf(Peer("g", "Guest", DeviceKind.GUEST)), null)
+        assertEquals(listOf("Guest room"), groups.map { it.title })
     }
 }

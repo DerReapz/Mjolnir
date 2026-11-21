@@ -16,7 +16,7 @@ val DestinationKey.isPaired: Boolean get() = spaceId == null
 val Peer.destinationKey: DestinationKey get() = DestinationKey(deviceId, space?.id)
 
 /**
- * Groups send destinations: "mine" (paired devices; titled "My devices" once there is more than one group), then one
+ * Groups send destinations: the guest room first while a guest is present (key "guest", always titled "Guest room"), then "mine" (paired devices; titled "My devices" once there is more than one group), then one
  * group per space, keyed "space:{id}" and titled with the space name, in the order the spaces first appear in [peers]
  * (the relay lists them in creation order). Empty groups are dropped. Within a group: last-used first, then by the name
  * [nameOf] shows (the real name unless the caller applies nicknames).
@@ -27,7 +27,8 @@ fun groupDestinations(peers: List<Peer>, lastUsedId: String?, nameOf: (Peer) -> 
     )
     val bySpace = peers.filter { it.space != null }.groupBy { it.space!!.id } // keeps first-appearance order
     val spaceGroups = bySpace.map { (id, members) -> DestinationGroup("space:$id", members.first().space!!.name, sorted(members)) }
+    val guest = DestinationGroup("guest", "Guest room", sorted(peers.filter { it.kind == DeviceKind.GUEST }))
     val mine = DestinationGroup("mine", null, sorted(peers.filter { it.isPaired }))
-    val groups = (listOf(mine) + spaceGroups).filter { it.peers.isNotEmpty() }
+    val groups = (listOf(guest, mine) + spaceGroups).filter { it.peers.isNotEmpty() }
     return if (groups.size > 1) groups.map { if (it.key == "mine") it.copy(title = "My devices") else it } else groups
 }
