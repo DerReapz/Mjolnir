@@ -92,3 +92,8 @@ internal fun postChatNotification(context: Context, message: IncomingMessage, au
             .build(),
     )
 }
+
+/** The chat was read in the app: its notification goes. */
+internal fun cancelChatNotification(context: Context, chatId: String) {
+    context.getSystemService(NotificationManager::class.java).cancel(notificationId("chat:$chatId"))
+}

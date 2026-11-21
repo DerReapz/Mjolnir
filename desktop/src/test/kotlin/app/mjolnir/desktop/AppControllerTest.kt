@@ -901,9 +901,4 @@ class AppControllerTest {
         assertFalse(c.windowShowing.value) // restoring does not show a window that is hidden
         scope.cancel()
     }
-
-    @Test fun duplicateInviteErrorsHaveTheirOwnCopy() {
-        assertEquals("Already invited.", chatErrorCopy(RelayException(RelayErrorKind.ALREADY_SENT, "already_invited")))
-        assertEquals("Already in this chat.", chatErrorCopy(RelayException(RelayErrorKind.ALREADY_SENT, "already_member")))
-    }
 }

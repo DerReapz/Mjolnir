@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.mjolnir.client.ChatController
 import app.mjolnir.client.Messages
+import app.mjolnir.client.capCodePoints
 import app.mjolnir.client.Nicknames
 import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayErrorKind
@@ -65,39 +66,6 @@ fun bodyText(m: ChatMessage): String = when {
     else -> m.text.orEmpty()
 }
 
-/** A system entry as the centred line shows it; [nameOf] turns a device id into its shown name. */
-fun systemLine(event: ChatEvent, nameOf: (String) -> String): String = when (event) {
-    is ChatEvent.MemberJoined -> "${nameOf(event.deviceId)} joined"
-    is ChatEvent.MemberLeft -> "${nameOf(event.deviceId)} left"
-    is ChatEvent.MemberRemoved ->
-        if (event.byAdmin) "${nameOf(event.deviceId)} · ${Messages.REMOVED_BY_ADMIN}" else "${nameOf(event.deviceId)} was removed"
-    is ChatEvent.OwnerChanged -> "${nameOf(event.deviceId)} is now the owner"
-    is ChatEvent.Renamed -> "Renamed to ${event.name}"
-}
-
-/** A refused chat action as a sentence; the relay's code is the exception's message. */
-fun chatErrorCopy(e: RelayException): String = when {
-    e.kind == RelayErrorKind.NETWORK -> "Can't reach the relay. Check your connection."
-    e.kind == RelayErrorKind.RATE_LIMITED -> "Too many messages. Wait a moment."
-    e.kind == RelayErrorKind.UNAUTHORIZED -> Messages.RESET
-    e.message == "too_long" -> "That message is too long (4,000 characters at most)."
-    e.message == "empty" -> "Write something first."
-    e.message == "owner_must_transfer" -> "Make someone else the owner first."
-    e.message == "already_invited" -> "Already invited."
-    e.message == "already_member" -> "Already in this chat."
-    e.message == "deleted" -> "That message was deleted."
-    e.kind == RelayErrorKind.NOT_FOUND -> "That chat is no longer there."
-    else -> "Something went wrong. Try again."
-}
-
-/** [text] cut to at most [max] code points (never inside a surrogate pair). */
-internal fun capCodePoints(text: String, max: Int): String =
-    if (text.codePointCount(0, text.length) <= max) text else text.substring(0, text.offsetByCodePoints(0, max))
-
-/** The space's members who could be invited to a chat of [chatMembers]: everyone else but this phone. */
-internal fun inviteCandidates(space: Space, chatMembers: List<Peer>, selfId: String?): List<Peer> =
-    space.members.filter { m -> m.deviceId != selfId && chatMembers.none { it.deviceId == m.deviceId } }
-
 private const val KEY_CHAT = "chat"
 private const val KEY_EDITING = "editing"
 private fun draftKey(chatId: String) = "draft/$chatId"
@@ -117,7 +85,11 @@ class ChatViewModel(
     private val nicknames: Nicknames,
     private val selfId: () -> String?,
     private val foreground: StateFlow<Boolean>,
+    /** True while the Chats tab is the screen shown: the selected chat survives a tab switch, but is not on screen then. */
+    private val chatsVisible: StateFlow<Boolean>,
     private val savedState: SavedStateHandle = SavedStateHandle(),
+    /** Called when [chatId] is read on screen (the app drops its notification). */
+    private val onRead: (chatId: String) -> Unit = {},
 ) : ViewModel() {
     private val _spaces = MutableStateFlow<List<Space>>(emptyList())
     /** The spaces this phone is in: who administers them, who could be invited, where a new chat can go. */
@@ -126,6 +98,8 @@ class ChatViewModel(
     private val _loaded = MutableStateFlow(false)
     /** True once the chat list was fetched at least once since this screen came up (whether or not it worked). */
     val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
+
+    private var sending = false
 
     private val _notice = MutableStateFlow<String?>(null)
     /** The last failed chat action, as a sentence; null once dismissed. */
@@ -143,7 +117,7 @@ class ChatViewModel(
             val last = chat.lastMessage
             val preview = when {
                 last == null -> "No messages yet"
-                last.event != null -> systemLine(last.event!!) { id -> peerName(id, chat, names) }
+                last.event != null -> Messages.systemLine(last.event!!) { id -> peerName(id, chat, names) }
                 else -> "${nameOf(last.author)}: ${last.text.orEmpty()}"
             }
             ChatRow(chat, unread[chat.id] ?: 0, preview, last?.sentAtEpochMs)
@@ -173,11 +147,14 @@ class ChatViewModel(
     init {
         // The chat on screen is open (read, no notification) while the app is in the foreground; its messages are read as they arrive.
         viewModelScope.launch {
-            combine(selectedId, foreground) { id, fg -> id.takeIf { fg } }.distinctUntilChanged().collectLatest { id ->
+            combine(selectedId, foreground, chatsVisible) { id, fg, shown -> id.takeIf { fg && shown } }.distinctUntilChanged().collectLatest { id ->
                 controller.openChat.value = id
                 if (id != null) {
                     quietly { controller.sync(id) }
-                    controller.messages(id).map { it.lastOrNull()?.rev }.distinctUntilChanged().collect { quietly { controller.markRead(id) } }
+                    controller.messages(id).map { it.lastOrNull()?.rev }.distinctUntilChanged().collect {
+                        quietly { controller.markRead(id) }
+                        onRead(id)
+                    }
                 }
             }
         }
@@ -213,8 +190,8 @@ class ChatViewModel(
     fun open(chatId: String) { savedState[KEY_CHAT] = chatId }
 
     fun close() {
+        if (editingId.value != null) cancelEdit() // the unsent draft comes back, not the old message's text
         savedState[KEY_CHAT] = null
-        savedState[KEY_EDITING] = null
     }
 
     fun draft(chatId: String): StateFlow<String> = savedState.getStateFlow(draftKey(chatId), "")
@@ -240,11 +217,17 @@ class ChatViewModel(
         val chatId = selectedId.value ?: return
         val text = savedState.get<String>(draftKey(chatId)).orEmpty()
         if (text.isBlank()) return
+        if (sending) return // a double tap
+        sending = true
         val editing = savedState.get<String?>(KEY_EDITING)
         viewModelScope.launch {
-            val ok = call { if (editing != null) controller.edit(chatId, editing, text) else controller.send(chatId, text.trim()) } != null
-            if (!ok) return@launch
-            if (editing != null) cancelEdit() else savedState[draftKey(chatId)] = ""
+            try {
+                val ok = call { if (editing != null) controller.edit(chatId, editing, text.trim()) else controller.send(chatId, text.trim()) } != null
+                if (!ok) return@launch
+                if (editing != null) cancelEdit() else savedState[draftKey(chatId)] = ""
+            } finally {
+                sending = false
+            }
         }
     }
 
@@ -291,7 +274,7 @@ class ChatViewModel(
     } catch (e: CancellationException) {
         throw e
     } catch (e: RelayException) {
-        _notice.value = chatErrorCopy(e)
+        _notice.value = Messages.chatError(e)
         null
     }
 

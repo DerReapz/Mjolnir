@@ -107,14 +107,21 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
         Header(current.name, "${current.spaceName} · $count ${if (count == 1) "member" else "members"}", onBack, onSettings)
         notice?.let { NoticeBar(it, vm::dismissNotice) }
         val listState = rememberLazyListState()
-        LaunchedEffect(current.id, messages.size) { if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex) } // the newest message
+        // The newest message, unless the reader scrolled up to read older ones (our own sends always follow).
+        LaunchedEffect(current.id, messages.size) {
+            if (messages.isEmpty()) return@LaunchedEffect
+            val last = messages.last()
+            val info = listState.layoutInfo
+            val nearBottom = info.totalItemsCount == 0 || (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 2
+            if (nearBottom || last.author.deviceId == self) listState.scrollToItem(messages.lastIndex)
+        }
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(), state = listState,
             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items(messages, key = { it.id }) { m ->
                 val event = m.event
-                if (event != null) SystemLine(systemLine(event, nameOf))
+                if (event != null) SystemLine(Messages.systemLine(event, nameOf))
                 else MessageRow(
                     m, mine = m.author.deviceId == self, authorName = names[m.author.deviceId] ?: m.author.name,
                     canAct = messageActions(m, self, isAdmin).isNotEmpty(), onLongPress = { sheet = m },

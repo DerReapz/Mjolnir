@@ -168,20 +168,6 @@ class ChatsTabTest {
         assertEquals(listOf("hello there"), sent)
     }
 
-    @Test fun composerCapsAtFourThousandCodePoints() {
-        val long = "a".repeat(3999) + "😀😀"
-        val capped = capCodePoints(long, 4000)
-        assertEquals(4000, capped.codePointCount(0, capped.length))
-        assertEquals("a".repeat(3999) + "😀", capped) // never splits a surrogate pair
-        assertEquals("short", capCodePoints("short", 4000))
-    }
-
-    @Test fun inviteCandidatesAreSpaceMembersNotInTheChat() {
-        val space = Space("s1", "Friends", "admin", listOf(Peer("admin", "Admin", DeviceKind.PC), me, fred, zed))
-        assertEquals(listOf("admin", "zed"), inviteCandidates(space, listOf(me, fred), "me").map { it.deviceId })
-        assertNull(null)
-    }
-
     // ---- settings ----
 
     private fun settings(

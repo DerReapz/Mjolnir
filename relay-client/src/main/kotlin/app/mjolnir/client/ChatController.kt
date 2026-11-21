@@ -102,15 +102,19 @@ class ChatController(
             val c = store.read(s.id)
             if (c.name != s.name || c.readRev < s.readRev) store.update(s.id) { it.copy(name = s.name, readRev = maxOf(it.readRev, s.readRev)) }
         }
+        val known = _chats.value.mapTo(HashSet()) { it.id } // listed before, so an empty cache means an empty chat, not unseen history
         _chats.value = summaries
         listed = true
         recountUnread()
         for (s in summaries) {
-            val have = store.read(s.id).rev
+            val cached = store.read(s.id)
+            val have = cached.rev
             if (have >= s.rev) continue
-            // With a cache, everything above it is news. Without one it is history, except what the triggering event announced.
+            // With a cache (or a watermark, as a join leaves even when its sync failed), everything above it is news.
+            // Without one it is history, except what the triggering event announced.
             val floor = when {
-                have > 0 -> null
+                have > 0 || cached.announcedRev > 0 -> null
+                s.id in known -> cached.announcedRev
                 trigger != null && trigger.first == s.id -> trigger.second - 1
                 else -> Long.MAX_VALUE
             }
@@ -134,7 +138,7 @@ class ChatController(
         val a = api() ?: return
         syncLocks.getOrPut(chatId) { Mutex() }.withLock {
             val before = store.read(chatId)
-            val hasHistory = before.rev > 0 || _chats.value.firstOrNull { it.id == chatId }?.rev == 0L
+            val hasHistory = before.rev > 0 || before.announcedRev > 0 || _chats.value.firstOrNull { it.id == chatId }?.rev == 0L
             val start = floor ?: if (hasHistory) before.announcedRev else Long.MAX_VALUE
             // New to the user: above the start, and not an edit of something already announced.
             fun fresh(m: ChatMessage) = m.rev > start && (before.messages[m.id]?.let { it.rev > before.announcedRev } ?: true)
@@ -302,7 +306,10 @@ class ChatController(
 
     suspend fun joinInvite(id: String) {
         val chat = requireApi().joinInvite(id)
-        upsert(chat); refreshInvites(); syncChat(chat.id, Long.MAX_VALUE) // its history is not news
+        upsert(chat); refreshInvites()
+        // Its history is not news, even if the sync below fails: what the join left is the watermark.
+        store.update(chat.id) { it.copy(announcedRev = maxOf(it.announcedRev, chat.rev)) }
+        syncChat(chat.id, Long.MAX_VALUE)
     }
 
     suspend fun transferChatOwner(chatId: String, deviceId: String) {

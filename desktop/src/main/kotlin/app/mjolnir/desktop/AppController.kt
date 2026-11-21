@@ -147,7 +147,7 @@ class AppController(
         try {
             chats.block()
         } catch (e: RelayException) {
-            _chatNotice.value = chatErrorCopy(e)
+            _chatNotice.value = Messages.chatError(e)
             null
         }
     }.await()
@@ -841,21 +841,6 @@ class AppController(
         synchronized(clientLock) { (client as? AutoCloseable)?.close(); client = null }
         scope.coroutineContext[Job]?.cancel()
     }
-}
-
-/** A refused chat action as a sentence; the relay's code is the exception's message. */
-fun chatErrorCopy(e: RelayException): String = when {
-    e.kind == RelayErrorKind.NETWORK -> "Can't reach the relay. Check your connection."
-    e.kind == RelayErrorKind.RATE_LIMITED -> "Too many messages. Wait a moment."
-    e.kind == RelayErrorKind.UNAUTHORIZED -> Messages.RESET
-    e.message == "too_long" -> "That message is too long (4,000 characters at most)."
-    e.message == "empty" -> "Write something first."
-    e.message == "owner_must_transfer" -> "Make someone else the owner first."
-    e.message == "already_invited" -> "Already invited."
-    e.message == "already_member" -> "Already in this chat."
-    e.message == "deleted" -> "That message was deleted."
-    e.kind == RelayErrorKind.NOT_FOUND -> "That chat is no longer there."
-    else -> "Something went wrong. Try again."
 }
 
 fun couldntGetCode(reason: String) = "Couldn't get a code: $reason."

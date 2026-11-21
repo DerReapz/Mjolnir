@@ -67,6 +67,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Messages
+import app.mjolnir.client.capCodePoints
+import app.mjolnir.client.inviteCandidates
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.TextPart
 import app.mjolnir.client.linkify
@@ -138,14 +140,6 @@ class ChatsActions(
     val onDismissNotice: () -> Unit = {},
 )
 
-/** [text] cut to at most [max] code points (never inside a surrogate pair). */
-internal fun capCodePoints(text: String, max: Int): String =
-    if (text.codePointCount(0, text.length) <= max) text else text.substring(0, text.offsetByCodePoints(0, max))
-
-/** The space's members who could be invited to a chat of [chatMembers]: everyone else but this device. */
-internal fun inviteCandidates(space: Space, chatMembers: List<Peer>, selfId: String?): List<Peer> =
-    space.members.filter { m -> m.deviceId != selfId && chatMembers.none { it.deviceId == m.deviceId } }
-
 private val timeFormat = DateTimeFormatter.ofPattern("HH:mm")
 
 private fun clockTime(ms: Long): String = timeFormat.format(Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()))
@@ -160,16 +154,6 @@ private fun listTime(ms: Long, now: Long): String {
         day.isAfter(today.minusDays(7)) -> DateTimeFormatter.ofPattern("EEE", Locale.getDefault()).format(day)
         else -> DateTimeFormatter.ofPattern("d MMM", Locale.getDefault()).format(day)
     }
-}
-
-/** A system entry as the centred line shows it; [nameOf] turns a device id into its shown name. */
-internal fun systemLine(event: ChatEvent, nameOf: (String) -> String): String = when (event) {
-    is ChatEvent.MemberJoined -> "${nameOf(event.deviceId)} joined"
-    is ChatEvent.MemberLeft -> "${nameOf(event.deviceId)} left"
-    is ChatEvent.MemberRemoved ->
-        if (event.byAdmin) "${nameOf(event.deviceId)} · ${Messages.REMOVED_BY_ADMIN}" else "${nameOf(event.deviceId)} was removed"
-    is ChatEvent.OwnerChanged -> "${nameOf(event.deviceId)} is now the owner"
-    is ChatEvent.Renamed -> "Renamed to ${event.name}"
 }
 
 private fun titleStyle(size: Int) = TextStyle(fontFamily = ForgeFonts.grotesk700, fontSize = size.sp, color = Forge.text)
@@ -250,7 +234,7 @@ private fun ChatListItem(chat: ChatSummary, selected: Boolean, unread: Int, ui: 
     val last = chat.lastMessage
     val preview = when {
         last == null -> "No messages yet"
-        last.event != null -> systemLine(last.event!!, ui.nameResolver(last))
+        last.event != null -> Messages.systemLine(last.event!!, ui.nameResolver(last))
         else -> "${ui.nicknameOf(last.author)}: ${last.text.orEmpty()}"
     }
     Column(
@@ -358,7 +342,7 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
         ) {
             items(ui.messages, key = { it.id }) { m ->
                 val event = m.event
-                if (event != null) SystemLine(systemLine(event, nameOf))
+                if (event != null) SystemLine(Messages.systemLine(event, nameOf))
                 else MessageRow(m, mine = m.author.deviceId == ui.selfId, byAdmin = isAdmin, ui, actions, onEdit = { editing = it })
             }
         }

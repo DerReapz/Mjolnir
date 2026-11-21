@@ -401,4 +401,35 @@ class ChatControllerTest {
         c.sync(chat)
         assertEquals(1, seen.size)
     }
+
+    @Test fun firstMessageAfterJoiningNotifiesViaRefresh() = runTest {
+        val (api, _) = fakeWithChat()
+        val book = api.addChat("s1", "Book club", owner = sam)
+        api.incoming(book, sam, "history")
+        val invite = api.invitedBy(sam, book, api.me.deviceId)
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        c.refresh()
+        c.joinInvite(invite.id)
+        assertTrue(seen.isEmpty()) // the history is not news
+        api.incoming(book, sam, "hello new member")
+        c.refresh() // the FCM -> InboxWorker path: no ChatChanged event reaches the phone
+        assertEquals(listOf("hello new member"), seen.map { it.text })
+    }
+
+    @Test fun firstMessageAfterJoiningNotifiesEvenWhenTheJoinSyncFailed() = runTest {
+        val (api, _) = fakeWithChat()
+        val book = api.addChat("s1", "Book club", owner = sam)
+        api.incoming(book, sam, "history")
+        val invite = api.invitedBy(sam, book, api.me.deviceId)
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        c.refresh()
+        api.failSyncOnCall = api.syncCalls.size + 1 // the sync right after joining fails
+        c.joinInvite(invite.id)
+        api.incoming(book, sam, "hello new member")
+        c.refresh()
+        assertEquals(listOf("hello new member"), seen.map { it.text })
+        assertEquals(listOf("history", "hello new member"), c.messages(book).value.mapNotNull { it.text })
+    }
 }

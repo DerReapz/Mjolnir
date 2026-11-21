@@ -43,6 +43,8 @@ class ChatViewModelTest {
     private val ann = Peer("ann", "Ann", DeviceKind.PC)
     private val admin = Peer("admin", "Admin", DeviceKind.PC)
     private val foreground = MutableStateFlow(true)
+    private val chatsVisible = MutableStateFlow(true)
+    private val read = mutableListOf<String>()
     private lateinit var nicknames: Nicknames
     private lateinit var controller: ChatController
     private val me get() = api.me
@@ -56,7 +58,7 @@ class ChatViewModelTest {
     }
 
     private fun newVm(handle: SavedStateHandle = SavedStateHandle()) =
-        ChatViewModel(controller, api, nicknames, { me.deviceId }, foreground, handle)
+        ChatViewModel(controller, api, nicknames, { me.deviceId }, foreground, chatsVisible, handle, onRead = { read += it })
 
     private fun msg(id: String, author: Peer, text: String?, deleted: Boolean = false, byAdmin: Boolean = false) =
         app.mjolnir.protocol.ChatMessage(id, "c", author, 1, 1, text = text, deleted = deleted, deletedByAdmin = byAdmin)
@@ -135,7 +137,7 @@ class ChatViewModelTest {
         vm.startEdit(sent)
         assertEquals(sent.id, vm.editingId.value)
         assertEquals("first", vm.draft(chat).value)
-        vm.setDraft(chat, "second"); vm.send(); advanceUntilIdle()
+        vm.setDraft(chat, "  second \n"); vm.send(); advanceUntilIdle() // trimmed like a send
         val edited = vm.messages.value.single { it.id == sent.id }
         assertEquals("second", edited.text)
         assertTrue(edited.editedAtEpochMs != null)
@@ -170,18 +172,6 @@ class ChatViewModelTest {
         assertEquals("Message deleted", bodyText(controller.messages(chat).value.single()))
     }
 
-    @Test fun systemLinesAndErrorCopy() {
-        val names = mapOf("sam" to "Sam", "ann" to "Ann")
-        val nameOf = { id: String -> names[id] ?: "Someone" }
-        assertEquals("Sam joined", systemLine(ChatEvent.MemberJoined("sam"), nameOf))
-        assertEquals("Ann · Removed by the space admin", systemLine(ChatEvent.MemberRemoved("ann", byAdmin = true), nameOf))
-        assertEquals("Ann was removed", systemLine(ChatEvent.MemberRemoved("ann", byAdmin = false), nameOf))
-        assertEquals("Someone is now the owner", systemLine(ChatEvent.OwnerChanged("x"), nameOf))
-        assertEquals("Make someone else the owner first.", chatErrorCopy(RelayException(RelayErrorKind.ALREADY_SENT, "owner_must_transfer")))
-        assertEquals("That chat is no longer there.", chatErrorCopy(RelayException(RelayErrorKind.NOT_FOUND, "not_found")))
-        assertEquals("Can't reach the relay. Check your connection.", chatErrorCopy(RelayException(RelayErrorKind.NETWORK, "x")))
-    }
-
     @Test fun openChatMarksRead() = runTest {
         val chat = api.addChat("s1", "General", owner = me, members = listOf(me, sam))
         api.incoming(chat, sam, "a"); api.incoming(chat, sam, "b")
@@ -190,6 +180,7 @@ class ChatViewModelTest {
         assertEquals(2, controller.unread.value[chat])
         vm.open(chat); advanceUntilIdle()
         assertEquals(chat, controller.openChat.value)
+        assertEquals(listOf(chat), read.distinct()) // the app is told, to drop the chat's notification
         assertEquals(api.chatState.chats.getValue(chat).rev, api.readRevOf(chat))
         assertTrue(controller.unread.value.isEmpty())
         foreground.value = false; advanceUntilIdle() // the app goes to the background: the chat is no longer on screen
@@ -239,5 +230,44 @@ class ChatViewModelTest {
         assertEquals(Limits.MAX_CHAT_TEXT_LENGTH, second.draft(chat).value.length)
         assertFalse(second.draft("other").value.isNotEmpty())
         advanceUntilIdle()
+    }
+
+    @Test fun leavingChatsTabReopensNotifications() = runTest {
+        val chat = api.addChat("s1", "General", owner = me, members = listOf(me, sam))
+        val posted = mutableListOf<String>()
+        ChatNotifier(controller, CoroutineScope(main.dispatcher), nicknames::get) { m, _ -> posted += m.text }
+        val vm = newVm()
+        vm.refresh(); vm.open(chat); advanceUntilIdle()
+        assertEquals(chat, controller.openChat.value)
+        chatsVisible.value = false; advanceUntilIdle() // on another tab: the selected chat is not on screen
+        assertNull(controller.openChat.value)
+        api.incoming(chat, sam, "while on Throw")
+        controller.refresh(); advanceUntilIdle()
+        assertEquals(listOf("while on Throw"), posted)
+        assertEquals(1, controller.unread.value[chat]) // and nothing was marked read behind the reader's back
+        chatsVisible.value = true; advanceUntilIdle()
+        assertEquals(chat, controller.openChat.value)
+        assertTrue(controller.unread.value.isEmpty())
+    }
+
+    @Test fun closingMidEditRestoresTheDraft() = runTest {
+        val chat = api.addChat("s1", "General", owner = me, members = listOf(me, sam))
+        val vm = newVm()
+        vm.refresh(); vm.open(chat); advanceUntilIdle()
+        vm.setDraft(chat, "first"); vm.send(); advanceUntilIdle()
+        val sent = vm.messages.value.single()
+        vm.setDraft(chat, "unsent"); vm.startEdit(sent)
+        vm.close()
+        assertNull(vm.editingId.value)
+        assertEquals("unsent", vm.draft(chat).value) // not the old message's text as a new draft
+    }
+
+    @Test fun doubleTapSendsOnce() = runTest {
+        val chat = api.addChat("s1", "General", owner = me, members = listOf(me, sam))
+        val vm = newVm()
+        vm.refresh(); vm.open(chat); advanceUntilIdle()
+        vm.setDraft(chat, "once"); vm.send(); vm.send(); advanceUntilIdle()
+        assertEquals(1, api.postCalls)
+        assertEquals("", vm.draft(chat).value)
     }
 }

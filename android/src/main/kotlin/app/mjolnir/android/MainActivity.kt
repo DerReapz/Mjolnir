@@ -71,7 +71,8 @@ class MainActivity : ComponentActivity() {
                 @Suppress("UNCHECKED_CAST")
                 return ChatViewModel(
                     c.chatController, c.api, c.nicknames, { try { c.config.read().deviceId } catch (e: java.io.IOException) { null } },
-                    c.appForeground, extras.createSavedStateHandle(),
+                    c.appForeground, c.chatsVisible, extras.createSavedStateHandle(),
+                    onRead = { chatId -> cancelChatNotification(applicationContext, chatId) },
                 ) as T
             }
             if (modelClass != SpacesViewModel::class.java) return create(modelClass)

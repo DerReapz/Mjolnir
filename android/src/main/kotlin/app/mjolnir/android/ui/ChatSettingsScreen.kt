@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Messages
+import app.mjolnir.client.inviteCandidates
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.DeviceKind

@@ -1,5 +1,6 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.ChatEvent
 import java.util.Locale
 
 /** User-facing copy shared by the desktop and Android apps. */
@@ -72,6 +73,31 @@ object Messages {
     /** The composer's placeholder. */
     fun messageChat(chat: String) = "Message $chat"
     fun chatNotification(name: String, chat: String, text: String) = "$name in $chat: $text"
+
+    /** A system entry as the centred line shows it; [nameOf] turns a device id into its shown name. */
+    fun systemLine(event: ChatEvent, nameOf: (String) -> String): String = when (event) {
+        is ChatEvent.MemberJoined -> "${nameOf(event.deviceId)} joined"
+        is ChatEvent.MemberLeft -> "${nameOf(event.deviceId)} left"
+        is ChatEvent.MemberRemoved ->
+            if (event.byAdmin) "${nameOf(event.deviceId)} · $REMOVED_BY_ADMIN" else "${nameOf(event.deviceId)} was removed"
+        is ChatEvent.OwnerChanged -> "${nameOf(event.deviceId)} is now the owner"
+        is ChatEvent.Renamed -> "Renamed to ${event.name}"
+    }
+
+    /** A refused chat action as a sentence; the relay's code is the exception's message. */
+    fun chatError(e: RelayException): String = when {
+        e.kind == RelayErrorKind.NETWORK -> "Can't reach the relay. Check your connection."
+        e.kind == RelayErrorKind.RATE_LIMITED -> "Too many messages. Wait a moment."
+        e.kind == RelayErrorKind.UNAUTHORIZED -> RESET
+        e.message == "too_long" -> "That message is too long (4,000 characters at most)."
+        e.message == "empty" -> "Write something first."
+        e.message == "owner_must_transfer" -> "Make someone else the owner first."
+        e.message == "already_invited" -> "Already invited."
+        e.message == "already_member" -> "Already in this chat."
+        e.message == "deleted" -> "That message was deleted."
+        e.kind == RelayErrorKind.NOT_FOUND -> "That chat is no longer there."
+        else -> "Something went wrong. Try again."
+    }
 
     fun failureReason(kind: RelayErrorKind, peerName: String): String = when (kind) {
         RelayErrorKind.NETWORK -> "no connection"
