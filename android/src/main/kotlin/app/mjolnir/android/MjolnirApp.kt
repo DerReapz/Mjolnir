@@ -16,6 +16,8 @@ import app.mjolnir.android.send.createSendingChannels
 import app.mjolnir.android.send.scheduleOutgoing
 import app.mjolnir.android.session.PhoneSession
 import app.mjolnir.android.session.SwitchingRelayApi
+import app.mjolnir.client.ChatController
+import app.mjolnir.client.ChatStore
 import app.mjolnir.client.FileSeenDeliveries
 import app.mjolnir.client.GuestRoomController
 import app.mjolnir.client.guestRoomSecretStore
@@ -35,6 +37,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -52,6 +55,7 @@ class MjolnirApp : Application() {
         super.onCreate()
         createSendingChannels(this)
         createReceivingChannels(this)
+        createChatChannel(this)
         schedulePeriodicInboxDrain(this)
         syncPushToken(this)
         // Throws still in the outbox (e.g. after a force-stop or reboot) get their work back; KEEP leaves running
@@ -97,8 +101,33 @@ class AppContainer(context: Context) {
     /** Talks to the relay at the current `relayUrl`; the client is rebuilt when the URL changes and reads the token live. */
     val api: RelayApi = SwitchingRelayApi(::currentClient)
 
+    /** Everything about the chats: lists, messages (cached in `chats/`), unread counts. App-wide, so background work can sync and notify. */
+    val chatController = ChatController(
+        api = { api }, store = ChatStore(File(filesDir, "chats").also { it.mkdirs() }),
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        me = { try { config.read().deviceId } catch (e: IOException) { null } },
+    )
+
+    /** Always on, and started before any refresh: with no collector a new message would be dropped, not notified. */
+    val chatNotifier = ChatNotifier(
+        chatController, CoroutineScope(SupervisorJob() + Dispatchers.IO), nicknameOf = nicknames::get,
+        post = { m, name -> postChatNotification(appContext, m, name) },
+    )
+
+    /** True while an activity of the app is started. */
+    val appForeground = MutableStateFlow(false)
+
+    /** True while the Chats tab is the screen shown. */
+    val chatsVisible = MutableStateFlow(false)
+
+    /** Live chat updates while the Chats tab is on screen. */
+    val chatWatcher = ChatWatcher(
+        chatController, events = { api.events() }, scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        active = combine(appForeground, chatsVisible) { fg, shown -> fg && shown },
+    )
+
     /** The one registration guard for the whole app. */
-    val session = PhoneSession(api, config, onReset = nicknames::clear)
+    val session = PhoneSession(api, config, onReset = { nicknames.clear(); chatController.clear() })
 
     /** Call after the relay URL was written to [config]; the next call builds a client for the new address. */
     fun invalidateRelayClient() = synchronized(clientLock) { cachedUrl = null }

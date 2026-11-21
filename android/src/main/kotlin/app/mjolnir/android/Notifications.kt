@@ -7,7 +7,14 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.app.NotificationChannel
+import android.content.Intent
 import app.mjolnir.android.receive.CHANNEL_CAUGHT
+import app.mjolnir.android.receive.EXTRA_CHAT
+import app.mjolnir.android.receive.EXTRA_SCREEN
+import app.mjolnir.android.receive.SCREEN_CHATS
+import app.mjolnir.client.IncomingMessage
+import app.mjolnir.client.Messages
 
 /** A notification id for [key]; never 0, which startForeground refuses. */
 internal fun notificationId(key: String): Int = key.hashCode().takeIf { it != 0 } ?: 1
@@ -52,4 +59,36 @@ internal fun postNotification(context: Context, id: Int, notification: Notificat
         context.getSystemService(NotificationManager::class.java).notify(id, notification)
     } catch (_: SecurityException) {
     }
+}
+
+/** Messages in chats: default importance. */
+const val CHANNEL_CHAT = "chat"
+
+fun createChatChannel(context: Context) {
+    context.getSystemService(NotificationManager::class.java)
+        .createNotificationChannel(NotificationChannel(CHANNEL_CHAT, "Chat messages", NotificationManager.IMPORTANCE_DEFAULT))
+}
+
+/** `{name} in {chat}: {text}`: one notification per chat (a newer message replaces the last); tapping it opens that chat. */
+internal fun postChatNotification(context: Context, message: IncomingMessage, authorName: String) {
+    val text = Messages.chatNotification(authorName, message.chatName, message.text)
+    val open = PendingIntent.getActivity(
+        context, 2,
+        Intent(context, MainActivity::class.java)
+            .setIdentifier(message.chatId) // one PendingIntent per chat
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(EXTRA_SCREEN, SCREEN_CHATS)
+            .putExtra(EXTRA_CHAT, message.chatId),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+    postNotification(
+        context, notificationId("chat:${message.chatId}"),
+        Notification.Builder(context, CHANNEL_CHAT)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build(),
+    )
 }

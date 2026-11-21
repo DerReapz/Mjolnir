@@ -18,7 +18,9 @@ import androidx.activity.enableEdgeToEdge
 import app.mjolnir.android.ui.Forge
 import app.mjolnir.android.ui.MjolnirTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -37,7 +39,11 @@ import app.mjolnir.android.receive.EXTRA_SCREEN
 import app.mjolnir.android.receive.SCREEN_CAUGHT
 import app.mjolnir.android.receive.enqueueInboxDrain
 import app.mjolnir.android.receive.syncPushToken
+import app.mjolnir.android.receive.EXTRA_CHAT
+import app.mjolnir.android.receive.SCREEN_CHATS
 import app.mjolnir.android.ui.CaughtScreen
+import app.mjolnir.android.ui.ChatViewModel
+import app.mjolnir.android.ui.ChatsScreen
 import app.mjolnir.android.ui.CaughtViewModel
 import app.mjolnir.android.ui.DevicesScreen
 import app.mjolnir.android.ui.DevicesViewModel
@@ -60,6 +66,14 @@ class MainActivity : ComponentActivity() {
     private val factory = object : ViewModelProvider.Factory {
         /** The Spaces view model keeps its invite code in the saved state, which only the extras can reach. */
         override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
+            if (modelClass == ChatViewModel::class.java) {
+                val c = container
+                @Suppress("UNCHECKED_CAST")
+                return ChatViewModel(
+                    c.chatController, c.api, c.nicknames, { try { c.config.read().deviceId } catch (e: java.io.IOException) { null } },
+                    c.appForeground, extras.createSavedStateHandle(),
+                ) as T
+            }
             if (modelClass != SpacesViewModel::class.java) return create(modelClass)
             val c = container
             val throwing = throwVm
@@ -98,6 +112,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private val throwVm: ThrowViewModel by viewModels { factory }
+    private val chatVm: ChatViewModel by viewModels { factory }
     private val importer by lazy { UriImporter(applicationContext, container.outboxDir) } // never captures the Activity
 
     private var requestedScreen by mutableStateOf<Screen?>(null)
@@ -119,10 +134,21 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(requestedScreen) {
                     requestedScreen?.let { screen = it; requestedScreen = null }
                 }
-                Scaffold(containerColor = Forge.Background, bottomBar = { MjolnirNav(screen, onSelect = { screen = it }) }) { padding ->
+                val chatUnread by container.chatController.unread.collectAsState()
+                val chatOpen by chatVm.selectedId.collectAsState()
+                DisposableEffect(screen) {
+                    container.chatsVisible.value = screen == Screen.CHATS
+                    onDispose { container.chatsVisible.value = false }
+                }
+                Scaffold(
+                    containerColor = Forge.Background,
+                    // A conversation takes the whole screen, as in the mockup.
+                    bottomBar = { if (!(screen == Screen.CHATS && chatOpen != null)) MjolnirNav(screen, onSelect = { screen = it }, chatsBadge = chatUnread.values.sum()) },
+                ) { padding ->
                     Box(Modifier.fillMaxSize().padding(padding)) {
                         when (screen) {
                             Screen.THROW -> ThrowScreen(throwVm, importer, onPairDevice = { screen = Screen.DEVICES })
+                            Screen.CHATS -> ChatsScreen(chatVm)
                             Screen.CAUGHT -> CaughtScreen(viewModel(factory = factory))
                             Screen.DEVICES -> DevicesScreen(viewModel(factory = factory), viewModel(factory = factory), viewModel(factory = factory), viewModel(factory = factory))
                             Screen.SETTINGS -> SettingsScreen(viewModel(factory = factory))
@@ -140,16 +166,23 @@ class MainActivity : ComponentActivity() {
         handleScreen(intent)
     }
 
-    /** A Caught notification opens the Caught screen. */
+    /** A Caught notification opens the Caught screen; a chat notification opens that chat. */
     private fun handleScreen(intent: Intent) {
-        if (intent.getStringExtra(EXTRA_SCREEN) != SCREEN_CAUGHT) return
+        val screen = intent.getStringExtra(EXTRA_SCREEN)
+        if (screen != SCREEN_CAUGHT && screen != SCREEN_CHATS) return
+        val chat = intent.getStringExtra(EXTRA_CHAT)
         intent.removeExtra(EXTRA_SCREEN)
+        intent.removeExtra(EXTRA_CHAT)
         if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
-        requestedScreen = Screen.CAUGHT
+        if (screen == SCREEN_CHATS) {
+            chat?.let(chatVm::open)
+            requestedScreen = Screen.CHATS
+        } else requestedScreen = Screen.CAUGHT
     }
 
     override fun onStart() {
         super.onStart()
+        container.appForeground.value = true
         lifecycleScope.launch {
             try {
                 container.session.ensureRegistered()
@@ -159,6 +192,11 @@ class MainActivity : ComponentActivity() {
             enqueueInboxDrain(applicationContext) // pick up anything the push didn't announce (or no Firebase)
             throwVm.refreshTargets()
         }
+    }
+
+    override fun onStop() {
+        container.appForeground.value = false
+        super.onStop()
     }
 
     private fun askForNotifications() {

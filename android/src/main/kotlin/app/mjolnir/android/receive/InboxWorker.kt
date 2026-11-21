@@ -53,6 +53,9 @@ const val CHANNEL_RECEIVING = "receiving"
 
 const val EXTRA_SCREEN = "screen"
 const val SCREEN_CAUGHT = "caught"
+const val SCREEN_CHATS = "chats"
+/** With [SCREEN_CHATS]: the chat to open. */
+const val EXTRA_CHAT = "chat"
 const val EXTRA_DELIVERY_ID = "deliveryId"
 
 private const val WORK_DRAIN = "inbox-drain"
@@ -117,7 +120,21 @@ class InboxWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
         if (config.token == null) return@withContext Result.success() // not registered yet: nothing to drain
         // One drain at a time across all inbox workers, so no delivery is downloaded or published twice.
-        c.inboxLock.withLock { drain(c, config) }
+        val result = c.inboxLock.withLock { drain(c, config) }
+        syncChats(c)
+        result
+    }
+
+    /** Chat messages ride the same doorbell: refresh the chats (which syncs those that moved); the app-wide notifier posts what is new. */
+    private suspend fun syncChats(c: AppContainer) {
+        try {
+            c.chatController.refresh()
+            c.chatController.refreshInvites()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            // The chat cache couldn't be written; the next run tries again.
+        }
     }
 
     private suspend fun drain(c: AppContainer, config: PhoneConfig): Result {
