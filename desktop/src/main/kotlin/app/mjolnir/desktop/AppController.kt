@@ -1,6 +1,9 @@
 package app.mjolnir.desktop
 
+import app.mjolnir.client.ChatController
+import app.mjolnir.client.ChatStore
 import app.mjolnir.client.FileSeenDeliveries
+import app.mjolnir.client.IncomingMessage
 import app.mjolnir.client.Exchanged
 import app.mjolnir.client.GuestRoomController
 import app.mjolnir.client.GuestRoomUi
@@ -22,6 +25,7 @@ import app.mjolnir.client.guestRoomSecretStore
 import app.mjolnir.client.sendInBatches
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.Space
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.SpaceRef
 import app.mjolnir.client.DestinationKey
@@ -37,6 +41,7 @@ import java.io.InputStream
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -65,7 +70,7 @@ import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 
 /** Tabs of the main window. */
-enum class MainTab { SEND, GUEST, RECEIVED, DEVICES, SETTINGS }
+enum class MainTab { SEND, CHATS, GUEST, RECEIVED, DEVICES, SETTINGS }
 
 /** The sidebar's relay line. */
 enum class RelayStatus(val label: String) {
@@ -117,6 +122,52 @@ class AppController(
         onPeersAffected = { scope.launch { refreshAfterSpaceChange() } },
         onUnauthorized = { scope.launch { recoverUnauthorized(store.read().token) } },
     )
+
+    /** The chats of this device's spaces; their cache lives in the app data folder `chats/`. */
+    val chats = ChatController(
+        api = ::api, store = ChatStore(File(dataDir, "chats").also { it.mkdirs() }), scope = scope,
+        me = { _config.value.deviceId },
+    )
+
+    private val _selectedChat = MutableStateFlow<String?>(null)
+    /** The chat the Chats tab shows; it outlives the tab, so *New chat…* elsewhere can open the chat it made. */
+    val selectedChat: StateFlow<String?> = _selectedChat.asStateFlow()
+    fun selectChat(chatId: String?) { _selectedChat.value = chatId }
+
+    private val _chatNotice = MutableStateFlow<String?>(null)
+    /** The last failed chat action, as a sentence; null once dismissed. */
+    val chatNotice: StateFlow<String?> = _chatNotice.asStateFlow()
+    fun dismissChatNotice() { _chatNotice.value = null }
+
+    /**
+     * Runs a chat action in the controller's scope, so closing the window cannot cancel it half way; a refusal becomes
+     * [chatNotice] and the result is null.
+     */
+    suspend fun <T> chatCall(block: suspend ChatController.() -> T): T? = scope.async {
+        try {
+            chats.block()
+        } catch (e: RelayException) {
+            _chatNotice.value = chatErrorCopy(e)
+            null
+        }
+    }.await()
+
+    /** Creates a chat in [space] and shows it in the Chats tab. */
+    fun createChat(space: Space, name: String) {
+        scope.launch { chatCall { createChat(space.id, name) }?.let { selectChat(it.id); openWindow(MainTab.CHATS) } }
+    }
+
+    init {
+        // Always on, and started before the first refresh: with no collector a new message would be dropped, not notified.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { chats.newMessages.collect(::onIncomingChatMessage) }
+    }
+
+    /** A message in a chat that isn't open: a tray notification, unless that chat is open in the visible Chats tab. */
+    internal fun onIncomingChatMessage(m: IncomingMessage) {
+        if (chats.openChat.value == m.chatId && mainWindowVisible && mainWindowTab == MainTab.CHATS) return
+        val author = chats.members(m.chatId).value.firstOrNull { it.name == m.authorName } // nicknames are by device
+        notify(Messages.chatNotification(author?.let(nicknames::displayName) ?: m.authorName, m.chatName, m.text))
+    }
 
     /** The guest room this device owns: its link, countdown, guest and the list of what was exchanged. */
     val guestRoom = GuestRoomController(
@@ -235,6 +286,7 @@ class AppController(
                     onConnected = { kickOutbox(); guestRoom.restore() },
                     onConnectionChange = { connected.value = it },
                     onSpaceChanged = { spaces.refresh() },
+                    onChatEvent = chats::onEvent,
                     onSpaceDeleted = { onSpaceDeleted(it.space) },
                     onGuestRoomEvent = ::onGuestRoomEvent,
                 ).run()
@@ -768,6 +820,19 @@ class AppController(
         synchronized(clientLock) { (client as? AutoCloseable)?.close(); client = null }
         scope.coroutineContext[Job]?.cancel()
     }
+}
+
+/** A refused chat action as a sentence; the relay's code is the exception's message. */
+fun chatErrorCopy(e: RelayException): String = when {
+    e.kind == RelayErrorKind.NETWORK -> "Can't reach the relay. Check your connection."
+    e.kind == RelayErrorKind.RATE_LIMITED -> "Too many messages. Wait a moment."
+    e.kind == RelayErrorKind.UNAUTHORIZED -> Messages.RESET
+    e.message == "too_long" -> "That message is too long (4,000 characters at most)."
+    e.message == "empty" -> "Write something first."
+    e.message == "owner_must_transfer" -> "Make someone else the owner first."
+    e.message == "deleted" -> "That message was deleted."
+    e.kind == RelayErrorKind.NOT_FOUND -> "That chat is no longer there."
+    else -> "Something went wrong. Try again."
 }
 
 fun couldntGetCode(reason: String) = "Couldn't get a code: $reason."

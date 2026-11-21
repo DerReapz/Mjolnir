@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.desktop.InviteUi
 import app.mjolnir.desktop.JoinUi
+import app.mjolnir.client.Messages
 import app.mjolnir.client.canTakeOver
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
@@ -47,6 +48,7 @@ class SpacesActions(
     val onTakeOver: (Space) -> Unit = {},
     val onDismissNotice: () -> Unit = {},
     val onDismissJoin: () -> Unit = {},
+    val onCreateChat: (Space, String) -> Unit = { _, _ -> },
 )
 
 /** A dialog the Spaces section opens over the Devices tab. */
@@ -54,6 +56,7 @@ sealed interface SpaceDialog {
     data object New : SpaceDialog
     data object Join : SpaceDialog
     data class Rename(val space: Space) : SpaceDialog
+    data class NewChat(val space: Space) : SpaceDialog
     /** A destructive or far-reaching action waits for a yes: [title] asks, [confirmLabel] is the button that does it. */
     data class Confirm(val title: String, val confirmLabel: String, val action: () -> Unit) : SpaceDialog
 }
@@ -105,6 +108,7 @@ private fun SpaceCard(
     Column(Modifier.fillMaxWidth().forgeCard(selected = false).padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(space.name, Modifier.weight(1f), style = nameStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            ForgeSecondaryButton(Messages.NEW_CHAT_PC, onClick = { onDialog(SpaceDialog.NewChat(space)) })
             if (isAdmin) {
                 ForgeSecondaryButton("Invite…", onClick = { actions.onInvite(space) })
                 ForgeSecondaryButton("Rename space", onClick = { onDialog(SpaceDialog.Rename(space)) })
@@ -170,6 +174,7 @@ private fun InvitePanel(invite: InviteUi, onNewCode: () -> Unit, onClose: () -> 
 fun SpaceDialogHost(dialog: SpaceDialog?, join: JoinUi, actions: SpacesActions, onClose: () -> Unit) {
     when (dialog) {
         null -> {}
+        is SpaceDialog.NewChat -> NameDialog("New chat in ${dialog.space.name}", "", "Create", onClose, placeholder = "Holiday planning") { actions.onCreateChat(dialog.space, it); onClose() }
         SpaceDialog.New -> NameDialog("New space", "", "Create", onClose) { actions.onCreate(it); onClose() }
         is SpaceDialog.Rename -> NameDialog("Rename space", dialog.space.name, "Save", onClose) { actions.onRename(dialog.space, it); onClose() }
         is SpaceDialog.Confirm -> ForgeModal(onDismiss = onClose) {
@@ -184,12 +189,14 @@ fun SpaceDialogHost(dialog: SpaceDialog?, join: JoinUi, actions: SpacesActions, 
 }
 
 @Composable
-private fun NameDialog(title: String, initial: String, confirmLabel: String, onCancel: () -> Unit, onConfirm: (String) -> Unit) {
+private fun NameDialog(
+    title: String, initial: String, confirmLabel: String, onCancel: () -> Unit, placeholder: String = "Friends", onConfirm: (String) -> Unit,
+) {
     var text by remember { mutableStateOf(initial) }
     val valid = text.isNotBlank()
     ForgeModal(onDismiss = onCancel) {
         Text(title, style = MaterialTheme.typography.titleMedium)
-        ForgeInput(text, { text = it.take(MAX_SPACE_NAME) }, placeholder = "Friends", onEnter = { if (valid) onConfirm(text.trim()) })
+        ForgeInput(text, { text = it.take(MAX_SPACE_NAME) }, placeholder = placeholder, onEnter = { if (valid) onConfirm(text.trim()) })
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
             ForgeSecondaryButton("Cancel", onClick = onCancel)
             ForgePrimaryButton(confirmLabel, enabled = valid, onClick = { onConfirm(text.trim()) })

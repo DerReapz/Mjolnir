@@ -95,6 +95,7 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
     val send by c.send.collectAsState() // the queue is owned by the controller and outlives this window
     val nicknames by c.nicknames.changes.collectAsState()
     val relayStatus by c.relayStatus.collectAsState()
+    val chatUnread by c.chats.unread.collectAsState()
     val guestUi by c.guestRoom.state.collectAsState()
     val exchanged by c.guestRoom.exchanged.collectAsState()
     val guestLeft = rememberRoomCountdown(guestUi)
@@ -159,7 +160,7 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
         LaunchedEffect(Unit) { c.openRequests.collect { bringToFront(awtWindow) } } // Explorer's *Send to*, tray: come to the front
         MjolnirTheme {
             Row(Modifier.fillMaxSize().dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget)) {
-                Sidebar(selected = tab, relayStatus = relayStatus.label, guestBadge = guestLeft, onSelect = onTab)
+                Sidebar(selected = tab, relayStatus = relayStatus.label, guestBadge = guestLeft, onSelect = onTab, chatsBadge = chatUnread.values.sum())
                 Box(Modifier.weight(1f).fillMaxHeight()) {
                     when (tab) {
                         MainTab.SEND -> SendTabContent(
@@ -183,6 +184,7 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
                             onShowInFolder = ::showPreviewInFolder,
                             guestLeft = guestLeft,
                         )
+                        MainTab.CHATS -> ChatsTab(c)
                         MainTab.RECEIVED -> ReceivedTab(c)
                         MainTab.DEVICES -> DevicesTab(c, openPairing = pairOnOpen, onPairingOpened = { pairOnOpen = false })
                         MainTab.SETTINGS -> SettingsTab(c, parent = awtWindow)
@@ -220,6 +222,7 @@ private class NavItem(val tab: MainTab, val label: String, val icon: List<String
 
 private val NAV = listOf(
     NavItem(MainTab.SEND, "Send", listOf("M22 2L11 13", "M22 2l-7 20-4-9-9-4z")),
+    NavItem(MainTab.CHATS, "Chats", listOf("M21 12a8 8 0 0 1-11.5 7.2L4 21l1.8-5.5A8 8 0 1 1 21 12z")),
     NavItem(MainTab.GUEST, "Guest room", listOf("M3 21V8l9-5 9 5v13", "M9 21v-7h6v7")),
     NavItem(MainTab.RECEIVED, "Received", listOf("M12 3v12", "M7 10l5 5 5-5", "M4 21h16")),
     NavItem(MainTab.DEVICES, "Devices", listOf("M3 4h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z", "M18 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z", "M6 18h6")),
@@ -242,9 +245,9 @@ internal fun ForgeIcon(paths: List<String>, tint: Color, size: Dp) {
     }
 }
 
-/** 208 px sidebar: wordmark, nav items, relay status. The Guest room item carries [guestBadge] (the room's countdown) while a room is open. */
+/** 208 px sidebar: wordmark, nav items, relay status. The Guest room item carries [guestBadge] (the room's countdown) while a room is open; Chats carries [chatsBadge], the unread total. */
 @Composable
-fun Sidebar(selected: MainTab, relayStatus: String, guestBadge: String?, onSelect: (MainTab) -> Unit) {
+fun Sidebar(selected: MainTab, relayStatus: String, guestBadge: String?, onSelect: (MainTab) -> Unit, chatsBadge: Int = 0) {
     Column(
         Modifier.width(208.dp).fillMaxHeight().background(Forge.panel)
             .drawBehind { drawLine(Forge.border, Offset(size.width, 0f), Offset(size.width, size.height), 1.dp.toPx()) }
@@ -267,12 +270,8 @@ fun Sidebar(selected: MainTab, relayStatus: String, guestBadge: String?, onSelec
             ) {
                 ForgeIcon(item.icon, tint, 18.dp)
                 Text(item.label, style = TextStyle(fontFamily = if (active) ForgeFonts.inter600 else ForgeFonts.inter400, fontSize = 14.sp, color = tint), modifier = Modifier.weight(1f))
-                if (item.tab == MainTab.GUEST && guestBadge != null) {
-                    Text(
-                        guestBadge, style = TextStyle(fontFamily = ForgeFonts.inter600, fontSize = 11.sp, color = Forge.onAccent),
-                        modifier = Modifier.background(Forge.accent, RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 1.dp),
-                    )
-                }
+                if (item.tab == MainTab.GUEST && guestBadge != null) ForgeBadge(guestBadge)
+                if (item.tab == MainTab.CHATS && chatsBadge > 0) ForgeBadge(chatsBadge.toString()) // all chats' unread messages
             }
         }
         Row(Modifier.padding(start = 10.dp, end = 10.dp, top = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -283,7 +282,7 @@ fun Sidebar(selected: MainTab, relayStatus: String, guestBadge: String?, onSelec
     }
 }
 
-private fun copyToClipboard(text: String) {
+internal fun copyToClipboard(text: String) {
     try { Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null) } catch (_: Exception) {}
 }
 

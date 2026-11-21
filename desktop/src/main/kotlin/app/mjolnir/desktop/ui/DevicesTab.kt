@@ -94,6 +94,7 @@ fun DevicesTab(c: AppController, openPairing: Boolean = false, onPairingOpened: 
             onDelete = { c.spaces.delete(it.id) }, onMakeAdmin = { space, member -> c.spaces.makeAdmin(space.id, member.deviceId) },
             onTakeOver = { c.spaces.takeOver(it.id) },
             onDismissNotice = c.spaces::dismissNotice, onDismissJoin = c.spaces::dismissJoin,
+            onCreateChat = c::createChat,
         )
     }
 

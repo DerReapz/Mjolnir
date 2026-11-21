@@ -778,4 +778,70 @@ class AppControllerTest {
         assertEquals("big.bin", row.title)
         scope.cancel()
     }
+
+    // ---- chats ----
+
+    private val fred = Peer("fred", "Fred's phone", DeviceKind.PHONE)
+    private val chatConfig get() = """{"relayUrl":"https://a.example","deviceId":"dev-1","token":"tok-1","deviceName":"PC","saveDir":"${File(dir, "save").path.replace("\\", "\\\\")}"}"""
+
+    /** A relay where this device and Fred are in the chat "Game night" of the space "Friends". */
+    private fun chatRelay(): Pair<FakeRelayApi, String> {
+        val fake = FakeRelayApi()
+        fake.asMemberOf("s1", Peer("admin", "Admin", DeviceKind.PC), name = "Friends")
+        fake.addMember("s1", fred)
+        return fake to fake.addChat("s1", "Game night", owner = fake.me, members = listOf(fake.me, fred))
+    }
+
+    @Test fun newMessageNotifiesWhenChatNotOpen() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        val notes = notes(c)
+        c.chats.refresh(); runCurrent()
+        fake.incoming(chat, fred, "who's bringing snacks?")
+        c.chats.sync(chat); runCurrent()
+        assertEquals(listOf("Fred's phone in Game night: who's bringing snacks?"), notes)
+        scope.cancel()
+    }
+
+    @Test fun notificationNamesTheAuthorByNickname() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        val notes = notes(c)
+        c.nicknames.set("fred", "Freddie")
+        c.chats.refresh(); runCurrent()
+        fake.incoming(chat, fred, "hi")
+        c.chats.sync(chat); runCurrent()
+        assertEquals(listOf("Freddie in Game night: hi"), notes)
+        scope.cancel()
+    }
+
+    @Test fun noNotificationForOpenChat() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        val notes = notes(c)
+        c.chats.refresh(); runCurrent()
+        c.chats.openChat.value = chat
+        c.mainWindowVisible = true; c.mainWindowTab = MainTab.CHATS
+        fake.incoming(chat, fred, "who's bringing snacks?")
+        c.chats.sync(chat); runCurrent()
+        assertEquals(emptyList(), notes)
+        scope.cancel()
+    }
+
+    // the open chat only silences the tray while the window is showing the Chats tab
+    @Test fun openChatInAHiddenOrOtherTabWindowStillNotifies() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        val notes = notes(c)
+        val m = IncomingMessage(chat, "Game night", "Fred's phone", "hi")
+        c.chats.openChat.value = chat
+        c.mainWindowVisible = false; c.mainWindowTab = MainTab.CHATS
+        c.onIncomingChatMessage(m)
+        c.mainWindowVisible = true; c.mainWindowTab = MainTab.SEND
+        c.onIncomingChatMessage(m)
+        c.mainWindowTab = MainTab.CHATS
+        c.onIncomingChatMessage(m)
+        assertEquals(2, notes.size)
+        scope.cancel()
+    }
 }

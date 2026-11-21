@@ -56,6 +56,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.platform.Typeface
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import javax.imageio.ImageIO
@@ -272,14 +273,14 @@ fun ForgeInput(
 
 /** A dialog drawn over its tab: dimmed scrim (click dismisses) and a centred card. */
 @Composable
-fun ForgeModal(onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+fun ForgeModal(onDismiss: () -> Unit, maxWidth: Dp = 400.dp, content: @Composable ColumnScope.() -> Unit) {
     Box(
         Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f))
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismiss),
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            Modifier.padding(24.dp).widthIn(max = 400.dp).fillMaxWidth().forgeCard(selected = false)
+            Modifier.padding(24.dp).widthIn(max = maxWidth).fillMaxWidth().forgeCard(selected = false)
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {}) // clicks inside do not dismiss
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),

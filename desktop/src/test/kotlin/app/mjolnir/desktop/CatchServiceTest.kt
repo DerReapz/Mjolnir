@@ -49,6 +49,18 @@ class CatchServiceTest {
         api.events.emit(RelayEvent.Paired(phone)); api.events.emit(RelayEvent.Unpaired("ph")); runCurrent()
         assertEquals(2, changed); job.cancel()
     }
+    // the chat controller gets connects, space changes and the chat events
+    @Test fun forwardsChatEvents() = runTest {
+        val api = FakeRelayApi(); val got = mutableListOf<RelayEvent>()
+        val svc = CatchService(api, InboxDrainer(api, MemorySeen()) {}, {}, {}, onChatEvent = { got += it })
+        val job = launch { svc.run() }; runCurrent()
+        val events = listOf(
+            RelayEvent.Connected, RelayEvent.SpaceChanged("s1"), RelayEvent.ChatChanged("c1", 3),
+            RelayEvent.ChatDeleted("c1"), RelayEvent.ChatInvitesChanged,
+        )
+        events.forEach { api.events.emit(it); runCurrent() }
+        assertEquals(events, got); job.cancel()
+    }
     // R15: a rejected token ends run() with UNAUTHORIZED so Main can re-register
     @Test fun unauthorizedFromEventsPropagates() = runTest {
         val fake = FakeRelayApi()

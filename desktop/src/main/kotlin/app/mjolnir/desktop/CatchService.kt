@@ -20,6 +20,8 @@ class CatchService(
     /** Runs when a space this device is in changed (members, name, admin) or was deleted; the peer list is refreshed after it. */
     private val onSpaceChanged: (spaceId: String) -> Unit = {},
     private val onSpaceDeleted: (RelayEvent.SpaceDeleted) -> Unit = {},
+    /** Runs for the events the chat list lives on: connect, space changes and the chat events themselves. */
+    private val onChatEvent: (RelayEvent) -> Unit = {},
     /** Runs for the guest room's events (guest joined, room ended, files downloaded by the guest). */
     private val onGuestRoomEvent: (RelayEvent) -> Unit = {},
 ) {
@@ -35,19 +37,18 @@ class CatchService(
     private suspend fun collect() {
         api.events().collect { event ->
             when (event) {
-                is RelayEvent.Connected -> { onConnectionChange(true); drain(); onConnected() }
+                is RelayEvent.Connected -> { onConnectionChange(true); drain(); onConnected(); onChatEvent(event) }
                 is RelayEvent.Disconnected -> onConnectionChange(false)
                 is RelayEvent.DeliveryArrived -> drain()
                 is RelayEvent.PairRequested -> onPairRequest(event)
                 is RelayEvent.Paired -> onPeersChanged()
                 is RelayEvent.Unpaired -> { onUnpaired(event.deviceId); onPeersChanged() }
-                is RelayEvent.SpaceChanged -> { onSpaceChanged(event.spaceId); onPeersChanged() }
-                is RelayEvent.SpaceDeleted -> { onSpaceDeleted(event); onPeersChanged() }
+                is RelayEvent.SpaceChanged -> { onSpaceChanged(event.spaceId); onChatEvent(event); onPeersChanged() }
+                is RelayEvent.SpaceDeleted -> { onSpaceDeleted(event); onChatEvent(event); onPeersChanged() }
                 // The guest joining or the room ending also changes the peer list (the guest peer comes and goes).
                 is RelayEvent.GuestJoined, is RelayEvent.RoomEnded -> { onGuestRoomEvent(event); onPeersChanged() }
                 is RelayEvent.Downloaded -> onGuestRoomEvent(event)
-                // Chat events are handled by the chat controller in a later task.
-                is RelayEvent.ChatChanged, is RelayEvent.ChatDeleted, is RelayEvent.ChatInvitesChanged -> Unit
+                is RelayEvent.ChatChanged, is RelayEvent.ChatDeleted, is RelayEvent.ChatInvitesChanged -> onChatEvent(event)
             }
         }
     }

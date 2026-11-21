@@ -113,6 +113,15 @@ class SpacesSectionTest {
         assertEquals(listOf("Work"), created)
     }
 
+    @Test fun newChatOnAnyCardCreatesInThatSpace() = runComposeUiTest {
+        val created = mutableListOf<Pair<String, String>>()
+        show(space("fred"), actions = SpacesActions(onCreateChat = { s, name -> created += s.id to name })) // a member's card, not the admin's
+        onNodeWithText("New chat…").performClick()
+        onNode(hasSetTextAction()).performTextInput("Holiday planning")
+        onNodeWithText("Create").performClick()
+        assertEquals(listOf("s1" to "Holiday planning"), created)
+    }
+
     @Test fun joinDialogShowsTheFlowStates() = runComposeUiTest {
         var join by mutableStateOf<JoinUi>(JoinUi.Idle)
         val joined = mutableListOf<String>()
