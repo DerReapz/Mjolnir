@@ -4,6 +4,7 @@ import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.FileRef
 import app.mjolnir.protocol.ChatEvent
+import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.MjolnirJson
@@ -84,6 +85,8 @@ data class ChatMessageRow(
     val text: String?,
     /** Set for system entries (membership and settings changes), which have no text; the author is the actor. */
     val event: ChatEvent? = null,
+    /** Device ids this message mentions (validated against the chat's members by the route); empty once deleted. */
+    val mentions: List<String> = emptyList(),
 )
 
 /** Who to notify after a device left a space: chat id to the device ids that should hear about it. */
@@ -102,7 +105,7 @@ data class DeletedSpace(val memberIds: List<String>, val chats: Map<String, List
 
 /** What `chat_messages.body_json` holds; attachments join it in the media plan. */
 @Serializable
-private data class StoredChatBody(val text: String? = null)
+private data class StoredChatBody(val text: String? = null, val mentions: List<String> = emptyList())
 
 fun DeviceRow.toPeer(): Peer = Peer(id, name, kind)
 
@@ -213,6 +216,9 @@ class Store(jdbcUrl: String) {
                     device_id TEXT NOT NULL,
                     joined_at INTEGER NOT NULL,
                     read_rev INTEGER NOT NULL DEFAULT 0,
+                    seen_rev INTEGER NOT NULL DEFAULT 0,
+                    seen_at INTEGER NULL,
+                    read_at INTEGER NULL,
                     PRIMARY KEY(chat_id, device_id))"""
             )
             it.executeUpdate("CREATE INDEX IF NOT EXISTS chat_members_device ON chat_members(device_id)")
@@ -251,6 +257,9 @@ class Store(jdbcUrl: String) {
         // Relays that already hold the chat tables from an earlier build of this feature.
         addColumnIfMissing("chat_messages", "deleted_by_admin", "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("chat_messages", "event_json", "TEXT NULL")
+        addColumnIfMissing("chat_members", "seen_rev", "INTEGER NOT NULL DEFAULT 0")
+        addColumnIfMissing("chat_members", "seen_at", "INTEGER NULL")
+        addColumnIfMissing("chat_members", "read_at", "INTEGER NULL")
         // Databases created before tombstones existed lack acked_at.
         val hasAckedAt = conn.createStatement().use { st ->
             st.executeQuery("PRAGMA table_info(files)").use { rs ->
@@ -550,12 +559,13 @@ class Store(jdbcUrl: String) {
 
     private fun ResultSet.toChatMessage(): ChatMessageRow {
         val deleted = getInt("deleted") != 0
-        val text = if (deleted) null else MjolnirJson.decodeFromString<StoredChatBody>(getString("body_json")).text
+        val body = if (deleted) StoredChatBody() else MjolnirJson.decodeFromString<StoredChatBody>(getString("body_json"))
         val edited = getLong("edited_at").takeIf { !wasNull() }
         return ChatMessageRow(
             getString("id"), getString("chat_id"), getString("author_id"), getLong("rev"), getLong("sent_at"),
-            edited, deleted, getInt("deleted_by_admin") != 0, text,
+            edited, deleted, getInt("deleted_by_admin") != 0, body.text,
             getString("event_json")?.let { MjolnirJson.decodeFromString(ChatEvent.serializer(), it) },
+            body.mentions,
         )
     }
 
@@ -788,7 +798,8 @@ class Store(jdbcUrl: String) {
         }
     }
 
-    private fun bodyJson(text: String?) = MjolnirJson.encodeToString(StoredChatBody.serializer(), StoredChatBody(text))
+    private fun bodyJson(text: String?, mentions: List<String> = emptyList()) =
+        MjolnirJson.encodeToString(StoredChatBody.serializer(), StoredChatBody(text, mentions))
 
     /** A real message (not a system entry) of [chatId]. */
     private fun chatMessage(chatId: String, id: String): ChatMessageRow? =
@@ -809,12 +820,12 @@ class Store(jdbcUrl: String) {
 
     /** Appends a message at a new chat revision; null when the chat is gone or [authorId] is not a member. */
     @Synchronized
-    fun postMessage(chatId: String, authorId: String, text: String, nowMs: Long): ChatMessageRow? = transaction {
+    fun postMessage(chatId: String, authorId: String, text: String, nowMs: Long, mentions: List<String> = emptyList()): ChatMessageRow? = transaction {
         if (!isChatMember(chatId, authorId)) return@transaction null
         val rev = nextRev(chatId)
         val id = newId()
-        update("INSERT INTO chat_messages(id,chat_id,author_id,rev,sent_at,body_json) VALUES(?,?,?,?,?,?)", id, chatId, authorId, rev, nowMs, bodyJson(text))
-        ChatMessageRow(id, chatId, authorId, rev, nowMs, null, false, false, text)
+        update("INSERT INTO chat_messages(id,chat_id,author_id,rev,sent_at,body_json) VALUES(?,?,?,?,?,?)", id, chatId, authorId, rev, nowMs, bodyJson(text, mentions))
+        ChatMessageRow(id, chatId, authorId, rev, nowMs, null, false, false, text, mentions = mentions)
     }
 
     /** Appends a system entry at a new revision, authored by [actorId]. */
@@ -828,11 +839,11 @@ class Store(jdbcUrl: String) {
 
     /** Replaces the text of [authorId]'s own undeleted message in [chatId]; false when it is not theirs, deleted or missing. */
     @Synchronized
-    fun editMessage(chatId: String, id: String, authorId: String, text: String, nowMs: Long): Boolean = transaction {
+    fun editMessage(chatId: String, id: String, authorId: String, text: String, nowMs: Long, mentions: List<String> = emptyList()): Boolean = transaction {
         val m = chatMessage(chatId, id) ?: return@transaction false
         if (m.authorId != authorId || m.deleted) return@transaction false
         val rev = nextRev(m.chatId)
-        update("UPDATE chat_messages SET rev=?, edited_at=?, body_json=? WHERE id=?", rev, nowMs, bodyJson(text), id)
+        update("UPDATE chat_messages SET rev=?, edited_at=?, body_json=? WHERE id=?", rev, nowMs, bodyJson(text, mentions), id)
         true
     }
 
@@ -859,14 +870,42 @@ class Store(jdbcUrl: String) {
         return rows.take(limit) to (rows.size > limit)
     }
 
-    /** Raises [deviceId]'s read marker in [chatId] to [rev] (never lowers it, never above the chat's rev). */
+    /**
+     * Raises [deviceId]'s read marker in [chatId] to [rev] (never lowers it, never above the chat's rev); reading counts as
+     * having seen. True when the marker moved.
+     */
     @Synchronized
-    fun markRead(chatId: String, deviceId: String, rev: Long) {
-        update(
-            "UPDATE chat_members SET read_rev=MAX(read_rev, MIN(?, (SELECT rev FROM chats WHERE id=?))) WHERE chat_id=? AND device_id=?",
-            rev, chatId, chatId, deviceId,
-        )
+    fun markRead(chatId: String, deviceId: String, rev: Long, nowMs: Long): Boolean {
+        val to = minOf(rev, chat(chatId)?.rev ?: return false)
+        return update(
+            """UPDATE chat_members SET read_rev=?, read_at=?, seen_at=CASE WHEN ?>seen_rev THEN ? ELSE seen_at END,
+               seen_rev=MAX(seen_rev, ?) WHERE chat_id=? AND device_id=? AND ?>read_rev""",
+            to, nowMs, to, nowMs, to, chatId, deviceId, to,
+        ) > 0
     }
+
+    /** Raises [deviceId]'s seen marker in [chatId] to [rev] (never lowers it, never above the chat's rev). True when it moved. */
+    @Synchronized
+    fun markSeen(chatId: String, deviceId: String, rev: Long, nowMs: Long): Boolean {
+        val to = minOf(rev, chat(chatId)?.rev ?: return false)
+        return update("UPDATE chat_members SET seen_rev=?, seen_at=? WHERE chat_id=? AND device_id=? AND ?>seen_rev", to, nowMs, chatId, deviceId, to) > 0
+    }
+
+    /** One receipt per current member of [chatId], earliest joiner first. */
+    @Synchronized
+    fun receipts(chatId: String): List<Receipt> =
+        conn.prepareStatement("SELECT * FROM chat_members WHERE chat_id=? ORDER BY joined_at, device_id").use {
+            it.setString(1, chatId)
+            it.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        val seenAt = rs.getLong("seen_at").takeIf { !rs.wasNull() }
+                        val readAt = rs.getLong("read_at").takeIf { !rs.wasNull() }
+                        add(Receipt(rs.getString("device_id"), rs.getLong("seen_rev"), rs.getLong("read_rev"), seenAt, readAt))
+                    }
+                }
+            }
+        }
 
     @Synchronized
     fun readRev(chatId: String, deviceId: String): Long =

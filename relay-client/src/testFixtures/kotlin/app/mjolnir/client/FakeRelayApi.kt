@@ -191,11 +191,18 @@ class FakeRelayApi : RelayApi {
     val postCalls get() = chatState.postCalls
     /** The number of the [syncChat] call (1-based, counting all) that fails with a network error. */
     var failSyncOnCall: Int? by chatState::failSyncOnCall
+    var failSeen: Boolean by chatState::failSeen
 
     /** Test setup: a chat in [spaceId] (rev 0) owned by [owner] with [members] (the owner is always one); returns its id. */
     fun addChat(spaceId: String, name: String, owner: Peer = me, members: List<Peer> = listOf(owner)): String = chatState.add(spaceId, name, owner, members)
     /** Test setup: [author] posts to [chatId] as someone other than the viewer. */
-    fun incoming(chatId: String, author: Peer, text: String): ChatMessage = chatState.incoming(chatId, author, text)
+    fun incoming(chatId: String, author: Peer, text: String, mentions: List<String> = emptyList()): ChatMessage = chatState.incoming(chatId, author, text, mentions)
+    fun incomingSeen(chatId: String, by: Peer, rev: Long) = chatState.incomingSeen(chatId, by, rev)
+    fun incomingRead(chatId: String, by: Peer, rev: Long) = chatState.incomingRead(chatId, by, rev)
+    /** What the viewer reported to the relay: `(chatId, rev)` per [markChatSeen] / [markChatRead] call, in order. */
+    val seenCalls get() = chatState.seenCalls
+    val readCalls get() = chatState.readCalls
+    fun seenRevOf(chatId: String): Long = chatState.seenRev(chatId)
     fun incomingEdit(chatId: String, msgId: String, text: String) = chatState.incomingEdit(chatId, msgId, text)
     fun incomingDelete(chatId: String, msgId: String) = chatState.incomingDelete(chatId, msgId)
     /** Test setup: the chat disappears (someone deleted it). */
@@ -219,10 +226,11 @@ class FakeRelayApi : RelayApi {
     override suspend fun removeChatMember(chatId: String, deviceId: String) { check(); chatState.removeMember(chatId, deviceId) }
     override suspend fun adminJoinChat(chatId: String): ChatSummary { check(); return chatState.adminJoin(chatId) }
     override suspend fun syncChat(chatId: String, sinceRev: Long): ChatSync { check(); return chatState.sync(chatId, sinceRev) }
-    override suspend fun postMessage(chatId: String, text: String): ChatMessage { check(); return chatState.post(chatId, text) }
-    override suspend fun editMessage(chatId: String, msgId: String, text: String): ChatMessage { check(); return chatState.edit(chatId, msgId, text) }
+    override suspend fun postMessage(chatId: String, text: String, mentions: List<String>): ChatMessage { check(); return chatState.post(chatId, text, mentions) }
+    override suspend fun editMessage(chatId: String, msgId: String, text: String, mentions: List<String>): ChatMessage { check(); return chatState.edit(chatId, msgId, text, mentions) }
     override suspend fun deleteMessage(chatId: String, msgId: String) { check(); chatState.deleteMessage(chatId, msgId) }
     override suspend fun markChatRead(chatId: String, rev: Long) { check(); chatState.markRead(chatId, rev) }
+    override suspend fun markChatSeen(chatId: String, rev: Long) { check(); chatState.markSeen(chatId, rev) }
 
     /** The open guest room, if any (test setup may assign it directly). */
     var room: RoomResponse? = null

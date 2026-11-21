@@ -2,6 +2,7 @@ package app.mjolnir.client
 
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.Receipt
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
@@ -21,6 +22,10 @@ data class CachedChat(
     val readRev: Long = 0,
     val name: String = "",
     val announcedRev: Long = 0,
+    /** Who has seen and read what, as of the last sync. */
+    val receipts: List<Receipt> = emptyList(),
+    /** The rev this device last reported as seen to the relay. */
+    val seenRev: Long = 0,
 )
 
 /** The on-device chat cache: one JSON file per chat, `chat-{id}.json` in [dir]. */

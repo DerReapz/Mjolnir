@@ -87,10 +87,13 @@ interface RelayApi {
 
     /** One page (200) of the messages with rev above [sinceRev], including edited and deleted ones; see [ChatSync.hasMore]. */
     suspend fun syncChat(chatId: String, sinceRev: Long): ChatSync
-    suspend fun postMessage(chatId: String, text: String): ChatMessage
-    suspend fun editMessage(chatId: String, msgId: String, text: String): ChatMessage
+    /** [mentions] are device ids of chat members (anyone else: 400 invalid_mention). */
+    suspend fun postMessage(chatId: String, text: String, mentions: List<String> = emptyList()): ChatMessage
+    suspend fun editMessage(chatId: String, msgId: String, text: String, mentions: List<String> = emptyList()): ChatMessage
     suspend fun deleteMessage(chatId: String, msgId: String)
     suspend fun markChatRead(chatId: String, rev: Long)
+    /** Tells the relay that everything up to [rev] reached this device (members only: not_member otherwise). */
+    suspend fun markChatSeen(chatId: String, rev: Long)
 
     /** Opens the guest room (ALREADY_SENT when one is open: 409 room_open). */
     suspend fun openRoom(): RoomResponse

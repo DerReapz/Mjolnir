@@ -11,6 +11,7 @@ import app.mjolnir.protocol.InviteRequest
 import app.mjolnir.protocol.PostMessageRequest
 import app.mjolnir.protocol.ReadRequest
 import app.mjolnir.protocol.RenameChatRequest
+import app.mjolnir.protocol.SeenRequest
 import app.mjolnir.protocol.TransferOwnerRequest
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.CodeKind
@@ -315,12 +316,12 @@ class RelayClient(
         http.get("$base/v1/chats/$chatId/sync") { auth(); url.parameters.append("sinceRev", sinceRev.toString()) }
     }
 
-    override suspend fun postMessage(chatId: String, text: String): ChatMessage = callBody {
-        http.post("$base/v1/chats/$chatId/messages") { auth(); jsonBody(PostMessageRequest(text)) }
+    override suspend fun postMessage(chatId: String, text: String, mentions: List<String>): ChatMessage = callBody {
+        http.post("$base/v1/chats/$chatId/messages") { auth(); jsonBody(PostMessageRequest(text, mentions)) }
     }
 
-    override suspend fun editMessage(chatId: String, msgId: String, text: String): ChatMessage = callBody {
-        http.patch("$base/v1/chats/$chatId/messages/$msgId") { auth(); jsonBody(EditMessageRequest(text)) }
+    override suspend fun editMessage(chatId: String, msgId: String, text: String, mentions: List<String>): ChatMessage = callBody {
+        http.patch("$base/v1/chats/$chatId/messages/$msgId") { auth(); jsonBody(EditMessageRequest(text, mentions)) }
     }
 
     override suspend fun deleteMessage(chatId: String, msgId: String) {
@@ -329,6 +330,10 @@ class RelayClient(
 
     override suspend fun markChatRead(chatId: String, rev: Long) {
         call { http.post("$base/v1/chats/$chatId/read") { auth(); jsonBody(ReadRequest(rev)) } }
+    }
+
+    override suspend fun markChatSeen(chatId: String, rev: Long) {
+        call { http.post("$base/v1/chats/$chatId/seen") { auth(); jsonBody(SeenRequest(rev)) } }
     }
 
     override suspend fun openRoom(): RoomResponse = callBody { http.post("$base/v1/rooms") { auth() } }

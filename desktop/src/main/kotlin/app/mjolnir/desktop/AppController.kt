@@ -173,7 +173,7 @@ class AppController(
     internal fun onIncomingChatMessage(m: IncomingMessage) {
         if (chats.openChat.value == m.chatId && mainWindowVisible && mainWindowTab == MainTab.CHATS) return
         val name = nicknames.get(m.authorId) ?: m.authorName
-        notify(Messages.chatNotification(name, m.chatName, m.text))
+        notify(if (m.mentionedMe) Messages.mentionNotification(name, m.chatName, m.text) else Messages.chatNotification(name, m.chatName, m.text))
     }
 
     /** The guest room this device owns: its link, countdown, guest and the list of what was exchanged. */

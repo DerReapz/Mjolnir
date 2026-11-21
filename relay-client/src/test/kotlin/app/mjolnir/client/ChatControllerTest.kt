@@ -444,4 +444,127 @@ class ChatControllerTest {
         c.refresh()
         assertEquals(emptyList(), seen.map { it.text }) // history stays silent
     }
+
+    // ---- Mentions and receipts ----
+
+    @Test fun seenReportedAfterSync() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        val m = api.incoming(chat, sam, "hi")
+        c.sync(chat)
+        assertEquals(listOf(chat to m.rev), api.seenCalls)
+        assertEquals(m.rev, api.seenRevOf(chat))
+        c.sync(chat) // nothing new: nothing to report
+        assertEquals(1, api.seenCalls.size)
+        // Caught up through the doorbell and the refresh a push starts, too.
+        val m2 = api.incoming(chat, sam, "again")
+        c.refresh()
+        assertEquals(listOf(chat to m.rev, chat to m2.rev), api.seenCalls)
+        // A failed report is retried by the next refresh even though nothing new arrived.
+        val other = api.addChat("s1", "Plans", owner = sam, members = listOf(sam, api.me))
+        val m3 = api.incoming(other, sam, "x")
+        api.failSeen = true
+        c.refresh()
+        assertEquals(0L, api.seenRevOf(other))
+        api.failSeen = false
+        c.refresh()
+        assertEquals(m3.rev, api.seenRevOf(other))
+        assertEquals(m3.rev, ChatStore(dir).read(other).seenRev)
+    }
+
+    @Test fun seenNeverReportedForAChatWhereIAmNotAMember() = runTest {
+        val api = FakeRelayApi()
+        api.spaceList += app.mjolnir.protocol.Space("s1", "Crew", api.me.deviceId, listOf(api.me, sam))
+        val chat = api.addChat("s1", "Secret", owner = sam, members = listOf(sam))
+        val m = api.incoming(chat, sam, "hi")
+        val c = controller(api)
+        c.refresh(); c.sync(chat)
+        assertEquals(listOf("hi"), c.messages(chat).value.map { it.text }) // the admin sees it ...
+        assertEquals(emptyList(), api.seenCalls)    // ... without ever counting as having seen it
+        assertEquals(emptyList(), api.readCalls)
+        assertEquals(listOf("sam"), c.receipts(chat).value.map { it.deviceId }) // and is not a receipt either
+        assertEquals(m.rev, c.messages(chat).value.single().rev)
+    }
+
+    @Test fun readReportedOnlyWhenVisible() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        api.incoming(chat, sam, "while closed")
+        c.sync(chat)
+        assertEquals(emptyList(), api.readCalls) // synced and seen, never read
+        assertEquals(0L, api.readRevOf(chat))
+        c.openChat.value = chat // the apps set this only while the chat is on screen
+        val m = api.incoming(chat, sam, "while visible")
+        c.sync(chat)
+        assertEquals(listOf(chat to m.rev), api.readCalls)
+        assertEquals(m.rev, api.readRevOf(chat))
+        assertTrue(c.unread.value.isEmpty())
+        c.openChat.value = null
+        api.incoming(chat, sam, "after leaving")
+        c.sync(chat)
+        assertEquals(1, api.readCalls.size)
+        assertEquals(mapOf(chat to 1), c.unread.value)
+    }
+
+    @Test fun receiptsFollowSyncAndReceiptEvents() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        val mine = c.send(chat, "hello")
+        c.sync(chat)
+        assertEquals(setOf("dev-1", "sam"), c.receipts(chat).value.map { it.deviceId }.toSet())
+        api.incomingSeen(chat, sam, mine.rev)
+        c.onEvent(RelayEvent.ChatChanged(chat, mine.rev, receipts = true)) // the same rev as the cache: it still re-syncs
+        assertEquals(mine.rev, c.receipts(chat).value.single { it.deviceId == "sam" }.seenRev)
+        api.incomingRead(chat, sam, mine.rev)
+        c.onEvent(RelayEvent.ChatChanged(chat, mine.rev, receipts = true))
+        val sams = c.receipts(chat).value.single { it.deviceId == "sam" }
+        assertEquals(mine.rev, sams.readRev); assertTrue(sams.readAtEpochMs != null)
+        // They survive a restart (the cache).
+        assertEquals(sams, controller(api).receipts(chat).value.single { it.deviceId == "sam" })
+    }
+
+    @Test fun mentionIncomingFlagged() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        api.incoming(chat, sam, "plain")
+        api.incoming(chat, sam, "hey @Me", mentions = listOf("dev-1"))
+        api.incoming(chat, sam, "hey @Sam", mentions = listOf("sam"))
+        c.sync(chat)
+        assertEquals(listOf("plain" to false, "hey @Me" to true, "hey @Sam" to false), seen.map { it.text to it.mentionedMe })
+        assertEquals(setOf(chat), c.unreadMentions.value)
+        c.markRead(chat)
+        assertEquals(emptySet(), c.unreadMentions.value)
+        // Read on another device already: a plain message stays quiet, a mention still arrives.
+        seen.clear()
+        val a = api.incoming(chat, sam, "quiet"); val b = api.incoming(chat, sam, "@Me look", mentions = listOf("dev-1"))
+        api.markChatRead(chat, b.rev)
+        c.refresh()
+        assertEquals(listOf("@Me look"), seen.map { it.text }); assertEquals(a.rev + 1, b.rev)
+        // Not while the chat is open on this device.
+        seen.clear()
+        c.openChat.value = chat
+        api.incoming(chat, sam, "@Me now", mentions = listOf("dev-1"))
+        c.sync(chat)
+        assertTrue(seen.isEmpty())
+        // My own mention of myself and deleted mentions never count.
+        c.openChat.value = null
+        val own = c.send(chat, "note to @Me", listOf("dev-1")); c.sync(chat)
+        val gone = api.incoming(chat, sam, "oops @Me", mentions = listOf("dev-1")); api.incomingDelete(chat, gone.id); c.sync(chat)
+        assertEquals(emptySet(), c.unreadMentions.value); assertEquals(listOf("dev-1"), own.mentions)
+    }
+
+    @Test fun mentionCandidatesFilterByShownName() = runTest {
+        val (api, chat) = fakeWithChat()
+        api.addMember("s1", Peer("zed", "Zed", DeviceKind.PHONE))
+        val c = controller(api)
+        c.sync(chat)
+        assertEquals(listOf("sam"), c.mentionCandidates(chat, "").map { it.deviceId }) // never me
+        assertEquals(listOf("sam"), c.mentionCandidates(chat, "SA").map { it.deviceId })
+        assertEquals(listOf("sam"), c.mentionCandidates(chat, "buddy") { if (it.deviceId == "sam") "Buddy" else it.name }.map { it.deviceId })
+        assertEquals(emptyList(), c.mentionCandidates(chat, "buddy"))
+    }
 }

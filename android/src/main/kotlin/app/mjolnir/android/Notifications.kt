@@ -64,14 +64,32 @@ internal fun postNotification(context: Context, id: Int, notification: Notificat
 /** Messages in chats: default importance. */
 const val CHANNEL_CHAT = "chat"
 
+/** Messages that mention this phone: louder than the rest of the chat. */
+const val CHANNEL_MENTIONS = "mentions"
+
 fun createChatChannel(context: Context) {
-    context.getSystemService(NotificationManager::class.java)
-        .createNotificationChannel(NotificationChannel(CHANNEL_CHAT, "Chat messages", NotificationManager.IMPORTANCE_DEFAULT))
+    val manager = context.getSystemService(NotificationManager::class.java)
+    manager.createNotificationChannel(NotificationChannel(CHANNEL_CHAT, "Chat messages", NotificationManager.IMPORTANCE_DEFAULT))
+    manager.createNotificationChannel(NotificationChannel(CHANNEL_MENTIONS, "Mentions", NotificationManager.IMPORTANCE_HIGH))
 }
 
+/** What a chat notification says and how loudly: a mention is `{name} mentioned you in {chat}: {text}` at high priority, in its own slot. */
+internal data class ChatNotificationSpec(val channel: String, val priority: Int, val text: String, val id: Int)
+
+internal fun chatNotificationSpec(message: IncomingMessage, authorName: String): ChatNotificationSpec =
+    if (message.mentionedMe) ChatNotificationSpec(
+        CHANNEL_MENTIONS, Notification.PRIORITY_HIGH, Messages.mentionNotification(authorName, message.chatName, message.text),
+        notificationId("mention:${message.chatId}"),
+    ) else ChatNotificationSpec(
+        CHANNEL_CHAT, Notification.PRIORITY_DEFAULT, Messages.chatNotification(authorName, message.chatName, message.text),
+        notificationId("chat:${message.chatId}"),
+    )
+
 /** `{name} in {chat}: {text}`: one notification per chat (a newer message replaces the last); tapping it opens that chat. */
+@Suppress("DEPRECATION") // setPriority still matters below Android 8, where there are no channels
 internal fun postChatNotification(context: Context, message: IncomingMessage, authorName: String) {
-    val text = Messages.chatNotification(authorName, message.chatName, message.text)
+    val spec = chatNotificationSpec(message, authorName)
+    val text = spec.text
     val open = PendingIntent.getActivity(
         context, 2,
         Intent(context, MainActivity::class.java)
@@ -82,8 +100,9 @@ internal fun postChatNotification(context: Context, message: IncomingMessage, au
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
     postNotification(
-        context, notificationId("chat:${message.chatId}"),
-        Notification.Builder(context, CHANNEL_CHAT)
+        context, spec.id,
+        Notification.Builder(context, spec.channel)
+            .setPriority(spec.priority)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
@@ -95,5 +114,7 @@ internal fun postChatNotification(context: Context, message: IncomingMessage, au
 
 /** The chat was read in the app: its notification goes. */
 internal fun cancelChatNotification(context: Context, chatId: String) {
-    context.getSystemService(NotificationManager::class.java).cancel(notificationId("chat:$chatId"))
+    val manager = context.getSystemService(NotificationManager::class.java)
+    manager.cancel(notificationId("chat:$chatId"))
+    manager.cancel(notificationId("mention:$chatId"))
 }

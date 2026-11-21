@@ -66,6 +66,9 @@ object Messages {
     const val SHARE = "Share…"
     const val EDIT = "Edit"
     const val DELETE = "Delete"
+    const val INFO = "Info"
+    const val READ = "Read"
+    const val SEEN = "Seen"
 
     /** The owner's approval prompt: "Sam wants to add Ann". */
     fun inviteApproval(inviter: String, name: String) = "$inviter wants to add $name"
@@ -73,6 +76,16 @@ object Messages {
     /** The composer's placeholder. */
     fun messageChat(chat: String) = "Message $chat"
     fun chatNotification(name: String, chat: String, text: String) = "$name in $chat: $text"
+    fun mentionNotification(name: String, chat: String, text: String) = "$name mentioned you in $chat: $text"
+
+    /** The line under your latest message: who has read and who has only seen it; empty while nobody has. */
+    fun receiptLine(read: List<String>, seen: List<String>, everyone: Boolean): String = when {
+        everyone -> "Read by everyone"
+        read.isNotEmpty() && seen.isNotEmpty() -> "Read by ${read.joinToString(", ")} · Seen by ${seen.joinToString(", ")}"
+        read.isNotEmpty() -> "Read by ${read.joinToString(", ")}"
+        seen.isNotEmpty() -> "Seen by ${seen.joinToString(", ")}"
+        else -> ""
+    }
 
     /** A system entry as the centred line shows it; [nameOf] turns a device id into its shown name. */
     fun systemLine(event: ChatEvent, nameOf: (String) -> String): String = when (event) {
@@ -94,6 +107,7 @@ object Messages {
         e.message == "owner_must_transfer" -> "Make someone else the owner first."
         e.message == "already_invited" -> "Already invited."
         e.message == "already_member" -> "Already in this chat."
+        e.message == "invalid_mention" -> "Only people in this chat can be mentioned."
         e.message == "deleted" -> "That message was deleted."
         e.kind == RelayErrorKind.NOT_FOUND -> "That chat is no longer there."
         else -> "Something went wrong. Try again."

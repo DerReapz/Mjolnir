@@ -118,11 +118,44 @@ class ChatViewModelTest {
     @Test fun longPressActionsForOwnVsOthers() {
         val mine = msg("1", me, "hi")
         val theirs = msg("2", sam, "yo")
-        assertEquals(listOf(MessageAction.SHARE, MessageAction.EDIT, MessageAction.DELETE), messageActions(mine, me.deviceId, isSpaceAdmin = false))
+        assertEquals(listOf(MessageAction.SHARE, MessageAction.INFO, MessageAction.EDIT, MessageAction.DELETE), messageActions(mine, me.deviceId, isSpaceAdmin = false))
         assertEquals(listOf(MessageAction.SHARE), messageActions(theirs, me.deviceId, isSpaceAdmin = false))
         assertEquals(listOf(MessageAction.SHARE, MessageAction.DELETE), messageActions(theirs, me.deviceId, isSpaceAdmin = true))
-        assertEquals(listOf(MessageAction.SHARE, MessageAction.EDIT, MessageAction.DELETE), messageActions(mine, me.deviceId, isSpaceAdmin = true))
+        assertEquals(listOf(MessageAction.SHARE, MessageAction.INFO, MessageAction.EDIT, MessageAction.DELETE), messageActions(mine, me.deviceId, isSpaceAdmin = true))
         assertTrue(messageActions(msg("3", me, null, deleted = true), me.deviceId, isSpaceAdmin = true).isEmpty())
+    }
+
+    @Test fun infoInLongPressForOwnMessages() {
+        assertTrue(MessageAction.INFO in messageActions(msg("1", me, "hi"), me.deviceId, isSpaceAdmin = false))
+        assertFalse(MessageAction.INFO in messageActions(msg("2", sam, "yo"), me.deviceId, isSpaceAdmin = false))
+        assertFalse(MessageAction.INFO in messageActions(msg("2", sam, "yo"), me.deviceId, isSpaceAdmin = true)) // not even for the admin
+        assertFalse(MessageAction.INFO in messageActions(msg("3", me, null, deleted = true), me.deviceId, isSpaceAdmin = false))
+    }
+
+    @Test fun sendTurnsShownMentionsIntoDeviceIds() = runTest {
+        val chat = api.addChat("s1", "General", owner = me, members = listOf(me, sam, ann))
+        nicknames.set("sam", "Samwise")
+        val vm = newVm()
+        vm.refresh(); vm.open(chat); advanceUntilIdle()
+        assertEquals(listOf("sam"), vm.mentionCandidates("wise").map { it.deviceId })
+        vm.setDraft(chat, "hi @Samwise and @Annabel"); vm.send(); advanceUntilIdle()
+        val sent = vm.messages.value.single { it.event == null }
+        assertEquals(listOf("sam"), sent.mentions) // "@Annabel" is nobody: Ann is not "Annabel"
+        assertEquals("hi @Sam and @Annabel", sent.text) // the member's own name on the wire, shown by nickname everywhere
+    }
+
+    @Test fun receiptsAndMentionMarkerReachTheScreens() = runTest {
+        val chat = api.addChat("s1", "General", owner = me, members = listOf(me, sam))
+        val vm = newVm()
+        vm.refresh(); vm.open(chat); advanceUntilIdle()
+        val mine = controller.send(chat, "hello"); advanceUntilIdle()
+        api.incomingRead(chat, sam, mine.rev)
+        controller.onEvent(app.mjolnir.protocol.RelayEvent.ChatChanged(chat, mine.rev, receipts = true)); advanceUntilIdle()
+        assertEquals("Read by everyone", vm.receiptLine())
+        chatsVisible.value = false; advanceUntilIdle()
+        api.incoming(chat, sam, "@Me", mentions = listOf(me.deviceId))
+        controller.refresh(); advanceUntilIdle()
+        assertTrue(vm.list.value.groups.single().rows.single().mention)
     }
 
     @Test fun editFlow() = runTest {

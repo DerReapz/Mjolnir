@@ -1,11 +1,16 @@
 package app.mjolnir.client
 
 import app.mjolnir.protocol.ChatEvent
+import app.mjolnir.protocol.ChatMessage
+import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Space
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class ChatRulesTest {
     @Test fun capsAtCodePointsNeverSplittingASurrogatePair() {
@@ -35,5 +40,91 @@ class ChatRulesTest {
         assertEquals("Already in this chat.", Messages.chatError(RelayException(RelayErrorKind.ALREADY_SENT, "already_member")))
         assertEquals("That chat is no longer there.", Messages.chatError(RelayException(RelayErrorKind.NOT_FOUND, "not_found")))
         assertEquals("Can't reach the relay. Check your connection.", Messages.chatError(RelayException(RelayErrorKind.NETWORK, "x")))
+    }
+
+    private val me = Peer("me", "Me", DeviceKind.PC)
+    private val ann = Peer("ann", "Ann", DeviceKind.PHONE)
+    private val bo = Peer("bo", "Bo", DeviceKind.PC)
+    private val cy = Peer("cy", "Cy", DeviceKind.PC)
+
+    @Test fun mentionQueryNeedsAnAtAtAWordStart() {
+        assertEquals("", mentionQuery("@")); assertEquals("an", mentionQuery("hi @an")); assertEquals("", mentionQuery("hi @"))
+        assertNull(mentionQuery("mail me@an")); assertNull(mentionQuery("hi @an ")); assertNull(mentionQuery("hi"))
+        assertEquals("a", mentionQuery("@x @a"))
+    }
+
+    @Test fun insertMentionReplacesTheQuery() {
+        assertEquals("hi @Ann ", insertMention("hi @an", "Ann"))
+        assertEquals("@Ann ", insertMention("@", "Ann"))
+    }
+
+    @Test fun outgoingMentionsUseTheCanonicalNameAndDropEditedOnes() {
+        val picked = listOf(ann to "Annie", bo to "Bo")
+        assertEquals("hi @Ann and @Bo" to listOf("ann", "bo"), outgoingMentions("hi @Annie and @Bo", picked))
+        assertEquals("hi @Ann and Bo" to listOf("ann"), outgoingMentions("hi @Annie and Bo", picked)) // "@Bo" was edited away
+        assertEquals("plain" to emptyList(), outgoingMentions("plain", picked))
+    }
+
+    @Test fun mentionsMatchWholeNamesOnly() {
+        val annabel = Peer("annabel", "Annabel", DeviceKind.PC)
+        val picked = listOf(ann to "Ann", annabel to "Annabel")
+        assertEquals("@Annabel hi" to listOf("annabel"), outgoingMentions("@Annabel hi", picked))
+        assertEquals("@Ann, @Annabel!" to listOf("ann", "annabel"), outgoingMentions("@Ann, @Annabel!", picked))
+        val shown = mentionSpans("@Annabel and @Ann", listOf("ann", "annabel"), listOf(ann, annabel)).spans
+        assertEquals(listOf(0..7, 13..16), shown)
+    }
+
+    @Test fun receiptLineForUsesShownNames() {
+        val m = msg("a", me, 5)
+        val receipts = listOf(Receipt("ann", 5, 5), Receipt("bo", 5, 4))
+        assertEquals("Read by Annie · Seen by Bo", receiptLineFor(m, receipts, listOf(me, ann, bo, cy)) { if (it.deviceId == "ann") "Annie" else it.name })
+        assertEquals("", receiptLineFor(m, emptyList(), listOf(me, ann)))
+    }
+
+    @Test fun mentionSpansShowNicknames() {
+        val shown = mentionSpans("hi @Ann and @Bo", listOf("ann", "bo"), listOf(me, ann, bo)) { if (it.deviceId == "ann") "Annie" else it.name }
+        assertEquals("hi @Annie and @Bo", shown.text)
+        assertEquals(listOf("@Annie", "@Bo"), shown.spans.map { shown.text.substring(it) })
+        val plain = mentionSpans("hi @Ann", emptyList(), listOf(ann)) { it.name }
+        assertEquals("hi @Ann", plain.text); assertEquals(emptyList(), plain.spans)
+        assertEquals(emptyList(), mentionSpans("hi @Zed", listOf("zed"), listOf(ann)) { it.name }.spans) // not a member any more
+    }
+
+    private fun msg(id: String, author: Peer, rev: Long, deleted: Boolean = false, event: ChatEvent? = null) =
+        ChatMessage(id, "c", author, rev, rev, deleted = deleted, text = if (deleted || event != null) null else id, event = event)
+
+    @Test fun latestOwnMessageSkipsEventsAndDeleted() {
+        val all = listOf(msg("a", me, 1), msg("b", ann, 2), msg("c", me, 3, deleted = true), msg("d", me, 4, event = ChatEvent.MemberLeft("x")))
+        assertEquals("a", latestOwnMessage(all, "me")?.id)
+        assertNull(latestOwnMessage(listOf(msg("b", ann, 2)), "me"))
+    }
+
+    @Test fun messageReceiptsSplitReadSeenAndEveryone() {
+        val m = msg("a", me, 5)
+        val receipts = listOf(Receipt("me", 5, 5), Receipt("ann", 9, 6, 20, 30), Receipt("bo", 5, 4, 21, 22), Receipt("cy", 2, 2, 7, 7), Receipt("ghost", 9, 9))
+        val r = messageReceipts(m, receipts, listOf(me, ann, bo, cy))
+        assertEquals(listOf("ann"), r.read.map { it.deviceId }); assertEquals(listOf("bo"), r.seen.map { it.deviceId }); assertFalse(r.everyone)
+        val all = messageReceipts(m, listOf(Receipt("ann", 9, 6), Receipt("bo", 5, 5)), listOf(me, ann, bo))
+        assertTrue(all.everyone); assertEquals(listOf("ann", "bo"), all.read.map { it.deviceId })
+        // Nobody else in the chat: nothing to be read by.
+        assertFalse(messageReceipts(m, listOf(Receipt("me", 5, 5)), listOf(me)).everyone)
+    }
+
+    @Test fun mentionCandidatesFilterByShownName() {
+        val members = listOf(me, ann, bo, cy)
+        val shown = { p: Peer -> if (p.deviceId == "bo") "Annabel" else p.name }
+        assertEquals(listOf("ann", "bo", "cy"), mentionCandidates(members, "me", "", shown).map { it.deviceId })
+        assertEquals(listOf("ann", "bo"), mentionCandidates(members, "me", "ann", shown).map { it.deviceId }) // Bo's nickname matches, its name wouldn't
+        assertEquals(listOf("bo"), mentionCandidates(members, "me", "BEL", shown).map { it.deviceId }) // case-insensitive, anywhere in the name
+        assertEquals(emptyList(), mentionCandidates(members, "me", "me", shown)) // never yourself
+    }
+
+    @Test fun messageSegmentsSplitMentionsAndLinks() {
+        val segs = messageSegments("hi @Ann see https://x.example/a ok", listOf("ann"), listOf(ann)) { "Annie" }
+        assertEquals(
+            listOf(Segment("hi "), Segment("@Annie", mention = true), Segment(" see "), Segment("https://x.example/a", link = "https://x.example/a"), Segment(" ok")),
+            segs,
+        )
+        assertEquals(listOf(Segment("plain")), messageSegments("plain", emptyList(), emptyList()))
     }
 }

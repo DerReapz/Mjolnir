@@ -18,10 +18,12 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -41,6 +43,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -58,13 +63,20 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Messages
-import app.mjolnir.client.TextPart
-import app.mjolnir.client.linkify
+import app.mjolnir.client.Segment
+import app.mjolnir.client.insertMention
+import app.mjolnir.client.latestOwnMessage
+import app.mjolnir.client.mentionQuery
+import app.mjolnir.client.messageReceipts
+import app.mjolnir.client.messageSegments
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
+import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.Receipt
 
 private val MineFill = Color(0xFF3B2A0E)
 private val MineBorder = Color(0xFF5A4114)
@@ -73,6 +85,7 @@ private val Danger = Color(0xFFF87171)
 private val BackIcon = strokeIcon("back", "M15 18l-6-6 6-6")
 private val ShareIcon = strokeIcon("share", "M4 12v8h16v-8", "M12 3v13", "M7 8l5-5 5 5")
 private val EditIcon = strokeIcon("edit", "M4 20h4L19 9l-4-4L4 16z")
+private val InfoIcon = strokeIcon("info", "M12 11v6", "M12 7.5v.01", "M4 12a8 8 0 1016 0a8 8 0 10-16 0")
 private val DeleteIcon = strokeIcon("delete", "M5 7h14", "M10 3h4", "M7 7l1 13h8l1-13")
 
 /** The text a Share… sends on: the message itself. */
@@ -89,6 +102,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
     val editing by vm.editingId.collectAsState()
     val names by vm.nicknameMap.collectAsState()
     val spaces by vm.spaces.collectAsState()
+    val receipts by vm.receipts.collectAsState()
     val current = chat
     if (current == null) {
         Column(modifier.fillMaxSize()) {
@@ -101,6 +115,9 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
     val isAdmin = vm.isSpaceAdmin(current)
     val self = vm.selfDeviceId
     var sheet by remember(current.id) { mutableStateOf<ChatMessage?>(null) }
+    var info by remember(current.id) { mutableStateOf<ChatMessage?>(null) }
+    val shownName = { p: Peer -> names[p.deviceId] ?: p.name }
+    val latestOwn = remember(messages, self) { latestOwnMessage(messages, self) }
     val nameOf = { id: String -> names[id] ?: members.firstOrNull { it.deviceId == id }?.name ?: messages.firstOrNull { it.author.deviceId == id }?.author?.name ?: "Someone" }
     Column(modifier.fillMaxSize().imePadding()) {
         val count = members.size
@@ -125,10 +142,18 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
                 else MessageRow(
                     m, mine = m.author.deviceId == self, authorName = names[m.author.deviceId] ?: m.author.name,
                     canAct = messageActions(m, self, isAdmin).isNotEmpty(), onLongPress = { sheet = m },
+                    segments = remember(m.text, m.mentions, members, names) { messageSegments(m.text.orEmpty(), m.mentions, members, shownName) },
+                    mentionsMe = self != null && self in m.mentions,
+                    receiptLine = if (m.id == latestOwn?.id) vm.receiptLine() else "",
                 )
             }
         }
         if (current.member) {
+            val query = mentionQuery(draft)
+            val candidates = if (query == null) emptyList() else vm.mentionCandidates(query)
+            if (candidates.isNotEmpty()) {
+                MentionPicker(candidates, shownName) { p -> vm.setDraft(current.id, insertMention(draft, shownName(p))) }
+            }
             Composer(current, draft, editing != null, onChange = { vm.setDraft(current.id, it) }, onSend = vm::send, onCancel = vm::cancelEdit)
         } else if (isAdmin) {
             AdminBanner(onJoin = { vm.adminJoin(current.id) })
@@ -137,9 +162,52 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
     sheet?.let { m ->
         MessageSheet(
             m, authorName = names[m.author.deviceId] ?: m.author.name, actions = messageActions(m, self, isAdmin), onDismiss = { sheet = null },
-            onEdit = { vm.startEdit(m) }, onDelete = { vm.delete(m) },
+            onEdit = { vm.startEdit(m) }, onDelete = { vm.delete(m) }, onInfo = { info = m },
         )
     }
+    info?.let { m -> MessageInfoDialog(m, receipts, members, shownName, onDismiss = { info = null }) }
+}
+
+/** The members matching what follows the `@`, above the composer. */
+@Composable
+private fun MentionPicker(candidates: List<Peer>, shownName: (Peer) -> String, onPick: (Peer) -> Unit) {
+    Column(Modifier.fillMaxWidth().background(Forge.Surface).padding(horizontal = 8.dp, vertical = 4.dp).semantics { contentDescription = "Mention picker" }) {
+        for (p in candidates) {
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(role = Role.Button) { onPick(p) }.padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(shownName(p), Modifier.weight(1f), color = Forge.Accent, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (p.kind == app.mjolnir.protocol.DeviceKind.PHONE) "Phone" else "PC", color = Forge.Muted, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+/** Long-press → *Info*: who has read and who has only seen the message, with times. */
+@Composable
+private fun MessageInfoDialog(m: ChatMessage, receipts: List<Receipt>, members: List<Peer>, shownName: (Peer) -> String, onDismiss: () -> Unit) {
+    val r = messageReceipts(m, receipts, members)
+    AlertDialog(
+        onDismissRequest = onDismiss, containerColor = Forge.Surface,
+        title = { Text(Messages.INFO) },
+        text = {
+            Column(Modifier.semantics { contentDescription = "Message info" }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                for ((label, list, at) in listOf(Triple(Messages.READ, r.read, { rc: Receipt -> rc.readAtEpochMs }), Triple(Messages.SEEN, r.seen, { rc: Receipt -> rc.seenAtEpochMs }))) {
+                    Text(label.uppercase(), color = Forge.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
+                    if (list.isEmpty()) Text("Nobody yet", color = Forge.Muted, fontSize = 14.sp)
+                    for (rc in list) {
+                        val name = members.firstOrNull { it.deviceId == rc.deviceId }?.let(shownName) ?: continue
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(name, fontSize = 15.sp)
+                            at(rc)?.let { Text(clockTime(it), color = Forge.Muted, fontSize = 13.sp) }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("Close") } },
+    )
 }
 
 @Composable
@@ -174,7 +242,10 @@ private fun SystemLine(text: String) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageRow(m: ChatMessage, mine: Boolean, authorName: String, canAct: Boolean, onLongPress: () -> Unit) {
+private fun MessageRow(
+    m: ChatMessage, mine: Boolean, authorName: String, canAct: Boolean, onLongPress: () -> Unit,
+    segments: List<Segment>, mentionsMe: Boolean, receiptLine: String,
+) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val maxBubble = maxWidth * 0.8f
         Column(
@@ -187,29 +258,35 @@ private fun MessageRow(m: ChatMessage, mine: Boolean, authorName: String, canAct
                 mine -> Modifier.background(MineFill, shape).border(1.dp, MineBorder, shape)
                 else -> Modifier.background(Forge.Surface, shape)
             }
+            // A message that mentions you gets an amber left edge.
+            val edge = if (mentionsMe && !mine && !m.deleted) Modifier.clip(shape).drawBehind { drawRect(Forge.Accent, size = Size(3.dp.toPx(), size.height)) } else Modifier
             Box(
-                Modifier.widthIn(max = maxBubble).then(look)
+                Modifier.widthIn(max = maxBubble).then(look).then(edge)
                     .then(if (canAct) Modifier.combinedClickable(onClick = {}, onLongClick = onLongPress, onLongClickLabel = "Message actions") else Modifier)
                     .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
                 if (m.deleted) {
                     Text(bodyText(m), color = Forge.Muted, fontStyle = FontStyle.Italic, fontSize = 15.sp)
                 } else {
-                    Text(linked(m.text.orEmpty()), fontSize = 15.sp, lineHeight = 21.sp)
+                    Text(linked(segments), fontSize = 15.sp, lineHeight = 21.sp)
                 }
             }
             val meta = clockTime(m.sentAtEpochMs) + if (m.editedAtEpochMs != null && !m.deleted) " · ${Messages.EDITED}" else ""
             Text(meta, color = Forge.Muted, fontSize = 11.sp)
+            if (receiptLine.isNotEmpty()) Text(receiptLine, color = Forge.Muted, fontSize = 11.sp)
         }
     }
 }
 
-/** [text] with its links styled; the system opens them on tap. */
-private fun linked(text: String): AnnotatedString = buildAnnotatedString {
+/** [segments] with links styled (the system opens them on tap) and mentions as amber chips. */
+private fun linked(segments: List<Segment>): AnnotatedString = buildAnnotatedString {
     val style = TextLinkStyles(SpanStyle(color = Forge.Accent, textDecoration = TextDecoration.Underline))
-    for (part in linkify(text)) when (part) {
-        is TextPart.Plain -> append(part.text)
-        is TextPart.Link -> withLink(LinkAnnotation.Url(part.url, style)) { append(part.url) }
+    val chip = SpanStyle(color = Forge.Accent, background = Forge.Accent.copy(alpha = 0.13f), fontWeight = FontWeight.SemiBold)
+    for (seg in segments) {
+        val url = seg.link
+        if (url != null) withLink(LinkAnnotation.Url(url, style)) { append(seg.text) }
+        else if (seg.mention) withStyle(chip) { append(seg.text) }
+        else append(seg.text)
     }
 }
 
@@ -247,6 +324,7 @@ private fun AdminBanner(onJoin: () -> Unit) {
 @Composable
 private fun MessageSheet(
     m: ChatMessage, authorName: String, actions: List<MessageAction>, onDismiss: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit,
+    onInfo: () -> Unit,
 ) {
     val context = LocalContext.current
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(), containerColor = Forge.Surface) {
@@ -257,6 +335,7 @@ private fun MessageSheet(
             )
             for (action in actions) when (action) {
                 MessageAction.SHARE -> SheetRow(ShareIcon, Messages.SHARE) { onDismiss(); context.startActivity(shareLinkIntent(shareText(m))) }
+                MessageAction.INFO -> SheetRow(InfoIcon, Messages.INFO) { onDismiss(); onInfo() }
                 MessageAction.EDIT -> SheetRow(EditIcon, Messages.EDIT) { onDismiss(); onEdit() }
                 MessageAction.DELETE -> SheetRow(DeleteIcon, Messages.DELETE, danger = true) { onDismiss(); onDelete() }
             }

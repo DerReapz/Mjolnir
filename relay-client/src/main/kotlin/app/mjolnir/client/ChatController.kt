@@ -6,6 +6,7 @@ import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.RelayEvent
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
@@ -21,7 +22,15 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** A message by someone else in a chat that isn't open: what the apps turn into a notification (see [Messages.chatNotification]). */
-data class IncomingMessage(val chatId: String, val chatName: String, val authorId: String, val authorName: String, val text: String)
+data class IncomingMessage(
+    val chatId: String,
+    val chatName: String,
+    val authorId: String,
+    val authorName: String,
+    val text: String,
+    /** The message mentions this device: it gets the louder [Messages.mentionNotification], even if the chat was read elsewhere. */
+    val mentionedMe: Boolean = false,
+)
 
 /**
  * The chat side of the client, shared by desktop and Android: the chat list across all of the device's spaces, the
@@ -36,7 +45,11 @@ class ChatController(
     private val scope: CoroutineScope,
     private val me: () -> String?,
 ) {
-    private class Live(val messages: MutableStateFlow<List<ChatMessage>>, val members: MutableStateFlow<List<Peer>>)
+    private class Live(
+        val messages: MutableStateFlow<List<ChatMessage>>,
+        val members: MutableStateFlow<List<Peer>>,
+        val receipts: MutableStateFlow<List<Receipt>>,
+    )
 
     private val _chats = MutableStateFlow<List<ChatSummary>>(emptyList())
     /** The chats this device may see, across all its spaces (the space admin sees every chat of its space). */
@@ -53,6 +66,10 @@ class ChatController(
      */
     val unread: StateFlow<Map<String, Int>> = _unread.asStateFlow()
 
+    private val _unreadMentions = MutableStateFlow<Set<String>>(emptySet())
+    /** The chats with an unread message (above the read marker, by someone else, not deleted) that mentions this device. */
+    val unreadMentions: StateFlow<Set<String>> = _unreadMentions.asStateFlow()
+
     /** The chat on screen, if any: its incoming messages don't go to [newMessages]. */
     val openChat = MutableStateFlow<String?>(null)
 
@@ -68,7 +85,7 @@ class ChatController(
 
     private fun live(chatId: String): Live = live.getOrPut(chatId) {
         val cached = store.read(chatId)
-        Live(MutableStateFlow(ordered(cached)), MutableStateFlow(cached.members))
+        Live(MutableStateFlow(ordered(cached)), MutableStateFlow(cached.members), MutableStateFlow(cached.receipts))
     }
 
     /** Messages oldest first by send time: an edit gets a new rev but keeps its place. */
@@ -78,6 +95,13 @@ class ChatController(
     fun messages(chatId: String): StateFlow<List<ChatMessage>> = live(chatId).messages.asStateFlow()
 
     fun members(chatId: String): StateFlow<List<Peer>> = live(chatId).members.asStateFlow()
+
+    /** Who has seen and read how much of [chatId], one entry per member (never a space admin who is not in it). */
+    fun receipts(chatId: String): StateFlow<List<Receipt>> = live(chatId).receipts.asStateFlow()
+
+    /** Members of [chatId] that [query] could mean when typed after an `@`: everyone but this device, matched on [shownName]. */
+    fun mentionCandidates(chatId: String, query: String, shownName: (Peer) -> String = { it.name }): List<Peer> =
+        mentionCandidates(members(chatId).value, me(), query, shownName)
 
     private fun requireApi(): RelayApi = api() ?: throw RelayException(RelayErrorKind.NETWORK, "not connected")
 
@@ -109,7 +133,7 @@ class ChatController(
         for (s in summaries) {
             val cached = store.read(s.id)
             val have = cached.rev
-            if (have >= s.rev) continue
+            if (have >= s.rev) { if (s.member) reportSeen(s.id); continue }
             // With a cache (or a watermark, as a join leaves even when its sync failed), everything above it is news.
             // Without one it is history, except what the triggering event announced.
             val floor = when {
@@ -145,6 +169,7 @@ class ChatController(
             var since = before.rev
             var latest = before
             var renamed: String? = null
+            var synced = false
             try {
                 announce(chatId, before.messages.values.filter(::fresh), before) // fetched earlier, never announced
                 while (true) {
@@ -157,6 +182,7 @@ class ChatController(
                             rev = if (done) page.rev else last!!,
                             ownerId = page.ownerId,
                             members = page.members,
+                            receipts = page.receipts,
                             messages = c.messages + page.messages.associateBy { it.id },
                         )
                     }
@@ -169,11 +195,33 @@ class ChatController(
                     if (done) break
                     since = last!!
                 }
+                synced = true
             } catch (e: RelayException) {
                 if (e.kind == RelayErrorKind.NOT_FOUND) { forget(chatId); return }
             }
             refreshSummary(chatId, latest, renamed)
+            if (synced) afterSync(chatId)
         }
+    }
+
+    private fun isMember(cached: CachedChat) = me()?.let { id -> cached.members.any { it.deviceId == id } } == true
+
+    /** What a successful sync owes the relay: the messages reached this device (seen), and are on screen if the chat is open (read). */
+    private suspend fun afterSync(chatId: String) {
+        if (!isMember(store.read(chatId))) return // a space admin looking in is never counted
+        reportSeen(chatId)
+        if (openChat.value == chatId) try { markRead(chatId) } catch (e: RelayException) { /* the next sync tries again */ }
+    }
+
+    /** Reports everything cached of [chatId] as seen unless that was done; a failure is retried by the next sync or refresh. */
+    private suspend fun reportSeen(chatId: String) {
+        val a = api() ?: return
+        val cached = store.read(chatId)
+        if (cached.rev == 0L || cached.seenRev >= cached.rev || !isMember(cached)) return
+        try {
+            a.markChatSeen(chatId, cached.rev)
+            store.update(chatId) { it.copy(seenRev = maxOf(it.seenRev, cached.rev)) }
+        } catch (e: RelayException) { /* try again later */ }
     }
 
     /** Brings the chat's list entry up to date with what the sync found. */
@@ -204,8 +252,10 @@ class ChatController(
         val mine = me()
         for (m in messages.sortedBy { it.rev }) {
             val text = m.text ?: continue
-            if (m.event != null || m.deleted || m.author.deviceId == mine || m.rev <= readRev) continue
-            _newMessages.emit(IncomingMessage(chatId, name, m.author.deviceId, m.author.name, text))
+            if (m.event != null || m.deleted || m.author.deviceId == mine) continue
+            val mentionedMe = mine != null && mine in m.mentions
+            if (m.rev <= readRev && !mentionedMe) continue // read elsewhere; a mention still gets through
+            _newMessages.emit(IncomingMessage(chatId, name, m.author.deviceId, m.author.name, text, mentionedMe))
         }
     }
 
@@ -214,6 +264,7 @@ class ChatController(
         val l = live(chatId)
         l.messages.value = ordered(cached)
         l.members.value = cached.members
+        l.receipts.value = cached.receipts
         recountUnread()
     }
 
@@ -225,12 +276,15 @@ class ChatController(
         // (chat, read marker): the relay's list once we have it, else what the cache remembers.
         val chats = if (listed) _chats.value.filter { it.member }.map { it.id to it.readRev }
         else store.cachedIds().map { it to store.read(it).readRev }
+        val mentioned = linkedSetOf<String>()
         _unread.value = buildMap {
             for ((id, readRev) in chats) {
-                val n = live(id).messages.value.count { it.event == null && !it.deleted && it.author.deviceId != mine && it.rev > readRev }
-                if (n > 0) put(id, n)
+                val unread = live(id).messages.value.filter { it.event == null && !it.deleted && it.author.deviceId != mine && it.rev > readRev }
+                if (unread.isNotEmpty()) put(id, unread.size)
+                if (mine != null && unread.any { mine in it.mentions }) mentioned += id
             }
         }
+        _unreadMentions.value = mentioned
     }
 
     init { recountUnread() } // from the cache, until a refresh brings the relay's list
@@ -238,7 +292,7 @@ class ChatController(
     /** Drops everything about [chatId]: cache, list entry, invites. */
     private fun forget(chatId: String) {
         store.forget(chatId)
-        live.remove(chatId)?.let { it.messages.value = emptyList(); it.members.value = emptyList() }
+        live.remove(chatId)?.let { it.messages.value = emptyList(); it.members.value = emptyList(); it.receipts.value = emptyList() }
         _chats.update { list -> list.filter { it.id != chatId } }
         _invites.update { list -> list.filter { it.chatId != chatId } }
         openChat.compareAndSet(chatId, null)
@@ -248,12 +302,13 @@ class ChatController(
     /** Forgets everything: lists, messages, cache files and the open chat (this device was re-registered or moved to another relay). */
     fun clear() {
         store.clearAll()
-        live.values.forEach { it.messages.value = emptyList(); it.members.value = emptyList() }
+        live.values.forEach { it.messages.value = emptyList(); it.members.value = emptyList(); it.receipts.value = emptyList() }
         live.clear()
         syncLocks.clear()
         _chats.value = emptyList()
         _invites.value = emptyList()
         _unread.value = emptyMap()
+        _unreadMentions.value = emptySet()
         openChat.value = null
         listed = false
     }
@@ -269,7 +324,7 @@ class ChatController(
     fun onEvent(e: RelayEvent) {
         scope.launch {
             when (e) {
-                is RelayEvent.ChatChanged -> chatChanged(e.chatId, e.rev)
+                is RelayEvent.ChatChanged -> chatChanged(e.chatId, e.rev, e.receipts)
                 is RelayEvent.ChatDeleted -> forget(e.chatId)
                 RelayEvent.ChatInvitesChanged -> refreshInvites()
                 RelayEvent.Connected, is RelayEvent.SpaceChanged, is RelayEvent.SpaceDeleted -> { refresh(); refreshInvites() }
@@ -278,10 +333,13 @@ class ChatController(
         }
     }
 
-    private suspend fun chatChanged(chatId: String, rev: Long) {
+    private suspend fun chatChanged(chatId: String, rev: Long, receipts: Boolean) {
         if (_chats.value.none { it.id == chatId }) refreshAll(chatId to rev) // a chat we have not seen yet
         val have = store.read(chatId).rev
-        if (have >= rev && _chats.value.any { it.id == chatId }) return
+        if (have >= rev && _chats.value.any { it.id == chatId }) {
+            if (receipts) syncChat(chatId, null) // nothing new in the chat, but someone's seen or read marker moved
+            return
+        }
         syncChat(chatId, if (have == 0L) rev - 1 else null)
     }
 
@@ -332,10 +390,12 @@ class ChatController(
         upsert(requireApi().adminJoinChat(chatId)); sync(chatId)
     }
 
-    suspend fun send(chatId: String, text: String): ChatMessage = checked(text).let { requireApi().postMessage(chatId, text) }.also { keep(chatId, it) }
+    /** Posts [text]; [mentions] are the device ids of chat members it mentions (see [outgoingMentions]). */
+    suspend fun send(chatId: String, text: String, mentions: List<String> = emptyList()): ChatMessage =
+        checked(text).let { requireApi().postMessage(chatId, text, mentions) }.also { keep(chatId, it) }
 
-    suspend fun edit(chatId: String, msgId: String, text: String): ChatMessage =
-        checked(text).let { requireApi().editMessage(chatId, msgId, text) }.also { keep(chatId, it) }
+    suspend fun edit(chatId: String, msgId: String, text: String, mentions: List<String> = emptyList()): ChatMessage =
+        checked(text).let { requireApi().editMessage(chatId, msgId, text, mentions) }.also { keep(chatId, it) }
 
     suspend fun delete(chatId: String, msgId: String) {
         requireApi().deleteMessage(chatId, msgId); sync(chatId)

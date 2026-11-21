@@ -119,6 +119,8 @@ sealed interface ChatEvent {
     val deletedByAdmin: Boolean = false,
     val text: String? = null,
     val event: ChatEvent? = null,
+    /** Device ids of the chat members this message mentions (always members when posted); never set on deleted messages. */
+    val mentions: List<String> = emptyList(),
 )
 @Serializable data class ChatSummary(
     val id: String,
@@ -138,6 +140,16 @@ sealed interface ChatEvent {
     val members: List<Peer>,
     val messages: List<ChatMessage>,
     val hasMore: Boolean,
+    /** One per current member, never for a space admin who isn't in the chat. */
+    val receipts: List<Receipt> = emptyList(),
+)
+/** How far [deviceId] has got in a chat: [seenRev] reached its device, [readRev] was on screen. The times are null while the rev is 0. */
+@Serializable data class Receipt(
+    val deviceId: String,
+    val seenRev: Long,
+    val readRev: Long,
+    val seenAtEpochMs: Long? = null,
+    val readAtEpochMs: Long? = null,
 )
 @Serializable data class ChatInvite(
     val id: String,
@@ -152,9 +164,10 @@ sealed interface ChatEvent {
 @Serializable data class RenameChatRequest(val name: String)
 @Serializable data class InviteRequest(val deviceId: String)
 @Serializable data class TransferOwnerRequest(val deviceId: String)
-@Serializable data class PostMessageRequest(val text: String)
-@Serializable data class EditMessageRequest(val text: String)
+@Serializable data class PostMessageRequest(val text: String, val mentions: List<String> = emptyList())
+@Serializable data class EditMessageRequest(val text: String, val mentions: List<String> = emptyList())
 @Serializable data class ReadRequest(val rev: Long)
+@Serializable data class SeenRequest(val rev: Long)
 @Serializable data class ErrorResponse(val error: String, val detail: String? = null)
 
 @Serializable
@@ -167,8 +180,16 @@ sealed interface RelayEvent {
     @Serializable @SerialName("space_changed") data class SpaceChanged(val spaceId: String) : RelayEvent
     @Serializable @SerialName("space_deleted") data class SpaceDeleted(val space: SpaceRef) : RelayEvent
 
-    /** Sent to a chat's members (and its space admin) when the chat's messages or members changed; [rev] is the chat's revision. */
-    @Serializable @SerialName("chat_changed") data class ChatChanged(val chatId: String, val rev: Long) : RelayEvent
+    /**
+     * Sent to a chat's members (and its space admin) when the chat's messages or members changed; [rev] is the chat's revision.
+     * [mentioned] is set for a device a new message mentions; [receipts] for a change of who has seen or read (the rev stays).
+     */
+    @Serializable @SerialName("chat_changed") data class ChatChanged(
+        val chatId: String,
+        val rev: Long,
+        val mentioned: Boolean = false,
+        val receipts: Boolean = false,
+    ) : RelayEvent
     @Serializable @SerialName("chat_deleted") data class ChatDeleted(val chatId: String) : RelayEvent
     /** Sent when the receiver's list of actionable chat invites changed. */
     @Serializable @SerialName("chat_invites_changed") data object ChatInvitesChanged : RelayEvent

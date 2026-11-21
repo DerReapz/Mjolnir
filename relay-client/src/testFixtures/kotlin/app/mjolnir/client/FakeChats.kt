@@ -9,6 +9,7 @@ import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.RelayEvent
 
 /**
@@ -26,6 +27,9 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         val messages: MutableList<ChatMessage> = mutableListOf(),
         var rev: Long = 0,
         val readRevs: MutableMap<String, Long> = mutableMapOf(),
+        val seenRevs: MutableMap<String, Long> = mutableMapOf(),
+        val seenAt: MutableMap<String, Long> = mutableMapOf(),
+        val readAt: MutableMap<String, Long> = mutableMapOf(),
     )
 
     class Invite(val id: String, val chatId: String, val inviteeId: String, val inviterId: String, var state: InviteState)
@@ -34,12 +38,17 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     val invites = mutableListOf<Invite>()
     /** While set, posting, editing and deleting messages answer 429. */
     var rateLimited = false
+    /** While set, reporting seen fails with a network error. */
+    var failSeen = false
     /** `(chatId, sinceRev)` of every [sync], in order. */
     val syncCalls = mutableListOf<Pair<String, Long>>()
     /** The 1-based number, among all [sync] calls so far, of the call that fails with a network error (once). */
     var failSyncOnCall: Int? = null
     var postCalls = 0
         private set
+    /** `(chatId, rev)` of every [markSeen] and [markRead] call that reached the relay, in order. */
+    val seenCalls = mutableListOf<Pair<String, Long>>()
+    val readCalls = mutableListOf<Pair<String, Long>>()
 
     private var clock = 1_000L
     private var nextChat = 0
@@ -81,6 +90,14 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
 
     private fun changed(chat: Chat) { api.events.tryEmit(RelayEvent.ChatChanged(chat.id, chat.rev)) }
 
+    private fun mentionsOf(chat: Chat, ids: List<String>): List<String> =
+        ids.distinct().also { l -> if (l.any { !isMember(chat, it) }) throw err(RelayErrorKind.INVALID, "invalid_mention") }
+
+    private fun receiptsOf(chat: Chat) = chat.members.map {
+        val id = it.deviceId
+        Receipt(id, maxOf(chat.seenRevs[id] ?: 0, chat.readRevs[id] ?: 0), chat.readRevs[id] ?: 0, chat.seenAt[id], chat.readAt[id])
+    }
+
     private fun record(chat: Chat, actor: String, event: ChatEvent) {
         chat.messages += ChatMessage("e-${++nextMessage}", chat.id, peer(actor), ++chat.rev, tick(), event = event)
     }
@@ -99,9 +116,9 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     }
 
     /** [author] posts [text]; the viewer's relay connection is told. */
-    fun incoming(chatId: String, author: Peer, text: String): ChatMessage {
+    fun incoming(chatId: String, author: Peer, text: String, mentions: List<String> = emptyList()): ChatMessage {
         val chat = chats.getValue(chatId)
-        val m = ChatMessage("m-${++nextMessage}", chatId, author, ++chat.rev, tick(), text = text)
+        val m = ChatMessage("m-${++nextMessage}", chatId, author, ++chat.rev, tick(), text = text, mentions = mentions)
         chat.messages += m
         changed(chat)
         return m
@@ -135,6 +152,22 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     }
 
     fun readRev(chatId: String): Long = chats.getValue(chatId).readRevs[meId] ?: 0
+
+    /** [by] reports having seen the chat up to [rev]; the viewer's relay connection is told (the rev stays). */
+    fun incomingSeen(chatId: String, by: Peer, rev: Long) {
+        val chat = chats.getValue(chatId)
+        chat.seenRevs[by.deviceId] = maxOf(chat.seenRevs[by.deviceId] ?: 0, rev); chat.seenAt[by.deviceId] = tick()
+        api.events.tryEmit(RelayEvent.ChatChanged(chat.id, chat.rev, receipts = true))
+    }
+
+    /** [by] reports having read the chat up to [rev] (which counts as seen). */
+    fun incomingRead(chatId: String, by: Peer, rev: Long) {
+        val chat = chats.getValue(chatId)
+        chat.readRevs[by.deviceId] = maxOf(chat.readRevs[by.deviceId] ?: 0, rev); chat.readAt[by.deviceId] = tick()
+        api.events.tryEmit(RelayEvent.ChatChanged(chat.id, chat.rev, receipts = true))
+    }
+
+    fun seenRev(chatId: String): Long = chats.getValue(chatId).seenRevs[meId] ?: 0
 
     /** [deviceId] left [spaceId]: it leaves the space's chats and its invites go (a chat left empty is deleted). */
     internal fun onLeftSpace(spaceId: String, deviceId: String) {
@@ -278,7 +311,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         syncCalls += chatId to sinceRev
         if (syncCalls.size == failSyncOnCall) throw err(RelayErrorKind.NETWORK, "down")
         val rows = a.chat.messages.filter { it.rev > sinceRev }.sortedBy { it.rev }
-        return ChatSync(chatId, a.chat.rev, a.chat.ownerId, a.chat.members.toList(), rows.take(PAGE), rows.size > PAGE)
+        return ChatSync(chatId, a.chat.rev, a.chat.ownerId, a.chat.members.toList(), rows.take(PAGE), rows.size > PAGE, receiptsOf(a.chat))
     }
 
     private fun text(raw: String): String {
@@ -289,13 +322,14 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
 
     private fun limited() { if (rateLimited) throw err(RelayErrorKind.RATE_LIMITED, "rate_limited") }
 
-    fun post(chatId: String, raw: String): ChatMessage {
+    fun post(chatId: String, raw: String, mentions: List<String> = emptyList()): ChatMessage {
         postCalls++
         limited()
         val a = access(chatId)
         if (!a.isMember) throw err(RelayErrorKind.NOT_PAIRED, "not_member")
         val body = text(raw)
-        val m = ChatMessage("m-${++nextMessage}", chatId, api.me, ++a.chat.rev, tick(), text = body)
+        val ids = mentionsOf(a.chat, mentions)
+        val m = ChatMessage("m-${++nextMessage}", chatId, api.me, ++a.chat.rev, tick(), text = body, mentions = ids)
         a.chat.messages += m
         changed(a.chat)
         return m
@@ -304,7 +338,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     private fun realMessage(chat: Chat, msgId: String): Int =
         chat.messages.indexOfFirst { it.id == msgId && it.event == null }.also { if (it < 0) throw notFound }
 
-    fun edit(chatId: String, msgId: String, raw: String): ChatMessage {
+    fun edit(chatId: String, msgId: String, raw: String, mentions: List<String> = emptyList()): ChatMessage {
         limited()
         val a = access(chatId)
         val i = realMessage(a.chat, msgId)
@@ -312,7 +346,8 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         if (m.author.deviceId != meId) throw err(RelayErrorKind.NOT_PAIRED, "not_author")
         val body = text(raw)
         if (m.deleted) throw err(RelayErrorKind.ALREADY_SENT, "deleted")
-        return m.copy(rev = ++a.chat.rev, editedAtEpochMs = tick(), text = body).also { a.chat.messages[i] = it; changed(a.chat) }
+        val ids = mentionsOf(a.chat, mentions)
+        return m.copy(rev = ++a.chat.rev, editedAtEpochMs = tick(), text = body, mentions = ids).also { a.chat.messages[i] = it; changed(a.chat) }
     }
 
     fun deleteMessage(chatId: String, msgId: String) {
@@ -329,7 +364,18 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     fun markRead(chatId: String, rev: Long) {
         val a = access(chatId)
         if (!a.isMember) throw err(RelayErrorKind.NOT_PAIRED, "not_member")
+        readCalls += chatId to rev
         a.chat.readRevs[meId] = maxOf(a.chat.readRevs[meId] ?: 0, minOf(rev, a.chat.rev))
+        a.chat.readAt[meId] = tick()
+    }
+
+    fun markSeen(chatId: String, rev: Long) {
+        val a = access(chatId)
+        if (!a.isMember) throw err(RelayErrorKind.NOT_PAIRED, "not_member")
+        if (failSeen) throw err(RelayErrorKind.NETWORK, "down")
+        seenCalls += chatId to rev
+        a.chat.seenRevs[meId] = maxOf(a.chat.seenRevs[meId] ?: 0, minOf(rev, a.chat.rev))
+        a.chat.seenAt[meId] = tick()
     }
 
     private companion object {

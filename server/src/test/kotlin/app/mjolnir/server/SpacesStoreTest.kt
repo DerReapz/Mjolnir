@@ -1,5 +1,6 @@
 package app.mjolnir.server
 
+import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.DeviceKind
 import java.sql.DriverManager
@@ -142,6 +143,9 @@ class SpacesStoreTest {
         val msg = s.postMessage(chat.id, "d1", "hi", 12)!!
         assertTrue(s.deleteMessage(chat.id, msg.id, "d1", false))
         assertEquals(1, s.rowCount("chat_messages"))
+        // chat_members from before receipts gains seen_rev, seen_at and read_at in place
+        assertTrue(s.markSeen(chat.id, "d1", 99, 13))
+        assertEquals(listOf(Receipt("d1", 2, 0, 13, null)), s.receipts(chat.id))
         // reopening an already-upgraded db is a no-op
         Store("jdbc:sqlite:$file")
     }

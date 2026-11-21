@@ -845,6 +845,20 @@ class AppControllerTest {
         scope.cancel()
     }
 
+    @Test fun mentionNotifiesWithMentionCopyUnlessChatIsOpenHere() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        val notes = notes(c)
+        c.nicknames.set("fred", "Freddy")
+        val m = IncomingMessage(chat, "Game night", "fred", "Fred's phone", "hi @me", mentionedMe = true)
+        c.onIncomingChatMessage(m)
+        assertEquals(listOf("Freddy mentioned you in Game night: hi @me"), notes)
+        c.chats.openChat.value = chat; c.mainWindowVisible = true; c.mainWindowTab = MainTab.CHATS
+        c.onIncomingChatMessage(m)
+        assertEquals(1, notes.size)
+        scope.cancel()
+    }
+
     @Test fun sameNamedDevicesGetTheirOwnNickname() = runTest {
         val (fake, chat) = chatRelay()
         val twin = Peer("fred2", "Fred's phone", DeviceKind.PHONE)

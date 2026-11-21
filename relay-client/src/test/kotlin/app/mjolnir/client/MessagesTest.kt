@@ -34,4 +34,17 @@ class MessagesTest {
         assertEquals("Message General", Messages.messageChat("General"))
         assertEquals("Deleted by the space admin", Messages.DELETED_BY_ADMIN)
     }
+
+    @Test fun mentionNotificationCopy() {
+        assertEquals("Sam mentioned you in General: hi @Ann", Messages.mentionNotification("Sam", "General", "hi @Ann"))
+    }
+
+    @Test fun receiptLineEveryoneVsNames() {
+        assertEquals("Read by everyone", Messages.receiptLine(listOf("Ann", "Bo"), emptyList(), everyone = true))
+        assertEquals("Read by Ann, Bo · Seen by Cy", Messages.receiptLine(listOf("Ann", "Bo"), listOf("Cy"), everyone = false))
+        assertEquals("Read by Ann", Messages.receiptLine(listOf("Ann"), emptyList(), everyone = false))
+        assertEquals("Seen by Cy, Di", Messages.receiptLine(emptyList(), listOf("Cy", "Di"), everyone = false))
+        assertEquals("", Messages.receiptLine(emptyList(), emptyList(), everyone = false))
+        assertEquals("Info", Messages.INFO)
+    }
 }

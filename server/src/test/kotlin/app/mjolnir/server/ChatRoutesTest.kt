@@ -573,4 +573,98 @@ class ChatRoutesTest {
         delMessage(k.owner, chat.id, m.id)
         assertNull(chats(k.owner, k.space.id).single().lastMessage?.text)
     }
+
+    // ---- Mentions and seen/read receipts ----
+
+    private suspend fun RelayTestScope.postMentioning(d: RegisterResponse, chatId: String, text: String, vararg ids: String): HttpResponse =
+        client.post("/v1/chats/$chatId/messages") { bearerAuth(d.token); contentType(ContentType.Application.Json); setBody(PostMessageRequest(text, ids.toList())) }
+
+    private suspend fun RelayTestScope.report(d: RegisterResponse, chatId: String, what: String, rev: Long): HttpResponse =
+        client.post("/v1/chats/$chatId/$what") { bearerAuth(d.token); contentType(ContentType.Application.Json); setBody(if (what == "seen") SeenRequest(rev) else ReadRequest(rev)) }
+
+    @Test fun mentionsMustBeMembers() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        for (bad in listOf(k.outsider.deviceId, k.admin.deviceId, "nobody")) {
+            val r = postMentioning(k.owner, chat.id, "hi", bad)
+            assertEquals(HttpStatusCode.BadRequest, r.status, bad); assertEquals("invalid_mention", r.body<ErrorResponse>().error)
+        }
+        val ok = postMentioning(k.owner, chat.id, "hi @C", k.member.deviceId, k.member.deviceId)
+        assertEquals(HttpStatusCode.Created, ok.status)
+        val m = ok.body<ChatMessage>()
+        assertEquals(listOf(k.member.deviceId), m.mentions)
+        assertEquals(listOf(k.member.deviceId), sync(k.owner, chat.id).messages.single { it.id == m.id }.mentions)
+        // Edits are checked the same way, and may change the mentions.
+        val bad = client.patch("/v1/chats/${chat.id}/messages/${m.id}") {
+            bearerAuth(k.owner.token); contentType(ContentType.Application.Json); setBody(EditMessageRequest("x", listOf(k.outsider.deviceId)))
+        }
+        assertEquals("invalid_mention", bad.body<ErrorResponse>().error)
+        val edited = client.patch("/v1/chats/${chat.id}/messages/${m.id}") {
+            bearerAuth(k.owner.token); contentType(ContentType.Application.Json); setBody(EditMessageRequest("hi", emptyList()))
+        }.body<ChatMessage>()
+        assertEquals(emptyList(), edited.mentions)
+        // A mention of someone who left is refused: only current members count.
+        leaveChat(k.member, chat.id)
+        assertEquals("invalid_mention", postMentioning(k.owner, chat.id, "hi", k.member.deviceId).body<ErrorResponse>().error)
+        // A deleted message keeps no mentions.
+        val d = postMentioning(k.owner, chat.id, "bye", k.owner.deviceId).body<ChatMessage>()
+        delMessage(k.owner, chat.id, d.id)
+        assertEquals(emptyList(), sync(k.owner, chat.id).messages.single { it.id == d.id }.mentions)
+    }
+
+    @Test fun mentionedDeviceAlwaysPinged() { val push = RecordingPush(); relayTest(push = push) {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member); addMember(k.owner, chat.id, k.outsider)
+        setPushToken(k.owner, "tok-owner"); setPushToken(k.member, "tok-member"); setPushToken(k.outsider, "tok-d")
+        withEvents(k.member) {
+            val member = this
+            withEvents(k.outsider) {
+                val other = this
+                val m = postMentioning(k.owner, chat.id, "hi", k.member.deviceId).body<ChatMessage>()
+                assertEquals(RelayEvent.ChatChanged(chat.id, m.rev, mentioned = true), member.next())
+                assertEquals(RelayEvent.ChatChanged(chat.id, m.rev), other.next())
+            }
+        }
+        withTimeout(5_000) { while (push.pinged.size < 2) delay(20) }
+        assertTrue("tok-member" in push.pinged)
+        assertFalse("tok-owner" in push.pinged) // never the author
+    } }
+
+    @Test fun seenAndReadReceiptsInSync() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        val m = say(k.owner, chat.id, "hi")
+        clock.now = 5_000
+        assertEquals(listOf(0L, 0L), sync(k.owner, chat.id).receipts.map { it.seenRev })
+        val first = sync(k.owner, chat.id).receipts.single { it.deviceId == k.member.deviceId }
+        assertEquals(0L, first.readRev); assertNull(first.seenAtEpochMs); assertNull(first.readAtEpochMs)
+        withEvents(k.owner) {
+            assertEquals(HttpStatusCode.NoContent, report(k.member, chat.id, "seen", m.rev).status)
+            assertEquals(RelayEvent.ChatChanged(chat.id, m.rev, receipts = true), next())
+            clock.now = 9_000
+            assertEquals(HttpStatusCode.NoContent, report(k.member, chat.id, "read", m.rev).status)
+            assertEquals(RelayEvent.ChatChanged(chat.id, m.rev, receipts = true), next())
+            // Repeating changes nothing, so it rings nobody.
+            assertEquals(HttpStatusCode.NoContent, report(k.member, chat.id, "read", m.rev).status)
+            assertEquals(HttpStatusCode.NoContent, report(k.member, chat.id, "seen", 1).status)
+        }
+        val r = sync(k.owner, chat.id, m.rev).receipts.single { it.deviceId == k.member.deviceId }
+        assertEquals(Receipt(k.member.deviceId, m.rev, m.rev, 5_000, 9_000), r)
+        // Never beyond the chat's rev; read counts as seen.
+        report(k.owner, chat.id, "read", 99)
+        val o = sync(k.member, chat.id).receipts.single { it.deviceId == k.owner.deviceId }
+        assertEquals(sync(k.owner, chat.id).rev, o.readRev); assertEquals(o.readRev, o.seenRev)
+        assertEquals(HttpStatusCode.NotFound, report(k.outsider, chat.id, "seen", 1).status)
+    }
+
+    @Test fun adminNonMemberNeverInReceipts() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        val m = say(k.owner, chat.id, "hi")
+        val r = report(k.admin, chat.id, "seen", m.rev)
+        assertEquals(HttpStatusCode.Forbidden, r.status); assertEquals("not_member", r.body<ErrorResponse>().error)
+        assertEquals(HttpStatusCode.Forbidden, report(k.admin, chat.id, "read", m.rev).status)
+        sync(k.admin, chat.id) // reading the chat as admin records nothing
+        assertEquals(setOf(k.owner.deviceId, k.member.deviceId), sync(k.owner, chat.id).receipts.map { it.deviceId }.toSet())
+        // Once the admin joins, they are a member and show.
+        assertEquals(HttpStatusCode.OK, client.post("/v1/chats/${chat.id}/join") { bearerAuth(k.admin.token) }.status)
+        assertEquals(HttpStatusCode.NoContent, report(k.admin, chat.id, "seen", m.rev).status)
+        assertTrue(k.admin.deviceId in sync(k.owner, chat.id).receipts.map { it.deviceId })
+    }
 }

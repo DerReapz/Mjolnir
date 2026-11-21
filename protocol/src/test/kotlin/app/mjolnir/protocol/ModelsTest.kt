@@ -83,7 +83,15 @@ class ChatModelsTest {
         assertEquals(e, MjolnirJson.decodeFromString(RelayEvent.serializer(), MjolnirJson.encodeToString(RelayEvent.serializer(), e)))
 
     @Test fun chatEventsUseTypeDiscriminator() {
-        assertEquals("""{"type":"chat_changed","chatId":"c","rev":3}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.ChatChanged("c", 3)))
+        assertEquals(
+            """{"type":"chat_changed","chatId":"c","rev":3,"mentioned":false,"receipts":false}""",
+            MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.ChatChanged("c", 3)),
+        )
+        // An event from a relay before mentions and receipts still reads, as does a sync without receipts.
+        assertEquals(RelayEvent.ChatChanged("c", 3), MjolnirJson.decodeFromString(RelayEvent.serializer(), """{"type":"chat_changed","chatId":"c","rev":3}"""))
+        assertEquals(emptyList(), MjolnirJson.decodeFromString(ChatSync.serializer(), """{"chatId":"c","rev":1,"ownerId":"o","members":[],"messages":[],"hasMore":false}""").receipts)
+        assertEquals(PostMessageRequest("hi", listOf("d1")), MjolnirJson.decodeFromString(PostMessageRequest.serializer(), """{"text":"hi","mentions":["d1"]}"""))
+        assertEquals(PostMessageRequest("hi"), MjolnirJson.decodeFromString(PostMessageRequest.serializer(), """{"text":"hi"}"""))
         assertEquals("""{"type":"chat_deleted","chatId":"c"}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.ChatDeleted("c")))
         assertEquals("""{"type":"chat_invites_changed"}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.ChatInvitesChanged))
         roundTrip(RelayEvent.ChatChanged("c", 3)); roundTrip(RelayEvent.ChatDeleted("c")); roundTrip(RelayEvent.ChatInvitesChanged)

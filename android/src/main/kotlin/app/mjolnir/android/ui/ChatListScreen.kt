@@ -35,6 +35,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -158,6 +160,7 @@ private fun ChatRowItem(row: ChatRow, now: () -> Long, onClick: () -> Unit) {
                     )
                 }
                 Box(Modifier.weight(1f))
+                if (row.mention) Text("@", color = Forge.Accent, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.semantics { contentDescription = "Unread mention" })
                 if (unread) {
                     Text(
                         row.unread.toString(), color = Forge.OnAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,

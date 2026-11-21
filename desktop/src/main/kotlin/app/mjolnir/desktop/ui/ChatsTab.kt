@@ -28,6 +28,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -67,8 +68,18 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Messages
+import app.mjolnir.client.Segment
 import app.mjolnir.client.capCodePoints
+import app.mjolnir.client.insertMention
 import app.mjolnir.client.inviteCandidates
+import app.mjolnir.client.latestOwnMessage
+import app.mjolnir.client.mentionCandidates
+import app.mjolnir.client.mentionQuery
+import app.mjolnir.client.mentionSpans
+import app.mjolnir.client.messageReceipts
+import app.mjolnir.client.messageSegments
+import app.mjolnir.client.outgoingMentions
+import app.mjolnir.client.receiptLineFor
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.TextPart
 import app.mjolnir.client.linkify
@@ -82,6 +93,7 @@ import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
 import java.net.URI
 import java.time.Instant
@@ -112,6 +124,10 @@ class ChatsUi(
     val members: List<Peer>,
     val nicknameOf: (Peer) -> String,
     val notice: String?,
+    /** Who has seen and read how much of the selected chat. */
+    val receipts: List<Receipt> = emptyList(),
+    /** The chats with an unread message that mentions this device: the list marks them with an `@`. */
+    val unreadMentions: Set<String> = emptySet(),
 ) {
     val selected: ChatSummary? get() = chats.firstOrNull { it.id == selectedId }
 
@@ -129,8 +145,9 @@ class ChatsActions(
     val onDeny: (ChatInvite) -> Unit = {},
     val onJoin: (ChatInvite) -> Unit = {},
     val onDecline: (ChatInvite) -> Unit = {},
-    val onSend: suspend (String) -> Boolean = { true },
-    val onSaveEdit: suspend (ChatMessage, String) -> Boolean = { _, _ -> true },
+    /** Text and the device ids it mentions. */
+    val onSend: suspend (String, List<String>) -> Boolean = { _, _ -> true },
+    val onSaveEdit: suspend (ChatMessage, String, List<String>) -> Boolean = { _, _, _ -> true },
     val onDeleteMessage: (ChatMessage) -> Unit = {},
     val onCopy: (String) -> Unit = {},
     val onOpenLink: (String) -> Unit = {},
@@ -221,7 +238,7 @@ private fun ChatList(ui: ChatsUi, actions: ChatsActions, now: () -> Long) {
                     Box(Modifier.padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 4.dp)) { ForgeSectionLabel(chats.first().spaceName) }
                 }
                 items(chats, key = { it.id }) { chat ->
-                    ChatListItem(chat, selected = chat.id == ui.selectedId, unread = ui.unread[chat.id] ?: 0, ui, now, onClick = { actions.onSelect(chat.id) })
+                    ChatListItem(chat, selected = chat.id == ui.selectedId, unread = ui.unread[chat.id] ?: 0, mention = chat.id in ui.unreadMentions, ui, now, onClick = { actions.onSelect(chat.id) })
                 }
             }
         }
@@ -230,7 +247,7 @@ private fun ChatList(ui: ChatsUi, actions: ChatsActions, now: () -> Long) {
 }
 
 @Composable
-private fun ChatListItem(chat: ChatSummary, selected: Boolean, unread: Int, ui: ChatsUi, now: () -> Long, onClick: () -> Unit) {
+private fun ChatListItem(chat: ChatSummary, selected: Boolean, unread: Int, mention: Boolean, ui: ChatsUi, now: () -> Long, onClick: () -> Unit) {
     val last = chat.lastMessage
     val preview = when {
         last == null -> "No messages yet"
@@ -253,6 +270,7 @@ private fun ChatListItem(chat: ChatSummary, selected: Boolean, unread: Int, ui: 
                     )
                 }
             }
+            if (mention) Text("@", style = body(13, ForgeFonts.inter600, Forge.accent), modifier = Modifier.semantics { contentDescription = "Unread mention" })
             if (unread > 0) ForgeBadge(unread.toString())
             else if (last != null) Text(listTime(last.sentAtEpochMs, now()), style = body(11, color = Forge.muted))
         }
@@ -321,6 +339,8 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
     }
     val isAdmin = chat.spaceId in ui.adminSpaceIds
     var editing by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
+    var info by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
+    val latestOwn = remember(ui.messages, ui.selfId) { latestOwnMessage(ui.messages, ui.selfId) }
     val names = remember(ui.members, ui.messages) {
         (ui.messages.map { it.author } + ui.members).associateBy { it.deviceId } + ui.members.associateBy { it.deviceId }
     }
@@ -343,11 +363,14 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
             items(ui.messages, key = { it.id }) { m ->
                 val event = m.event
                 if (event != null) SystemLine(Messages.systemLine(event, nameOf))
-                else MessageRow(m, mine = m.author.deviceId == ui.selfId, byAdmin = isAdmin, ui, actions, onEdit = { editing = it })
+                else MessageRow(
+                    m, mine = m.author.deviceId == ui.selfId, byAdmin = isAdmin, ui, actions, onEdit = { editing = it }, onInfo = { info = it },
+                    receiptLine = if (m.id == latestOwn?.id) receiptLineOf(m, ui) else "",
+                )
             }
         }
         if (chat.member) {
-            Composer(chat, editing, actions, onDone = { editing = null })
+            Composer(chat, editing, ui, actions, onDone = { editing = null })
         } else if (isAdmin) {
             Row(
                 Modifier.fillMaxWidth().background(Forge.strip).drawBehind { drawLine(Forge.border, Offset.Zero, Offset(size.width, 0f), 1.dp.toPx()) }
@@ -357,6 +380,33 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
                 Text("You see this chat as the space admin. Join to write in it.", Modifier.weight(1f), style = body(13, color = Forge.muted))
                 ChatButton(Messages.JOIN, actions.onAdminJoin, primary = true, tall = true)
             }
+        }
+    }
+    info?.let { MessageInfoDialog(it, ui, onClose = { info = null }) }
+}
+
+/** The line under your latest message ("Read by Ann · Seen by Bo"), or empty while nobody has seen it. */
+private fun receiptLineOf(m: ChatMessage, ui: ChatsUi): String = receiptLineFor(m, ui.receipts, ui.members, ui.nicknameOf)
+
+/** ⋯ → *Info*: who has read and who has only seen the message, with times. */
+@Composable
+private fun MessageInfoDialog(m: ChatMessage, ui: ChatsUi, onClose: () -> Unit) {
+    val r = messageReceipts(m, ui.receipts, ui.members)
+    ForgeModal(onDismiss = onClose) {
+        Column(Modifier.semantics { contentDescription = "Message info" }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(Messages.INFO, style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+            for ((label, list, at) in listOf(Triple(Messages.READ, r.read, { rc: Receipt -> rc.readAtEpochMs }), Triple(Messages.SEEN, r.seen, { rc: Receipt -> rc.seenAtEpochMs }))) {
+                ForgeSectionLabel(label)
+                if (list.isEmpty()) Text("Nobody yet", style = body(13, color = Forge.muted))
+                for (rc in list) {
+                    val name = ui.members.firstOrNull { it.deviceId == rc.deviceId }?.let(ui.nicknameOf) ?: continue
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(name, style = body(14))
+                        at(rc)?.let { Text(clockTime(it), style = body(13, color = Forge.muted)) }
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { ForgeSecondaryButton("Close", onClick = onClose) }
         }
     }
 }
@@ -396,12 +446,16 @@ private class MenuItem(val label: String, val danger: Boolean, val onClick: () -
 
 /** One message: the bubble with its author and time, and the ⋯ menu beside it. */
 @Composable
-private fun MessageRow(m: ChatMessage, mine: Boolean, byAdmin: Boolean, ui: ChatsUi, actions: ChatsActions, onEdit: (ChatMessage) -> Unit) {
+private fun MessageRow(
+    m: ChatMessage, mine: Boolean, byAdmin: Boolean, ui: ChatsUi, actions: ChatsActions, onEdit: (ChatMessage) -> Unit,
+    onInfo: (ChatMessage) -> Unit, receiptLine: String,
+) {
     var menuOpen by remember(m.id) { mutableStateOf(false) }
     val firstLink = remember(m.text) { m.text?.let { t -> linkify(t).filterIsInstance<TextPart.Link>().firstOrNull()?.url } }
     val items = buildList {
         if (!m.deleted) {
             firstLink?.let { add(MenuItem(Messages.COPY_LINK, false) { actions.onCopy(it) }) }
+            if (mine && m.text != null) add(MenuItem(Messages.INFO, false) { onInfo(m) })
             if (mine && m.text != null) add(MenuItem(Messages.EDIT, false) { onEdit(m) })
             if (mine || byAdmin) add(MenuItem(Messages.DELETE, true) { actions.onDeleteMessage(m) })
         }
@@ -437,9 +491,10 @@ private fun MessageRow(m: ChatMessage, mine: Boolean, byAdmin: Boolean, ui: Chat
             if (mine) menu()
             Column(Modifier.widthIn(max = maxBubble), horizontalAlignment = if (mine) Alignment.End else Alignment.Start, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 if (!mine) Text(ui.nicknameOf(m.author), style = body(12, color = Forge.muted))
-                Bubble(m, mine, actions)
+                Bubble(m, mine, ui, actions)
                 val meta = clockTime(m.sentAtEpochMs) + if (m.editedAtEpochMs != null && !m.deleted) " · ${Messages.EDITED}" else ""
                 Text(meta, style = body(11, color = Forge.muted))
+                if (receiptLine.isNotEmpty()) Text(receiptLine, style = body(11, color = Forge.muted), textAlign = TextAlign.End)
             }
             if (!mine) menu()
         }
@@ -447,13 +502,16 @@ private fun MessageRow(m: ChatMessage, mine: Boolean, byAdmin: Boolean, ui: Chat
 }
 
 @Composable
-private fun Bubble(m: ChatMessage, mine: Boolean, actions: ChatsActions) {
+private fun Bubble(m: ChatMessage, mine: Boolean, ui: ChatsUi, actions: ChatsActions) {
     val shape = if (mine) RoundedCornerShape(12.dp, 12.dp, 4.dp, 12.dp) else RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp)
-    val modifier = when {
+    val mentionsMe = !m.deleted && ui.selfId != null && ui.selfId in m.mentions && !mine
+    val base = when {
         m.deleted -> Modifier.border(1.dp, Forge.border, shape)
         mine -> Modifier.background(MINE_FILL, shape).border(1.dp, MINE_BORDER, shape)
         else -> Modifier.background(Forge.surface, shape)
     }
+    // A message that mentions you gets an amber left edge.
+    val modifier = if (mentionsMe) base.clip(shape).drawBehind { drawRect(Forge.accent, size = Size(3.dp.toPx(), size.height)) } else base
     Box(modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
         if (m.deleted) {
             Text(
@@ -461,17 +519,21 @@ private fun Bubble(m: ChatMessage, mine: Boolean, actions: ChatsActions) {
                 style = body(14, color = Forge.muted).copy(fontStyle = FontStyle.Italic),
             )
         } else {
-            Text(linked(m.text.orEmpty(), actions.onOpenLink), style = body(14).copy(lineHeight = 20.sp))
+            val segments = remember(m.text, m.mentions, ui.members, ui.nicknameOf) { messageSegments(m.text.orEmpty(), m.mentions, ui.members, ui.nicknameOf) }
+            Text(linked(segments, actions.onOpenLink), style = body(14).copy(lineHeight = 20.sp))
         }
     }
 }
 
-/** [text] with its links styled and opening through [open]. */
-private fun linked(text: String, open: (String) -> Unit): AnnotatedString = buildAnnotatedString {
+/** [segments] with links styled and opening through [open], and mentions as amber chips. */
+private fun linked(segments: List<Segment>, open: (String) -> Unit): AnnotatedString = buildAnnotatedString {
     val style = TextLinkStyles(SpanStyle(color = Forge.accent, textDecoration = TextDecoration.Underline))
-    for (part in linkify(text)) when (part) {
-        is TextPart.Plain -> append(part.text)
-        is TextPart.Link -> withLink(LinkAnnotation.Url(part.url, style) { open(part.url) }) { append(part.url) }
+    val chip = SpanStyle(color = Forge.accent, background = Forge.accentGlow, fontFamily = ForgeFonts.inter600)
+    for (seg in segments) {
+        val url = seg.link
+        if (url != null) withLink(LinkAnnotation.Url(url, style) { open(url) }) { append(seg.text) }
+        else if (seg.mention) withStyle(chip) { append(seg.text) }
+        else append(seg.text)
     }
 }
 
@@ -479,24 +541,41 @@ private fun linked(text: String, open: (String) -> Unit): AnnotatedString = buil
 
 /** The text field with *Send* (or *Save* / *Cancel* while [editing] a message); Enter sends, Shift+Enter breaks the line; 4,000 code points at most. */
 @Composable
-private fun Composer(chat: ChatSummary, editing: ChatMessage?, actions: ChatsActions, onDone: () -> Unit) {
-    var text by remember(chat.id, editing?.id) { mutableStateOf(editing?.text.orEmpty()) }
+private fun Composer(chat: ChatSummary, editing: ChatMessage?, ui: ChatsUi, actions: ChatsActions, onDone: () -> Unit) {
+    // Editing starts from the text as shown here (nicknames), with the message's mentions already picked.
+    val start = remember(chat.id, editing?.id) { editing?.let { mentionSpans(it.text.orEmpty(), it.mentions, ui.members, ui.nicknameOf).text }.orEmpty() }
+    var text by remember(chat.id, editing?.id) { mutableStateOf(start) }
+    val picked = remember(chat.id, editing?.id) {
+        mutableStateListOf<Pair<Peer, String>>().also { l ->
+            editing?.mentions?.forEach { id -> ui.members.firstOrNull { it.deviceId == id }?.let { l += it to ui.nicknameOf(it) } }
+        }
+    }
+    val query = mentionQuery(text)
+    val candidates = if (query == null) emptyList() else mentionCandidates(ui.members, ui.selfId, query, ui.nicknameOf)
+    fun pick(peer: Peer) {
+        val shown = ui.nicknameOf(peer)
+        text = capCodePoints(insertMention(text, shown), Limits.MAX_CHAT_TEXT_LENGTH)
+        picked.removeAll { it.first.deviceId == peer.deviceId }
+        picked += peer to shown
+    }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val canSend = text.isNotBlank() && !busy
     fun submit() {
         if (!canSend) return
-        val sending = text
+        val (sending, mentions) = outgoingMentions(text, picked.toList())
         busy = true
         scope.launch {
             try {
-                val ok = if (editing != null) actions.onSaveEdit(editing, sending) else actions.onSend(sending.trim())
-                if (ok) { text = ""; onDone() }
+                val ok = if (editing != null) actions.onSaveEdit(editing, sending, mentions) else actions.onSend(sending.trim(), mentions)
+                if (ok) { text = ""; picked.clear(); onDone() }
             } finally {
                 busy = false
             }
         }
     }
+    Column(Modifier.fillMaxWidth()) {
+    if (candidates.isNotEmpty()) MentionPicker(candidates, ui.nicknameOf, ::pick)
     Row(
         Modifier.fillMaxWidth().background(Forge.strip).drawBehind { drawLine(Forge.border, Offset.Zero, Offset(size.width, 0f), 1.dp.toPx()) }
             .padding(horizontal = 20.dp, vertical = 12.dp),
@@ -506,7 +585,10 @@ private fun Composer(chat: ChatSummary, editing: ChatMessage?, actions: ChatsAct
             value = text, onValueChange = { text = capCodePoints(it, Limits.MAX_CHAT_TEXT_LENGTH) },
             textStyle = body(14), cursorBrush = SolidColor(Forge.accent),
             modifier = Modifier.weight(1f).onPreviewKeyEvent { e ->
-                if (e.type == KeyEventType.KeyDown && e.key == Key.Enter && !e.isShiftPressed) { submit(); true } else false
+                if (e.type == KeyEventType.KeyDown && e.key == Key.Enter && !e.isShiftPressed) {
+                    if (candidates.isNotEmpty()) pick(candidates.first()) else submit() // Enter takes the first match while the picker is open
+                    true
+                } else false
             },
             decorationBox = { inner ->
                 Box(
@@ -526,6 +608,26 @@ private fun Composer(chat: ChatSummary, editing: ChatMessage?, actions: ChatsAct
             Box(Modifier.heightIn(min = 40.dp)) { ChatButton("Send", ::submit, Modifier.heightIn(min = 40.dp), primary = true, enabled = canSend) }
         }
     }
+    }
+}
+
+/** The members matching what follows the `@`, above the composer. */
+@Composable
+private fun MentionPicker(candidates: List<Peer>, nicknameOf: (Peer) -> String, onPick: (Peer) -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp).background(Forge.surface, RoundedCornerShape(10.dp))
+            .border(1.dp, Forge.dashed, RoundedCornerShape(10.dp)).padding(6.dp).semantics { contentDescription = "Mention picker" },
+    ) {
+        for (peer in candidates) {
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 34.dp).clip(RoundedCornerShape(6.dp)).clickable(role = Role.Button) { onPick(peer) }.padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(nicknameOf(peer), Modifier.weight(1f), style = body(13, color = Forge.accent), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(kindLabel(peer), style = body(12, color = Forge.muted))
+            }
+        }
+    }
 }
 
 // ---- the stateful tab ----
@@ -543,6 +645,7 @@ fun ChatsTab(c: AppController) {
     val chats by c.chats.chats.collectAsState()
     val invites by c.chats.invites.collectAsState()
     val unread by c.chats.unread.collectAsState()
+    val unreadMentions by c.chats.unreadMentions.collectAsState()
     val selectedId by c.selectedChat.collectAsState()
     val spaces by c.spaces.spaces.collectAsState()
     val config by c.config.collectAsState()
@@ -553,6 +656,7 @@ fun ChatsTab(c: AppController) {
     val id = selected?.id
     val messages by remember(id) { id?.let(c.chats::messages) ?: MutableStateFlow(emptyList()) }.collectAsState()
     val members by remember(id) { id?.let(c.chats::members) ?: MutableStateFlow(emptyList()) }.collectAsState()
+    val receipts by remember(id) { id?.let(c.chats::receipts) ?: MutableStateFlow(emptyList()) }.collectAsState()
     var dialog by remember { mutableStateOf<ChatDialog?>(null) }
     val nicknameOf = { p: Peer -> nicknames.nicknameOr(p.deviceId, p.name) }
     val adminSpaceIds = spaces.filter { it.adminId == config.deviceId }.mapTo(HashSet()) { it.id }
@@ -576,8 +680,8 @@ fun ChatsTab(c: AppController) {
         onDeny = { i -> run { denyInvite(i.id) } },
         onJoin = { i -> c.scope.launch { c.chatCall { joinInvite(i.id) }?.let { c.selectChat(i.chatId) } } },
         onDecline = { i -> run { declineInvite(i.id) } },
-        onSend = { text -> id != null && c.chatCall { send(id, text) } != null },
-        onSaveEdit = { m, text -> c.chatCall { edit(m.chatId, m.id, text) } != null },
+        onSend = { text, mentions -> id != null && c.chatCall { send(id, text, mentions) } != null },
+        onSaveEdit = { m, text, mentions -> c.chatCall { edit(m.chatId, m.id, text, mentions) } != null },
         onDeleteMessage = { m -> run { delete(m.chatId, m.id) } },
         onCopy = ::copyToClipboard,
         onOpenLink = { url -> c.scope.launch(Dispatchers.IO) { try { browseWithSystem(URI(url)) } catch (_: Exception) {} } },
@@ -588,7 +692,7 @@ fun ChatsTab(c: AppController) {
     )
 
     Box(Modifier.fillMaxSize()) {
-        ChatsTabContent(ChatsUi(chats, invites, unread, config.deviceId, adminSpaceIds, selectedId, messages, members, nicknameOf, notice), actions)
+        ChatsTabContent(ChatsUi(chats, invites, unread, config.deviceId, adminSpaceIds, selectedId, messages, members, nicknameOf, notice, receipts, unreadMentions), actions)
         val close = { dialog = null }
         when (dialog) {
             null -> {}

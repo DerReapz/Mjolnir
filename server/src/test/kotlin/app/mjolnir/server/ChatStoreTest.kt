@@ -313,9 +313,9 @@ class ChatStoreTest {
         val s = space(a)
         val c = store.createChat(s.id, a.id, "Plans", 100)!!
         repeat(3) { store.postMessage(c.id, a.id, "m", 101)!! }
-        store.markRead(c.id, a.id, 2); assertEquals(2L, store.readRev(c.id, a.id))
-        store.markRead(c.id, a.id, 1); assertEquals(2L, store.readRev(c.id, a.id))
-        store.markRead(c.id, a.id, 99); assertEquals(3L, store.readRev(c.id, a.id))
+        store.markRead(c.id, a.id, 2, 0); assertEquals(2L, store.readRev(c.id, a.id))
+        store.markRead(c.id, a.id, 1, 0); assertEquals(2L, store.readRev(c.id, a.id))
+        store.markRead(c.id, a.id, 99, 0); assertEquals(3L, store.readRev(c.id, a.id))
     }
 
     @Test fun nonSpaceMembersCannotBeChatMembers() {

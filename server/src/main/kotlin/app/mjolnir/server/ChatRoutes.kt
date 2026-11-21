@@ -15,6 +15,7 @@ import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.PostMessageRequest
 import app.mjolnir.protocol.ReadRequest
 import app.mjolnir.protocol.RelayEvent
+import app.mjolnir.protocol.SeenRequest
 import app.mjolnir.protocol.RenameChatRequest
 import app.mjolnir.protocol.TransferOwnerRequest
 import io.ktor.http.HttpStatusCode
@@ -82,7 +83,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
     fun peer(id: String): Peer = store.device(id)?.toPeer() ?: Peer(id, "Unknown device", DeviceKind.PC)
 
     fun ChatMessageRow.toWire() = ChatMessage(
-        id, chatId, peer(authorId), rev, sentAtMs, editedAtMs, deleted, deletedByAdmin, if (deleted) null else text, event,
+        id, chatId, peer(authorId), rev, sentAtMs, editedAtMs, deleted, deletedByAdmin, if (deleted) null else text, event, mentions,
     )
 
     fun summary(chat: ChatRow, me: String): ChatSummary = ChatSummary(
@@ -107,11 +108,26 @@ fun Route.chatRoutes(deps: RelayDeps) {
         to.toSet().forEach { deps.hub.emit(it, RelayEvent.ChatChanged(chatId, rev)) }
     }
 
-    /** A message change: event to members and admin, doorbell to the members other than [actor]. */
-    fun fanOut(chat: ChatRow, actor: String) {
+    /**
+     * A message change: event to members and admin, doorbell to the members other than [actor]. The event to a member in
+     * [mentioned] says so, and its doorbell is rung whatever else is going on.
+     */
+    fun fanOut(chat: ChatRow, actor: String, mentioned: Set<String> = emptySet()) {
         val members = store.chatMembers(chat.id).map { it.id }
-        emitChanged(chat.id, audience(chat))
+        val rev = store.chat(chat.id)?.rev ?: return
+        val told = mentioned - actor
+        audience(chat).forEach { deps.hub.emit(it, RelayEvent.ChatChanged(chat.id, rev, mentioned = it in told)) }
         members.filter { it != actor }.forEach { deps.pingDevice(it) }
+    }
+
+    /** The mentions as a list of distinct device ids, or null unless every one is a current member of [chat]. */
+    fun validMentions(chat: ChatRow, ids: List<String>): List<String>? =
+        ids.distinct().takeIf { list -> list.all { store.isChatMember(chat.id, it) } }
+
+    /** Receipts changed, not the chat: a rev-less event for everyone who shows them, other than the reporter. */
+    fun emitReceipts(chat: ChatRow, actor: String) {
+        val rev = store.chat(chat.id)?.rev ?: return
+        (audience(chat) - actor).forEach { deps.hub.emit(it, RelayEvent.ChatChanged(chat.id, rev, receipts = true)) }
     }
 
     fun emitInvites(chat: ChatRow, vararg others: String) {
@@ -278,19 +294,20 @@ fun Route.chatRoutes(deps: RelayDeps) {
             val since = call.request.queryParameters["sinceRev"]?.let { it.toLongOrNull() ?: return@get call.error(HttpStatusCode.BadRequest, "bad_request") } ?: 0L
             val (rows, more) = store.sync(a.chat.id, since)
             val chat = store.chat(a.chat.id) ?: return@get call.error(HttpStatusCode.NotFound, "not_found")
-            call.respond(ChatSync(chat.id, chat.rev, chat.ownerId, store.chatMembers(chat.id).map { it.toPeer() }, rows.map { it.toWire() }, more))
+            call.respond(ChatSync(chat.id, chat.rev, chat.ownerId, store.chatMembers(chat.id).map { it.toPeer() }, rows.map { it.toWire() }, more, store.receipts(chat.id)))
         }
 
         rateLimit(ChatMessageLimit) {
             post("/v1/chats/{id}/messages") {
                 val a = call.access() ?: return@post
                 if (!a.isMember) return@post call.error(HttpStatusCode.Forbidden, "not_member")
-                val raw = call.receive<PostMessageRequest>().text
-                if (raw.isBlank()) return@post call.error(HttpStatusCode.BadRequest, "empty")
-                val body = text(raw) ?: return@post call.error(HttpStatusCode.BadRequest, "too_long")
-                val row = store.postMessage(a.chat.id, a.me, body, deps.clock.nowMs())
+                val req = call.receive<PostMessageRequest>()
+                if (req.text.isBlank()) return@post call.error(HttpStatusCode.BadRequest, "empty")
+                val body = text(req.text) ?: return@post call.error(HttpStatusCode.BadRequest, "too_long")
+                val mentions = validMentions(a.chat, req.mentions) ?: return@post call.error(HttpStatusCode.BadRequest, "invalid_mention")
+                val row = store.postMessage(a.chat.id, a.me, body, deps.clock.nowMs(), mentions)
                     ?: return@post call.error(HttpStatusCode.Forbidden, "not_member")
-                fanOut(a.chat, a.me)
+                fanOut(a.chat, a.me, mentions.toSet())
                 call.respond(HttpStatusCode.Created, row.toWire())
             }
 
@@ -298,11 +315,12 @@ fun Route.chatRoutes(deps: RelayDeps) {
                 val a = call.access() ?: return@patch
                 val msg = store.message(a.chat.id, call.parameters["msgId"]!!) ?: return@patch call.error(HttpStatusCode.NotFound, "not_found")
                 if (msg.authorId != a.me) return@patch call.error(HttpStatusCode.Forbidden, "not_author")
-                val raw = call.receive<EditMessageRequest>().text
-                if (raw.isBlank()) return@patch call.error(HttpStatusCode.BadRequest, "empty")
-                val body = text(raw) ?: return@patch call.error(HttpStatusCode.BadRequest, "too_long")
-                if (!store.editMessage(a.chat.id, msg.id, a.me, body, deps.clock.nowMs())) return@patch call.error(HttpStatusCode.Conflict, "deleted")
-                fanOut(a.chat, a.me)
+                val req = call.receive<EditMessageRequest>()
+                if (req.text.isBlank()) return@patch call.error(HttpStatusCode.BadRequest, "empty")
+                val body = text(req.text) ?: return@patch call.error(HttpStatusCode.BadRequest, "too_long")
+                val mentions = validMentions(a.chat, req.mentions) ?: return@patch call.error(HttpStatusCode.BadRequest, "invalid_mention")
+                if (!store.editMessage(a.chat.id, msg.id, a.me, body, deps.clock.nowMs(), mentions)) return@patch call.error(HttpStatusCode.Conflict, "deleted")
+                fanOut(a.chat, a.me, mentions.toSet() - msg.mentions.toSet()) // only a new mention rings again
                 call.respond((store.message(a.chat.id, msg.id) ?: return@patch call.error(HttpStatusCode.NotFound, "not_found")).toWire())
             }
 
@@ -319,7 +337,14 @@ fun Route.chatRoutes(deps: RelayDeps) {
         post("/v1/chats/{id}/read") {
             val a = call.access() ?: return@post
             if (!a.isMember) return@post call.error(HttpStatusCode.Forbidden, "not_member")
-            store.markRead(a.chat.id, a.me, call.receive<ReadRequest>().rev)
+            if (store.markRead(a.chat.id, a.me, call.receive<ReadRequest>().rev, deps.clock.nowMs())) emitReceipts(a.chat, a.me)
+            call.respond(HttpStatusCode.NoContent)
+        }
+
+        post("/v1/chats/{id}/seen") {
+            val a = call.access() ?: return@post
+            if (!a.isMember) return@post call.error(HttpStatusCode.Forbidden, "not_member")
+            if (store.markSeen(a.chat.id, a.me, call.receive<SeenRequest>().rev, deps.clock.nowMs())) emitReceipts(a.chat, a.me)
             call.respond(HttpStatusCode.NoContent)
         }
     }

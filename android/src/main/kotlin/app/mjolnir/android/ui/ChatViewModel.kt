@@ -6,6 +6,10 @@ import androidx.lifecycle.viewModelScope
 import app.mjolnir.client.ChatController
 import app.mjolnir.client.Messages
 import app.mjolnir.client.capCodePoints
+import app.mjolnir.client.latestOwnMessage
+import app.mjolnir.client.mentionSpans
+import app.mjolnir.client.outgoingMentions
+import app.mjolnir.client.receiptLineFor
 import app.mjolnir.client.Nicknames
 import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayErrorKind
@@ -17,6 +21,7 @@ import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -34,7 +39,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /** One line of the chat list. */
-data class ChatRow(val chat: ChatSummary, val unread: Int, val preview: String, val lastAtEpochMs: Long?)
+data class ChatRow(val chat: ChatSummary, val unread: Int, val preview: String, val lastAtEpochMs: Long?, val mention: Boolean = false)
 
 /** The chats of one space, most recently active first. */
 data class ChatGroup(val spaceName: String, val rows: List<ChatRow>)
@@ -47,14 +52,15 @@ data class ChatListUi(
 )
 
 /** What the long-press sheet offers on a message. */
-enum class MessageAction { SHARE, EDIT, DELETE }
+enum class MessageAction { SHARE, INFO, EDIT, DELETE }
 
-/** Own messages: Share…, Edit, Delete. Others': Share…, plus Delete for the space admin. Deleted messages and system lines offer nothing. */
+/** Own messages: Share…, Info, Edit, Delete. Others': Share…, plus Delete for the space admin. Deleted messages and system lines offer nothing. */
 fun messageActions(m: ChatMessage, selfId: String?, isSpaceAdmin: Boolean): List<MessageAction> {
     if (m.deleted || m.event != null) return emptyList()
     val mine = m.author.deviceId == selfId
     return buildList {
         add(MessageAction.SHARE)
+        if (mine) add(MessageAction.INFO)
         if (mine) add(MessageAction.EDIT)
         if (mine || isSpaceAdmin) add(MessageAction.DELETE)
     }
@@ -111,7 +117,7 @@ class ChatViewModel(
     /** The id of the message being edited, if any. */
     val editingId: StateFlow<String?> = savedState.getStateFlow<String?>(KEY_EDITING, null)
 
-    val list: StateFlow<ChatListUi> = combine(controller.chats, controller.invites, controller.unread, nicknames.changes) { chats, invites, unread, names ->
+    val list: StateFlow<ChatListUi> = combine(controller.chats, controller.invites, controller.unread, nicknames.changes, controller.unreadMentions) { chats, invites, unread, names, mentions ->
         fun nameOf(p: Peer) = names[p.deviceId] ?: p.name
         val rows = chats.map { chat ->
             val last = chat.lastMessage
@@ -120,7 +126,7 @@ class ChatViewModel(
                 last.event != null -> Messages.systemLine(last.event!!) { id -> peerName(id, chat, names) }
                 else -> "${nameOf(last.author)}: ${last.text.orEmpty()}"
             }
-            ChatRow(chat, unread[chat.id] ?: 0, preview, last?.sentAtEpochMs)
+            ChatRow(chat, unread[chat.id] ?: 0, preview, last?.sentAtEpochMs, chat.id in mentions)
         }
         val groups = rows.groupBy { it.chat.spaceId }.values
             .sortedBy { it.first().chat.spaceName.lowercase() }
@@ -138,6 +144,20 @@ class ChatViewModel(
 
     val members: StateFlow<List<Peer>> = selectedId.flatMapLatest { id -> id?.let(controller::members) ?: flowOf(emptyList()) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Who has seen and read how much of the open chat. */
+    val receipts: StateFlow<List<Receipt>> = selectedId.flatMapLatest { id -> id?.let(controller::receipts) ?: flowOf(emptyList()) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Members of the open chat that [query] (typed after an `@`) could mean, matched on their shown names. */
+    fun mentionCandidates(query: String): List<Peer> =
+        selectedId.value?.let { controller.mentionCandidates(it, query, ::nameOf) }.orEmpty()
+
+    /** The line under the open chat's latest own message, empty while nobody has seen it. */
+    fun receiptLine(): String {
+        val latest = latestOwnMessage(messages.value, selfId()) ?: return ""
+        return receiptLineFor(latest, receipts.value, members.value, ::nameOf)
+    }
 
     /** Private nicknames by device id. */
     val nicknameMap: StateFlow<Map<String, String>> = nicknames.changes
@@ -200,7 +220,7 @@ class ChatViewModel(
 
     /** Edits one of our own messages: the composer shows its text, and the unsent draft comes back afterwards. */
     fun startEdit(m: ChatMessage) {
-        val text = m.text ?: return
+        val text = mentionSpans(m.text ?: return, m.mentions, members.value, ::nameOf).text // as shown here: mentions by nickname
         if (savedState.get<String?>(KEY_EDITING) == null) savedState[stashKey(m.chatId)] = savedState.get<String>(draftKey(m.chatId)).orEmpty()
         savedState[KEY_EDITING] = m.id
         savedState[draftKey(m.chatId)] = text
@@ -220,9 +240,11 @@ class ChatViewModel(
         if (sending) return // a double tap
         sending = true
         val editing = savedState.get<String?>(KEY_EDITING)
+        // Whoever's shown name follows an `@` is mentioned; the wire carries their own name and device id.
+        val (wire, mentions) = outgoingMentions(text.trim(), members.value.filter { it.deviceId != selfId() }.map { it to nameOf(it) })
         viewModelScope.launch {
             try {
-                val ok = call { if (editing != null) controller.edit(chatId, editing, text.trim()) else controller.send(chatId, text.trim()) } != null
+                val ok = call { if (editing != null) controller.edit(chatId, editing, wire, mentions) else controller.send(chatId, wire, mentions) } != null
                 if (!ok) return@launch
                 if (editing != null) cancelEdit() else savedState[draftKey(chatId)] = ""
             } finally {

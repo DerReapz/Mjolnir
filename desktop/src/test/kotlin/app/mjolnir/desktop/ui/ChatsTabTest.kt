@@ -17,6 +17,7 @@ import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -36,14 +37,14 @@ class ChatsTabTest {
 
     private fun msg(
         id: String, author: Peer, text: String?, rev: Long = 1, edited: Long? = null, deleted: Boolean = false,
-        byAdmin: Boolean = false, event: ChatEvent? = null,
-    ) = ChatMessage(id, "c1", author, rev, at + rev * 60_000, edited, deleted, byAdmin, text, event)
+        byAdmin: Boolean = false, event: ChatEvent? = null, mentions: List<String> = emptyList(),
+    ) = ChatMessage(id, "c1", author, rev, at + rev * 60_000, edited, deleted, byAdmin, text, event, mentions)
 
     private fun ui(
         chats: List<ChatSummary> = listOf(chat()), selected: String? = "c1", messages: List<ChatMessage> = emptyList(),
         invites: List<ChatInvite> = emptyList(), unread: Map<String, Int> = emptyMap(), adminOf: Set<String> = emptySet(),
-        members: List<Peer> = listOf(me, fred),
-    ) = ChatsUi(chats, invites, unread, "me", adminOf, selected, messages, members, { it.name }, notice = null)
+        members: List<Peer> = listOf(me, fred), receipts: List<Receipt> = emptyList(), unreadMentions: Set<String> = emptySet(),
+    ) = ChatsUi(chats, invites, unread, "me", adminOf, selected, messages, members, { it.name }, notice = null, receipts = receipts, unreadMentions = unreadMentions)
 
     private fun androidx.compose.ui.test.ComposeUiTest.show(ui: ChatsUi, actions: ChatsActions = ChatsActions()) =
         setContent { MjolnirTheme { ChatsTabContent(ui, actions, now = { at }) } }
@@ -158,7 +159,7 @@ class ChatsTabTest {
 
     @Test fun composerSendsTypedText() = runComposeUiTest {
         val sent = mutableListOf<String>()
-        show(ui(), ChatsActions(onSend = { sent += it; true }))
+        show(ui(), ChatsActions(onSend = { text, _ -> sent += text; true }))
         onNodeWithText("Send").performClick() // empty: nothing
         assertEquals(emptyList(), sent)
         onNode(hasSetTextAction()).performTextInput("  hello there ")
@@ -166,6 +167,71 @@ class ChatsTabTest {
         onNodeWithText("Send").performClick()
         waitForIdle()
         assertEquals(listOf("hello there"), sent)
+    }
+
+    // ---- mentions and receipts ----
+
+    @Test fun receiptLineUnderLatestOwnMessage() = runComposeUiTest {
+        val mine = listOf(msg("m1", me, "first", rev = 1), msg("m2", me, "second", rev = 2), msg("m3", fred, "reply", rev = 3))
+        show(ui(
+            messages = mine, members = listOf(me, fred, zed),
+            receipts = listOf(Receipt("me", 3, 3), Receipt("fred", 3, 2, 10, 20), Receipt("zed", 2, 1, 11, 12)),
+        ))
+        // Only under the latest message of mine (m2): Fred read it, Zed has only seen it.
+        onNodeWithText("Read by Fred's phone · Seen by Zed's laptop").assertExists()
+        onNodeWithText("Read by", substring = true).assertExists() // exactly one such line
+    }
+
+    @Test fun receiptLineSaysEveryoneOnceAllRead() = runComposeUiTest {
+        show(ui(messages = listOf(msg("m1", me, "hi", rev = 1)), receipts = listOf(Receipt("me", 1, 1), Receipt("fred", 1, 1, 5, 6))))
+        onNodeWithText("Read by everyone").assertExists()
+    }
+
+    @Test fun noReceiptLineWhileNobodyHasSeenIt() = runComposeUiTest {
+        show(ui(messages = listOf(msg("m1", me, "hi", rev = 1)), receipts = listOf(Receipt("me", 1, 1), Receipt("fred", 0, 0))))
+        onNodeWithText("Read by", substring = true).assertDoesNotExist()
+        onNodeWithText("Seen by", substring = true).assertDoesNotExist()
+    }
+
+    @Test fun infoListsReadAndSeen() = runComposeUiTest {
+        show(ui(
+            messages = listOf(msg("m1", me, "hello", rev = 2)), members = listOf(me, fred, zed),
+            receipts = listOf(Receipt("me", 2, 2), Receipt("fred", 2, 2, 10, 20), Receipt("zed", 2, 1, 11, 12)),
+        ))
+        onNodeWithContentDescription("Message menu").performClick()
+        onNodeWithText("Info").performClick()
+        onNodeWithContentDescription("Message info").assertExists()
+        onNodeWithText("READ").assertExists(); onNodeWithText("SEEN").assertExists()
+        onNodeWithText("Fred's phone").assertExists(); onNodeWithText("Zed's laptop").assertExists()
+    }
+
+    @Test fun infoOnlyOnOwnMessages() = runComposeUiTest {
+        show(ui(messages = listOf(msg("m1", fred, "hello $link"))))
+        onNodeWithContentDescription("Message menu").performClick()
+        onNodeWithText("Info").assertDoesNotExist()
+    }
+
+    @Test fun atOpensPicker() = runComposeUiTest {
+        val sent = mutableListOf<Pair<String, List<String>>>()
+        show(ui(members = listOf(me, fred, zed)), ChatsActions(onSend = { text, mentions -> sent += text to mentions; true }))
+        onNodeWithContentDescription("Mention picker").assertDoesNotExist()
+        onNode(hasSetTextAction()).performTextInput("hi @")
+        onNodeWithContentDescription("Mention picker").assertExists()
+        onNodeWithText("Fred's phone").assertExists(); onNodeWithText("Zed's laptop").assertExists()
+        onNodeWithText("This PC").assertDoesNotExist() // never yourself
+        onNode(hasSetTextAction()).performTextInput("fr") // filtered as you type
+        onNodeWithText("Zed's laptop").assertDoesNotExist()
+        onNodeWithText("Fred's phone").performClick()
+        onNodeWithContentDescription("Mention picker").assertDoesNotExist()
+        onNodeWithText("Send").performClick()
+        waitForIdle()
+        assertEquals(listOf("hi @Fred's phone" to listOf("fred")), sent)
+    }
+
+    @Test fun mentionOfMeIsMarkedAndListShowsAt() = runComposeUiTest {
+        show(ui(messages = listOf(msg("m1", fred, "hey @This PC", mentions = listOf("me"))), unreadMentions = setOf("c1")))
+        onNodeWithText("hey @This PC").assertExists()
+        onNodeWithText("@", useUnmergedTree = true).assertExists() // the list's marker
     }
 
     // ---- settings ----
