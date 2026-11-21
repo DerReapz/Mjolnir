@@ -120,6 +120,12 @@ class AppContainer(context: Context) {
     )
     val guestTraffic = GuestTraffic(guestRoom)
 
+    /** Listens to the relay while a room is open, on any screen: marks downloads and notifies when the guest joins. */
+    val guestRoomWatcher = GuestRoomWatcher(
+        guestRoom, events = { api.events() }, scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        onGuestJoined = { postGuestJoinedNotification(appContext) },
+    )
+
     private fun openUpload(upload: LocalUpload, offset: Long): InputStream {
         if (upload.path.startsWith("content://")) {
             val input = appContext.contentResolver.openInputStream(Uri.parse(upload.path))
@@ -170,4 +176,7 @@ class AppContainer(context: Context) {
         existing?.close()
         RelayClient.create(url) { config.read().token }.also { client = it; cachedUrl = url }
     }
+
+    // Last, so everything the relay client needs exists before the restore runs on its own thread.
+    init { guestRoom.restore() } // a room still open on the relay is shown (and listened to) from app start
 }

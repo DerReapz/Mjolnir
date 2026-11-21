@@ -717,4 +717,65 @@ class AppControllerTest {
         assertTrue(c.guestRoom.exchanged.value.single().downloadedByGuest)
         scope.cancel()
     }
+
+    private suspend fun TestScope.openRoomWithGuest(c: AppController, fake: FakeRelayApi): Peer {
+        val guest = Peer("g1", "Guest 4F2A", DeviceKind.GUEST)
+        fake.peers += guest
+        c.guestRoom.open(); runCurrent()
+        return guest
+    }
+
+    private fun roomId(c: AppController) = (c.guestRoom.state.value as GuestRoomUi.Open).roomId
+
+    @Test fun guestJoiningNotifiesOnceAndOnlyForTheOpenRoom() = runTest {
+        val fake = FakeRelayApi()
+        val (c, scope) = controller(fake)
+        val notes = notes(c)
+        val guest = openRoomWithGuest(c, fake)
+        c.onGuestRoomEvent(RelayEvent.GuestJoined("some-other-room", guest))
+        assertEquals(emptyList(), notes)
+        c.onGuestRoomEvent(RelayEvent.GuestJoined(roomId(c), guest))
+        c.onGuestRoomEvent(RelayEvent.GuestJoined(roomId(c), guest))
+        assertEquals(listOf("Guest joined"), notes)
+        scope.cancel()
+    }
+
+    @Test fun linksSentToTheGuestGetAYouSentRowEach() = runTest {
+        val fake = FakeRelayApi()
+        val (c, scope) = controller(fake)
+        val guest = openRoomWithGuest(c, fake)
+        c.guestRoom.onEvent(RelayEvent.GuestJoined(roomId(c), guest))
+        c.send(guest, listOf(Tab("https://a.example", "A"), Tab("https://b.example")), emptyList())
+        runCurrent()
+        val rows = c.guestRoom.exchanged.value
+        assertEquals(listOf("A", "https://b.example"), rows.map { it.title })
+        assertTrue(rows.all { !it.fromGuest && it.detail == "Link" })
+        scope.cancel()
+    }
+
+    @Test fun linksSentToADeviceAreNotListedInTheRoom() = runTest {
+        val fake = FakeRelayApi().apply { peers += phone }
+        val (c, scope) = controller(fake)
+        val guest = openRoomWithGuest(c, fake)
+        c.guestRoom.onEvent(RelayEvent.GuestJoined(roomId(c), guest))
+        c.send(phone, listOf(Tab("https://a.example")), emptyList())
+        runCurrent()
+        assertEquals(emptyList(), c.guestRoom.exchanged.value)
+        scope.cancel()
+    }
+
+    @Test fun failedSendToTheGuestEndsItsRowWithoutProgress() = runTest {
+        val fake = FakeRelayApi().apply { failUploadsWith = app.mjolnir.client.RelayException(app.mjolnir.client.RelayErrorKind.TOO_LARGE, "too big") }
+        val (c, scope) = controller(fake)
+        val guest = openRoomWithGuest(c, fake)
+        c.guestRoom.onEvent(RelayEvent.GuestJoined(roomId(c), guest))
+        val file = File(dir, "big.bin").apply { writeText("data") }
+        c.sendToGuest(listOf(file)).join()
+        repeat(200) { runCurrent(); if (c.guestRoom.exchanged.value.singleOrNull()?.detail != "Couldn't send") Thread.sleep(10) }
+        val row = c.guestRoom.exchanged.value.single()
+        assertEquals("Couldn't send", row.detail)
+        assertNull(row.progress)
+        assertEquals("big.bin", row.title)
+        scope.cancel()
+    }
 }

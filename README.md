@@ -60,7 +60,7 @@ A guest room lets someone with no Mjolnir exchange files, folders and links with
 - **Open one:** on the PC, the sidebar *Guest room* tab → *Open a guest room*. On the phone, Devices → *Guest room* → *Open a guest room*. You get an invite link (`/g/{secret}` on your relay), a QR code on the PC, and a countdown. Share the link with *Copy link* (PC and phone), *Share…* (phone) or by showing the QR code.
 - **The guest page:** the guest opens the link in any modern browser. The page checks for new items every 3 seconds. Folders you send download as a `.zip`. If the guest closes the tab they can rejoin from the same browser; a second browser sees `This room is already in use.`
 - **Sending to the guest:** the guest appears as `Guest` under a `Guest room` heading in *Send* and *Throw to*. It is never chosen by default, so a send never goes to the guest by accident.
-- **Rules:** a room lasts one hour, a device can have one room, and a room has one guest. Links the guest sends you are never opened automatically. Unpairing the guest ends the room. *End room* (or the hour running out) deletes everything you sent to the guest; what the guest sent you is kept.
+- **Rules:** a room lasts one hour, a device can have one room, and a room has one guest. Links the guest sends you are never opened automatically. *End room* (or the hour running out) deletes everything you sent to the guest; what the guest sent you is kept.
 - **Relay:** the invite link points at your relay, so the relay must be reachable over HTTPS from the guest's network (a relay that is only on your LAN will not work for someone elsewhere). `MJOLNIR_GUEST_MAX_MB` caps the size of one room; see the table above.
 - **Browser test:** `./gradlew :server:installDist && node server/src/test/e2e/guest.e2e.mjs` runs the guest page end to end in a browser.
 
@@ -78,6 +78,8 @@ Run these from the `server/` directory after `./gradlew :server:buildFatJar` (th
    fly secrets set GOOGLE_APPLICATION_CREDENTIALS=/data/secrets/firebase.json
    ```
    Setting the secret restarts the relay. Alternatively store the JSON itself as a secret and write it to a file at startup. Never commit the JSON.
+
+Before downgrading the relay to an older version, end any open guest rooms (or wait an hour for them to expire): an older relay can't read a `GUEST` device and fails on it.
 
 Use the `https://<app>.fly.dev` address as the relay URL in the PC and phone apps. Relay URLs must be `https://` (plain `http://` only for localhost).
 

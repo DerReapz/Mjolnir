@@ -357,7 +357,7 @@ class AppController(
         val token = store.read().token
         val name = displayName(item.files)
         val to = nicknames.get(item.to) ?: item.toName // the outbox keeps the real name; a nickname may have changed since
-        val toGuest = (guestRoom.state.value as? GuestRoomUi.Open)?.guest?.deviceId == item.to
+        val toGuest = isGuest(item.to)
         val result = try {
             outbox.process(item.id) { done, total ->
                 val pct = if (total <= 0) 100 else (done * 100 / total).toInt()
@@ -374,6 +374,7 @@ class AppController(
             }
             is OutboxResult.Retry -> scheduleRetry()
             is OutboxResult.Failed -> {
+                if (toGuest) recordSentToGuest(result.item, progress = null, failed = true)
                 notify(Messages.notSent(result.message ?: Messages.failureReason(result.kind, to)))
                 if (result.kind == RelayErrorKind.UNAUTHORIZED) recoverUnauthorized(token)
             }
@@ -382,32 +383,25 @@ class AppController(
 
     // ---- guest room ---------------------------------------------------------------------------------------------
 
-    /** Row id of each file sent to the guest, and the files of each row: a row counts as downloaded once all its files were. */
-    private val guestRowOfFile = java.util.concurrent.ConcurrentHashMap<String, String>()
-    private val guestRowFiles = java.util.concurrent.ConcurrentHashMap<String, Set<String>>()
-    private val guestDownloaded = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-
     internal fun onGuestRoomEvent(e: RelayEvent) {
+        val room = guestRoom.state.value as? GuestRoomUi.Open
         guestRoom.onEvent(e)
-        when (e) {
-            is RelayEvent.Downloaded -> {
-                guestDownloaded += e.fileIds
-                for (id in e.fileIds.mapNotNull(guestRowOfFile::get).distinct()) {
-                    if (!guestDownloaded.containsAll(guestRowFiles[id].orEmpty())) continue
-                    guestRoom.exchanged.value.find { it.id == id }?.let { guestRoom.record(it.copy(downloadedByGuest = true)) }
-                }
-            }
-            is RelayEvent.RoomEnded -> { guestRowOfFile.clear(); guestRowFiles.clear(); guestDownloaded.clear() }
-            else -> Unit
-        }
+        if (e is RelayEvent.GuestJoined && room != null && room.roomId == e.roomId && room.guest == null) notify("Guest joined")
     }
+
+    private fun isGuest(deviceId: String) = (guestRoom.state.value as? GuestRoomUi.Open)?.guest?.deviceId == deviceId
 
     /**
      * Shows [item] (sent to the guest) in the room's exchange list: one row with its progress while uploading, then one
-     * row per top-level file or folder. The first row keeps the progress row's id, so it replaces it.
+     * row per top-level file or folder. The first row keeps the progress row's id, so it replaces it. With [failed] the
+     * first row says so instead of staying at its last progress.
      */
-    private fun recordSentToGuest(item: OutgoingFiles, progress: Pair<Long, Long>?) {
+    private fun recordSentToGuest(item: OutgoingFiles, progress: Pair<Long, Long>?, failed: Boolean = false) {
         val units = item.files.groupBy { topFolder(it.relativePath) ?: it.relativePath }.entries.toList()
+        if (failed) {
+            guestRoom.record(Exchanged("out:${item.id}:0", false, units.first().key, "Couldn't send", null, false, null))
+            return
+        }
         if (progress != null) {
             val (done, total) = progress
             val fraction = if (total > 0) done.toFloat() / total else 1f
@@ -416,13 +410,9 @@ class AppController(
             return
         }
         units.forEachIndexed { i, (title, files) ->
-            val id = "out:${item.id}:$i"
             val bytes = files.sumOf { it.sizeBytes }
             val detail = if (files.first().relativePath.contains('/')) "Folder · ${files.size} ${if (files.size == 1) "file" else "files"} · ${Messages.size(bytes)}" else Messages.size(bytes)
-            val ids = files.mapNotNull { it.ref?.id }.toSet()
-            guestRowFiles[id] = ids
-            ids.forEach { guestRowOfFile[it] = id }
-            guestRoom.record(Exchanged(id, false, title, detail, null, ids.isNotEmpty() && guestDownloaded.containsAll(ids), null))
+            guestRoom.recordSent("out:${item.id}:$i", title, detail, files.mapNotNull { it.ref?.id }.toSet())
         }
     }
 
@@ -519,6 +509,7 @@ class AppController(
             sentTabs = outcome.sentTabs
             error = outcome.error
             if (sentTabs.isNotEmpty()) parts += Messages.sent(sentTabs.size, 0, shown, target.space?.name)
+            if (sentTabs.isNotEmpty() && isGuest(target.deviceId)) guestRoom.recordLinks(System.nanoTime().toString(), sentTabs)
         }
         if (files.isNotEmpty()) {
             val now = System.currentTimeMillis()

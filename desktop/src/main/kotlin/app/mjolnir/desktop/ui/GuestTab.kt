@@ -39,6 +39,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,17 +47,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Exchanged
 import app.mjolnir.client.GuestRoomUi
+import app.mjolnir.client.formatCountdown
 import java.io.File
 import java.net.URI
 import kotlinx.coroutines.delay
 
 private val GUEST_GREEN = Color(0xFF4ADE80)
 
-/** `41:12`: whole minutes and seconds left (never negative). */
-fun formatCountdown(msLeft: Long): String {
-    val s = (msLeft.coerceAtLeast(0) + 999) / 1000
-    return "%02d:%02d".format(s / 60, s % 60)
-}
+/** The QR code is drawn as large as fits this many dp (at a whole number of pixels per module). */
+private const val QR_TARGET_DP = 168
 
 /** The open room's time left as `mm:ss`, ticking each second; null while no room is open. */
 @Composable
@@ -90,17 +89,19 @@ fun GuestTabContent(
     onOpenFolder: (String) -> Unit = {},
     clock: () -> Long = System::currentTimeMillis,
 ) {
-    val target = remember(onDrop) {
+    val open = ui as? GuestRoomUi.Open
+    val canSend = open?.guest != null // nothing can be sent before the guest has joined
+    val target = remember(onDrop, canSend) {
         object : DragAndDropTarget {
             override fun onDrop(event: DragAndDropEvent): Boolean {
+                if (!canSend) return false
                 val data = event.dragData() as? DragData.FilesList ?: return false
                 onDrop(data.readFiles().mapNotNull { runCatching { File(URI(it)) }.getOrNull() })
                 return true
             }
         }
     }
-    val open = ui as? GuestRoomUi.Open
-    Box(modifier.fillMaxSize().dragAndDropTarget(shouldStartDragAndDrop = { open != null }, target = target)) {
+    Box(modifier.fillMaxSize().dragAndDropTarget(shouldStartDragAndDrop = { canSend }, target = target)) {
         if (open == null) ClosedRoom(ui, onOpen)
         else OpenRoom(open, exchanged, rememberRoomCountdown(open, clock) ?: "", onEnd, onCopy, onAddFiles, onAddFolder, onOpenFolder)
     }
@@ -149,7 +150,7 @@ private fun OpenRoom(
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(exchanged, key = { it.id }) { ExchangedRow(it, onOpenFolder) }
             }
-            DropArea(onAddFiles, onAddFolder)
+            DropArea(room.guest != null, onAddFiles, onAddFolder)
         }
         InvitePanel(room.link, onCopy)
     }
@@ -188,15 +189,18 @@ private fun ExchangedRow(item: Exchanged, onOpenFolder: (String) -> Unit) {
 }
 
 @Composable
-private fun DropArea(onAddFiles: () -> Unit, onAddFolder: () -> Unit) {
+private fun DropArea(enabled: Boolean, onAddFiles: () -> Unit, onAddFolder: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().heightIn(min = 96.dp).background(Forge.strip, RoundedCornerShape(10.dp)).dashedBorder(Forge.dashed, 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically),
     ) {
-        Text("Drop files or folders here to send them to the guest", style = TextStyle(fontFamily = ForgeFonts.inter400, fontSize = 13.sp, color = Forge.muted))
+        Text(
+            if (enabled) "Drop files or folders here to send them to the guest" else "Waiting for the guest to open the link…",
+            style = TextStyle(fontFamily = ForgeFonts.inter400, fontSize = 13.sp, color = Forge.muted),
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ForgeSecondaryButton("Add files…", onClick = onAddFiles, modifier = Modifier.height(36.dp))
-            ForgeSecondaryButton("Add folder…", onClick = onAddFolder, modifier = Modifier.height(36.dp))
+            ForgeSecondaryButton("Add files…", onClick = onAddFiles, modifier = Modifier.height(36.dp), enabled = enabled)
+            ForgeSecondaryButton("Add folder…", onClick = onAddFolder, modifier = Modifier.height(36.dp), enabled = enabled)
         }
     }
 }
@@ -218,10 +222,12 @@ private fun InvitePanel(link: String, onCopy: () -> Unit) {
                 modifier = Modifier.fillMaxWidth().background(Forge.surface, Forge.inputShape).border(1.dp, Forge.border, Forge.inputShape).padding(horizontal = 12.dp, vertical = 10.dp),
             )
             ForgePrimaryButton("Copy link", onClick = onCopy, big = true, modifier = Modifier.fillMaxWidth().height(44.dp))
-            val qr = remember(link) { runCatching { qrImage(link) }.getOrNull() }
+            // One image pixel is one screen pixel, so every module is a whole number of pixels and stays sharp.
+            val density = LocalDensity.current.density
+            val qr = remember(link, density) { runCatching { qrImageFitting(link, (QR_TARGET_DP * density).toInt()) }.getOrNull() }
             if (qr != null) {
                 Image(qr, contentDescription = "QR code for the invite link", filterQuality = FilterQuality.None, contentScale = ContentScale.Fit,
-                    modifier = Modifier.align(Alignment.CenterHorizontally).size(168.dp).clip(Forge.inputShape))
+                    modifier = Modifier.align(Alignment.CenterHorizontally).size((qr.width / density).dp, (qr.height / density).dp).clip(Forge.inputShape))
             }
             Text("Scan with a phone camera, or send the link.\nWorks in any browser — nothing to install.", style = note.copy(textAlign = TextAlign.Center, lineHeight = 18.sp), modifier = Modifier.fillMaxWidth())
         }

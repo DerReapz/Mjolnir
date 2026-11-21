@@ -37,27 +37,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Exchanged
 import app.mjolnir.client.GuestRoomUi
+import app.mjolnir.client.formatCountdown
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private val GuestGreen = androidx.compose.ui.graphics.Color(0xFF4ADE80)
 
-/** `41:12`: whole minutes and seconds left (never negative). */
-fun formatCountdown(msLeft: Long): String {
-    val s = (msLeft.coerceAtLeast(0) + 999) / 1000
-    return "%02d:%02d".format(java.util.Locale.ROOT, s / 60, s % 60)
-}
-
 /** The system share sheet for the invite link (text only; there is no QR code on the phone). */
 fun shareLinkIntent(link: String): Intent =
     Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, link), null)
 
-/** The Guest room screen, opened from Devices. Listens for room events while it is open. */
+/** The Guest room screen, opened from Devices. */
 @Composable
 fun GuestRoomScreen(vm: GuestRoomViewModel, onBack: () -> Unit, modifier: Modifier = Modifier) {
     val ui by vm.state.collectAsState()
     val exchanged by vm.exchanged.collectAsState()
-    LaunchedEffect(Unit) { vm.restore(); vm.collectEvents() }
+    LaunchedEffect(Unit) { vm.restore() }
     GuestRoomContent(ui, exchanged, vm::open, vm::end, onBack, modifier)
 }
 

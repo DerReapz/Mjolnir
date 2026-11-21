@@ -65,4 +65,15 @@ class GuestRoomModelsTest {
         assertEquals(GuestJoinRequest("s"), MjolnirJson.decodeFromString<GuestJoinRequest>("""{"secret":"s"}"""))
         assertEquals(TicketResponse("x"), MjolnirJson.decodeFromString<TicketResponse>("""{"ticket":"x"}"""))
     }
+
+    @Test fun unknownDeviceKindDecodesAsPc() {
+        assertEquals(Peer("d", "n", DeviceKind.PC), MjolnirJson.decodeFromString<Peer>("""{"deviceId":"d","name":"n","kind":"WATCH"}"""))
+        assertEquals(DeviceKind.GUEST, MjolnirJson.decodeFromString<RegisterRequest>("""{"name":"n","kind":"GUEST"}""").kind)
+    }
+
+    @Test fun roomStatusDownloadedIdsDefaultToEmpty() {
+        assertEquals(emptyList(), MjolnirJson.decodeFromString<RoomStatus>("""{"roomId":"r","expiresAtEpochMs":2,"serverNowEpochMs":1,"guest":null}""").downloadedFileIds)
+        val s = RoomStatus("r", 2L, 1L, null, listOf("f"))
+        assertEquals(s, MjolnirJson.decodeFromString<RoomStatus>(MjolnirJson.encodeToString(RoomStatus.serializer(), s)))
+    }
 }

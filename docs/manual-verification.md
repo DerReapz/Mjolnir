@@ -62,7 +62,9 @@ Needs three devices (any mix of PCs and phones, call them A, B and C) on one rel
 ## Guest room
 Needs the PC app, a phone with Mjolnir, and a second phone or computer with a browser and no Mjolnir (the guest). The relay must be reachable over HTTPS from the guest.
 - **Open and scan:** on the PC, *Guest room* tab → *Open a guest room*; scan the QR code with the guest's phone. The guest page opens with nothing to install and the PC shows the guest as connected.
-- **Send both ways:** send a file, a folder and a link from the PC to the guest (it appears on the guest page within about 3 s; the folder downloads as a `.zip` that opens). From the guest page send a file and a link back; they appear in the PC's list, and the link is not opened automatically.
+- **Send both ways:** send a file, a folder and a link from the PC to the guest (pick `Guest` under the *Guest room* group on the Send tab for the link; it appears on the guest page within about 3 s; the folder downloads as a `.zip` that opens). From the guest page send a file and a link back; they appear in the PC's list, and the link is not opened automatically.
+- **Guest joined:** when the guest first opens the link, a `Guest joined` notification appears on the PC and on the phone (phone: with the Guest room screen closed too).
+- **Downloaded:** after the guest downloads a folder's `.zip` (and a plain file), the PC and the phone both show `downloaded by guest` on that row, also when the phone's Guest room screen was closed during the download.
 - **Drag and drop:** with a room open, drag files onto the PC Guest tab; they are sent to the guest. This could not be automated.
 - **Resume:** close the guest tab and open the link again in the same browser; the page resumes with its items.
 - **Second browser:** open the link in a different browser; it shows `This room is already in use.`

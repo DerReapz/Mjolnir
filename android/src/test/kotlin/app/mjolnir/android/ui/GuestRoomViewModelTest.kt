@@ -25,7 +25,6 @@ import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -46,7 +45,7 @@ class GuestRoomViewModelTest {
     private fun newVm(): GuestRoomViewModel {
         val scope = kotlinx.coroutines.CoroutineScope(main.dispatcher)
         val controller = GuestRoomController({ api }, { "https://relay.example" }, secrets, scope) { 1_000L }
-        return GuestRoomViewModel(controller, GuestTraffic(controller)) { api.events() }
+        return GuestRoomViewModel(controller)
     }
 
     @Test fun openShowsLinkAndShare() = runTest {
@@ -72,19 +71,6 @@ class GuestRoomViewModelTest {
         assertEquals(listOf("room-1"), api.endedRooms)
     }
 
-    @Test fun eventsWhileCollectingShowGuestAndEnd() = runTest {
-        val vm = newVm()
-        vm.open(); advanceUntilIdle()
-        val job = launch(main.dispatcher) { vm.collectEvents() }
-        advanceUntilIdle()
-        val guest = Peer("g1", "Guest", DeviceKind.GUEST)
-        api.events.emit(RelayEvent.GuestJoined("room-1", guest)); advanceUntilIdle()
-        assertEquals(guest, (vm.state.value as GuestRoomUi.Open).guest)
-        api.events.emit(RelayEvent.RoomEnded("room-1")); advanceUntilIdle()
-        assertEquals(GuestRoomUi.Closed, vm.state.value)
-        job.cancel()
-    }
-
     @Test fun sentRowIsMarkedDownloadedOnceAllItsFilesWere() = runTest {
         val controller = GuestRoomController({ api }, { "https://relay.example" }, secrets, kotlinx.coroutines.CoroutineScope(main.dispatcher)) { 1_000L }
         val traffic = GuestTraffic(controller)
@@ -92,9 +78,9 @@ class GuestRoomViewModelTest {
         traffic.recordSent(OutgoingFiles("o1", "g1", "Guest", listOf(up("dir/a.txt", "f1"), up("dir/b.txt", "f2")), createdAtEpochMs = 0))
         val row = controller.exchanged.value.single()
         assertEquals(false, row.fromGuest)
-        traffic.onEvent(RelayEvent.Downloaded("d", listOf("f1")))
+        controller.onEvent(RelayEvent.Downloaded("d", listOf("f1")))
         assertEquals(false, controller.exchanged.value.single().downloadedByGuest)
-        traffic.onEvent(RelayEvent.Downloaded("d", listOf("f2")))
+        controller.onEvent(RelayEvent.Downloaded("d", listOf("f2")))
         assertEquals(true, controller.exchanged.value.single().downloadedByGuest)
     }
 
@@ -156,18 +142,6 @@ class GuestRoomViewModelTest {
         room.value = GuestRoomUi.Closed; advanceUntilIdle()
         assertEquals("Guest room", vm.state.value.guestSubtitle(100_000L))
         assertEquals("Guest", vm.state.value.nameOf(Peer("g1", "Whoever", DeviceKind.GUEST)))
-    }
-
-    @Test fun connectedEventRestoresTheRoom() = runTest {
-        val vm = newVm(); advanceUntilIdle()
-        assertEquals(GuestRoomUi.Closed, vm.state.value)
-        val job = launch(main.dispatcher) { vm.collectEvents() }
-        advanceUntilIdle()
-        api.room = RoomResponse("r9", "s9", api.serverNowEpochMs + 60_000)
-        secrets.write(mapOf("r9" to "s9"))
-        api.events.emit(RelayEvent.Connected); advanceUntilIdle()
-        assertEquals("https://relay.example/g/s9", assertIs<GuestRoomUi.Open>(vm.state.value).link)
-        job.cancel()
     }
 
     @Test fun linksThrownToTheGuestGetYouSentRows() = runTest {

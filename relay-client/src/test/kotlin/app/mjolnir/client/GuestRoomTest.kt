@@ -5,6 +5,7 @@ import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.RoomResponse
 import app.mjolnir.protocol.RoomStatus
+import app.mjolnir.protocol.Tab
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -206,13 +207,128 @@ class GuestRoomTest {
         assertEquals(86_400_000L + 180_000L, assertIs<GuestRoomUi.Open>(c.state.value).expiresAtEpochMs)
     }
 
-    @Test fun downloadedEventMarksExchanged() = runTest {
+    @Test fun downloadedEventMarksSentRowOnceAllItsFilesWere() = runTest {
         val c = controller(FakeRelayApi())
         c.open()
-        c.record(Exchanged("f1", false, "a.jpg", "1 MB", null, false, null))
-        c.record(Exchanged("f2", false, "b.jpg", "1 MB", null, false, null))
+        c.recordSent("out:item-1:0", "Photos", "Folder · 2 files", setOf("f1", "f2"))
+        c.recordSent("out:item-1:1", "b.jpg", "1 MB", setOf("f3"))
         c.onEvent(RelayEvent.Downloaded("del-1", listOf("f1")))
+        assertEquals(listOf(false, false), c.exchanged.value.map { it.downloadedByGuest })
+        c.onEvent(RelayEvent.Downloaded("del-1", listOf("f2", "f3")))
+        assertEquals(listOf(true, true), c.exchanged.value.map { it.downloadedByGuest })
+    }
+
+    @Test fun rowRecordedAfterItsFilesWereDownloadedIsAlreadyMarked() = runTest {
+        val c = controller(FakeRelayApi())
+        c.open()
+        c.onEvent(RelayEvent.Downloaded("del-1", listOf("f1")))
+        c.recordSent("out:item-1:0", "a.jpg", "1 MB", setOf("f1"))
+        assertEquals(true, c.exchanged.value.single().downloadedByGuest)
+    }
+
+    @Test fun recordLinksAddsOneRowPerLink() = runTest {
+        val c = controller(FakeRelayApi())
+        c.open()
+        c.recordLinks("b1", listOf(Tab("https://a.example", "A"), Tab("https://b.example", " ")))
+        assertEquals(listOf("A", "https://b.example"), c.exchanged.value.map { it.title })
+        assertEquals(listOf("Link", "Link"), c.exchanged.value.map { it.detail })
+        assertEquals(2, c.exchanged.value.map { it.id }.toSet().size)
+    }
+
+    @Test fun restoreReplaysDownloadsThatHappenedWhileAway() = runTest {
+        val api = FakeRelayApi().apply {
+            room = RoomResponse("room-9", "secret-9", 5_000L); serverNowEpochMs = 2_000L; roomGuest = guest; roomDownloaded = listOf("f1")
+        }
+        secrets.write(mapOf("room-9" to "secret-9"))
+        val c = controller(api)
+        c.restore()
+        c.recordSent("out:item-1:0", "a.jpg", "1 MB", setOf("f1"))
+        c.recordSent("out:item-1:1", "b.jpg", "1 MB", setOf("f2"))
         assertEquals(listOf(true, false), c.exchanged.value.map { it.downloadedByGuest })
+    }
+
+    @Test fun restoreMarksRowsAlreadyShownFromTheRelaysList() = runTest {
+        val api = FakeRelayApi()
+        val c = controller(api)
+        c.open()
+        c.recordSent("out:item-1:0", "a.jpg", "1 MB", setOf("f1"))
+        api.roomDownloaded = listOf("f1")
+        c.restore()
+        assertEquals(true, c.exchanged.value.single().downloadedByGuest)
+    }
+
+    @Test fun roomClosesItselfWhenTheTimeIsUp() = runTest {
+        val api = FakeRelayApi()
+        val c = controller(api, clock = { testScheduler.currentTime })
+        c.open()
+        assertIs<GuestRoomUi.Open>(c.state.value)
+        testScheduler.advanceTimeBy(3_599_000L)
+        assertIs<GuestRoomUi.Open>(c.state.value)
+        testScheduler.advanceTimeBy(1_001L)
+        assertEquals(GuestRoomUi.Closed, c.state.value)
+        assertEquals(emptyMap(), secrets.read())
+    }
+
+    @Test fun roomRestoredAlreadyPastItsTimeClosesAtOnce() = runTest {
+        val api = FakeRelayApi().apply { room = RoomResponse("room-9", "secret-9", 2_000L); serverNowEpochMs = 2_000L }
+        secrets.write(mapOf("room-9" to "secret-9"))
+        val c = controller(api)
+        c.restore()
+        assertEquals(GuestRoomUi.Closed, c.state.value)
+        assertEquals(emptyMap(), secrets.read())
+    }
+
+    private fun unreadable(): JsonFileStore<Map<String, String>> {
+        val f = File.createTempFile("guest-room", ".json").also { it.deleteOnExit() }
+        val store = JsonFileStore(f, MapSerializer(String.serializer(), String.serializer())) { emptyMap<String, String>() }
+        store.write(mapOf("room-1" to "secret-1"))
+        f.delete(); f.mkdir() // reading a directory fails with an IOException
+        f.deleteOnExit()
+        return store
+    }
+
+    @Test fun unreadableSecretStoreDoesNotEndALiveRoom() = runTest {
+        val api = FakeRelayApi()
+        val file = File.createTempFile("guest-room", ".json").also { it.delete(); it.deleteOnExit() }
+        val store = JsonFileStore(file, MapSerializer(String.serializer(), String.serializer())) { emptyMap<String, String>() }
+        val c = controller(api, store = store)
+        c.open()
+        val before = assertIs<GuestRoomUi.Open>(c.state.value)
+        file.delete(); file.mkdir(); file.deleteOnExit()
+        c.restore()
+        val after = assertIs<GuestRoomUi.Open>(c.state.value)
+        assertEquals(before.copy(error = after.error), after)
+        assertEquals(true, after.error != null)
+        assertEquals(emptyList(), api.endedRooms)
+        assertEquals("room-1", api.room?.roomId)
+    }
+
+    @Test fun unreadableSecretStoreOnOpenFailsWithoutEndingTheRoom() = runTest {
+        val api = FakeRelayApi().apply { room = RoomResponse("room-1", "secret-1", 5_000L); serverNowEpochMs = 2_000L }
+        val c = controller(api, store = unreadable())
+        c.open()
+        assertIs<GuestRoomUi.Failed>(c.state.value)
+        assertEquals(emptyList(), api.endedRooms)
+        assertEquals("room-1", api.room?.roomId)
+    }
+
+    @Test fun unreadableSecretStoreOnRestoreDoesNotEndTheRoom() = runTest {
+        val api = FakeRelayApi().apply { room = RoomResponse("room-1", "secret-1", 5_000L); serverNowEpochMs = 2_000L }
+        val c = controller(api, store = unreadable())
+        c.restore()
+        assertIs<GuestRoomUi.Failed>(c.state.value)
+        assertEquals(emptyList(), api.endedRooms)
+    }
+
+    @Test fun countdownFormatsWithRootLocale() {
+        assertEquals("41:12", formatCountdown(41 * 60_000L + 12_000L))
+        assertEquals("00:00", formatCountdown(-5L))
+        assertEquals("00:01", formatCountdown(1L))
+        val saved = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale.forLanguageTag("ar-EG"))
+            assertEquals("59:59", formatCountdown(59 * 60_000L + 59_000L))
+        } finally { java.util.Locale.setDefault(saved) }
     }
 
     @Test fun secondOpenWhileOpenIsNoop() = runTest {

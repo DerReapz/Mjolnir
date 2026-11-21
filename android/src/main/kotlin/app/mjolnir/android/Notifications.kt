@@ -3,9 +3,11 @@ package app.mjolnir.android
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import app.mjolnir.android.receive.CHANNEL_CAUGHT
 
 /** A notification id for [key]; never 0, which startForeground refuses. */
 internal fun notificationId(key: String): Int = key.hashCode().takeIf { it != 0 } ?: 1
@@ -21,6 +23,24 @@ fun shouldReportProgress(pct: Int, lastPct: Int, nowMs: Long, lastMs: Long?): Bo
     pct == lastPct -> false
     pct >= 100 || lastMs == null -> true
     else -> nowMs - lastMs >= PROGRESS_INTERVAL_MS
+}
+
+private const val GUEST_JOINED_ID = 0x6A01
+
+/** `Guest joined`: someone opened this phone's guest room link. Tapping it opens the app. */
+internal fun postGuestJoinedNotification(context: Context) {
+    val open = context.packageManager.getLaunchIntentForPackage(context.packageName)?.let {
+        PendingIntent.getActivity(context, 0, it, PendingIntent.FLAG_IMMUTABLE)
+    }
+    postNotification(
+        context, GUEST_JOINED_ID,
+        Notification.Builder(context, CHANNEL_CAUGHT)
+            .setSmallIcon(android.R.drawable.stat_notify_more)
+            .setContentText("Guest joined")
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build(),
+    )
 }
 
 /** Posts [notification] when the app may; without the permission nothing is shown. */

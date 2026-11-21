@@ -3,11 +3,16 @@ package app.mjolnir.client
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.RelayEvent
+import app.mjolnir.protocol.Tab
 import java.io.File
 import java.io.IOException
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,7 +32,16 @@ sealed interface GuestRoomUi {
     data class Failed(val message: String) : GuestRoomUi
 }
 
-/** One thing sent to or received from the guest, for the room's exchange list. [id] is the file id. */
+/** `41:12`: whole minutes and seconds left (never negative). Shared by the desktop and Android apps. */
+fun formatCountdown(msLeft: Long): String {
+    val s = (msLeft.coerceAtLeast(0) + 999) / 1000
+    return "%02d:%02d".format(Locale.ROOT, s / 60, s % 60)
+}
+
+/**
+ * One row of the room's exchange list. [id] identifies the row: the file id for a row received from the guest, and
+ * `out:{item}:{index}` for a row sent to the guest (see [GuestRoomController.recordSent]).
+ */
 data class Exchanged(
     val id: String,
     val fromGuest: Boolean,
@@ -56,6 +70,13 @@ class GuestRoomController(
     private val _exchanged = MutableStateFlow<List<Exchanged>>(emptyList())
     val exchanged: StateFlow<List<Exchanged>> = _exchanged.asStateFlow()
 
+    /** Row id of each file sent to the guest, and the files of each row: a row counts as downloaded once all its files were. */
+    private val rowOfFile = ConcurrentHashMap<String, String>()
+    private val rowFiles = ConcurrentHashMap<String, Set<String>>()
+    private val downloaded = ConcurrentHashMap.newKeySet<String>()
+
+    private var expiry: Job? = null
+
     /** Bumped by every change of the room's state, so a slow [restore] that began earlier knows its answer is stale. */
     private val epoch = AtomicInteger()
 
@@ -76,11 +97,15 @@ class GuestRoomController(
                     if (e.kind != RelayErrorKind.ALREADY_SENT || adoptCurrent(api)) throw e
                     api.openRoom()
                 }
-                _exchanged.value = emptyList()
+                resetRows()
                 saveSecrets { mapOf(room.roomId to room.secret) }
-                _state.value = GuestRoomUi.Open(room.roomId, link(room.secret), clock() + Limits.GUEST_ROOM_TTL_MS, null)
+                val expiresAt = clock() + Limits.GUEST_ROOM_TTL_MS
+                _state.value = GuestRoomUi.Open(room.roomId, link(room.secret), expiresAt, null)
+                scheduleExpiry(room.roomId, expiresAt)
             } catch (e: CancellationException) {
                 throw e
+            } catch (_: IOException) {
+                fail("Couldn't read the saved guest room link") // an unreadable store says nothing about the room, so none is ended
             } catch (e: RelayException) {
                 if (e.kind == RelayErrorKind.ALREADY_SENT && _state.value is GuestRoomUi.Open) return@launch // adopted above
                 fail(e.userMessage ?: "Couldn't open the guest room")
@@ -116,6 +141,10 @@ class GuestRoomController(
                 throw e
             } catch (_: RelayException) {
                 // Keep what is shown; the next restore or event settles it.
+            } catch (_: IOException) {
+                // The saved link couldn't be read: that is no reason to end a room, so keep the state and say so.
+                val message = "Couldn't read the saved guest room link"
+                _state.update { s -> if (s is GuestRoomUi.Open) s.copy(error = message) else GuestRoomUi.Failed(message) }
             }
         }
     }
@@ -130,11 +159,33 @@ class GuestRoomController(
                 if ((_state.value as? GuestRoomUi.Open)?.roomId == e.roomId) close()
                 saveSecrets { it - e.roomId }
             }
-            is RelayEvent.Downloaded -> _exchanged.update { list ->
-                list.map { if (it.id in e.fileIds) it.copy(downloadedByGuest = true) else it }
-            }
+            is RelayEvent.Downloaded -> markDownloaded(e.fileIds)
             else -> Unit
         }
+    }
+
+    /**
+     * Shows one YOU SENT row [rowId] for what was sent to the guest, made of the files [fileIds]. It counts as downloaded
+     * once the guest has downloaded all of them (also if they already had, before this row was recorded).
+     */
+    fun recordSent(rowId: String, title: String, detail: String, fileIds: Set<String>) {
+        rowFiles[rowId] = fileIds
+        fileIds.forEach { rowOfFile[it] = rowId }
+        record(Exchanged(rowId, false, title, detail, null, fileIds.isNotEmpty() && downloaded.containsAll(fileIds), null))
+    }
+
+    /** One YOU SENT row per link in [tabs]; [batchId] tells this send's rows from every other's. */
+    fun recordLinks(batchId: String, tabs: List<Tab>) {
+        tabs.forEachIndexed { i, tab ->
+            record(Exchanged("out:link:$batchId:$i", false, tab.title?.takeIf { it.isNotBlank() } ?: tab.url, "Link", null, false, null))
+        }
+    }
+
+    private fun markDownloaded(fileIds: List<String>) {
+        downloaded += fileIds
+        val rows = fileIds.mapNotNull(rowOfFile::get).distinct().filter { downloaded.containsAll(rowFiles[it].orEmpty()) }.toSet()
+        if (rows.isEmpty()) return
+        _exchanged.update { list -> list.map { if (it.id in rows) it.copy(downloadedByGuest = true) else it } }
     }
 
     /** Adds [item] to the exchange list, or replaces the entry with its id (progress updates). */
@@ -152,7 +203,9 @@ class GuestRoomController(
         val started = epoch.get()
         val status = api.currentRoom()
         if (epoch.get() != started) return true
-        val secret = status?.let { s -> secrets.readOrEmpty()[s.roomId] }
+        // A store that can't be read throws (IOException) and leaves everything as it is; only a store read successfully
+        // without this room's entry means the secret is lost.
+        val secret = status?.let { s -> secrets.read()[s.roomId] }
         saveSecrets { all -> if (status != null && secret != null) mapOf(status.roomId to secret) else emptyMap() }
         if (status == null || secret == null) {
             if (_state.value is GuestRoomUi.Open) close()
@@ -162,18 +215,38 @@ class GuestRoomController(
             }
             return false
         }
-        _state.value = GuestRoomUi.Open(status.roomId, link(secret), clock() + (status.expiresAtEpochMs - status.serverNowEpochMs), status.guest)
+        val expiresAt = clock() + (status.expiresAtEpochMs - status.serverNowEpochMs)
+        if ((_state.value as? GuestRoomUi.Open)?.roomId != status.roomId) resetRows()
+        _state.value = GuestRoomUi.Open(status.roomId, link(secret), expiresAt, status.guest)
+        scheduleExpiry(status.roomId, expiresAt)
+        // Downloads that happened while no app was listening.
+        markDownloaded(status.downloadedFileIds)
         return true
     }
 
-    private fun close() { epoch.incrementAndGet(); _state.value = GuestRoomUi.Closed; _exchanged.value = emptyList(); saveSecrets { emptyMap() } }
+    /** Closes the room when its time is up, without waiting for the relay to say so. */
+    private fun scheduleExpiry(roomId: String, expiresAt: Long) {
+        expiry?.cancel()
+        expiry = scope.launch {
+            val left = expiresAt - clock()
+            if (left > 0) delay(left)
+            if (clock() >= expiresAt && (_state.value as? GuestRoomUi.Open)?.roomId == roomId) close()
+        }
+    }
+
+    private fun resetRows() { _exchanged.value = emptyList(); rowOfFile.clear(); rowFiles.clear(); downloaded.clear() }
+
+    private fun close() {
+        epoch.incrementAndGet()
+        expiry?.cancel()
+        _state.value = GuestRoomUi.Closed
+        resetRows()
+        saveSecrets { emptyMap() }
+    }
 
     private fun saveSecrets(change: (Map<String, String>) -> Map<String, String>) {
         try { secrets.update { change(it) } } catch (_: IOException) { /* the link then won't survive a restart */ }
     }
-
-    private fun JsonFileStore<Map<String, String>>.readOrEmpty(): Map<String, String> =
-        try { read() } catch (_: IOException) { emptyMap() }
 
     private fun fail(message: String) { _state.value = GuestRoomUi.Failed(message) }
 }

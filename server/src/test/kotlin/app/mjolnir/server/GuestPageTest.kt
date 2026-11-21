@@ -43,6 +43,13 @@ class GuestPageTest {
     }
 
     @Test
+    fun unknownGuestAssetIs404WithSecurityHeaders() = relayTest {
+        val r = client.get("/guest/nope.js")
+        assertEquals(HttpStatusCode.NotFound, r.status)
+        r.assertGuestHeaders()
+    }
+
+    @Test
     fun assetsServedWithNosniff() = relayTest {
         val expected = mapOf(
             "app.js" to ContentType.Text.JavaScript,

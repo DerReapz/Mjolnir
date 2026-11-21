@@ -3,6 +3,8 @@
 package app.mjolnir.desktop.ui
 
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -23,9 +25,9 @@ class GuestTabTest {
     private fun androidx.compose.ui.test.ComposeUiTest.show(
         ui: GuestRoomUi, exchanged: List<Exchanged> = emptyList(),
         onOpen: () -> Unit = {}, onEnd: () -> Unit = {}, onCopy: () -> Unit = {},
-        onOpenFolder: (String) -> Unit = {},
+        onOpenFolder: (String) -> Unit = {}, onAddFiles: () -> Unit = {}, onAddFolder: () -> Unit = {},
     ) = setContent {
-        MjolnirTheme { GuestTabContent(ui, exchanged, onOpen, onEnd, onCopy, {}, {}, {}, onOpenFolder = onOpenFolder, clock = { 0L }) }
+        MjolnirTheme { GuestTabContent(ui, exchanged, onOpen, onEnd, onCopy, onAddFiles, onAddFolder, {}, onOpenFolder = onOpenFolder, clock = { 0L }) }
     }
 
     @Test fun closedShowsOpenButton() = runComposeUiTest {
@@ -47,6 +49,26 @@ class GuestTabTest {
         onNodeWithText("Drop files or folders here to send them to the guest").assertExists()
         onNodeWithText("Copy link").performClick()
         assertEquals(1, copied)
+    }
+
+    @Test fun dropAreaWaitsForTheGuest() = runComposeUiTest {
+        var adds = 0
+        show(open(guest = null), onAddFiles = { adds++ }, onAddFolder = { adds++ })
+        onNodeWithText("Waiting for the guest to open the link…").assertExists()
+        onNodeWithText("Drop files or folders here to send them to the guest").assertDoesNotExist()
+        onNodeWithText("Add files…").assertIsNotEnabled()
+        onNodeWithText("Add folder…").assertIsNotEnabled()
+        onNodeWithText("Add files…").performClick()
+        assertEquals(0, adds)
+    }
+
+    @Test fun dropAreaEnabledOnceTheGuestJoined() = runComposeUiTest {
+        var adds = 0
+        show(open(), onAddFiles = { adds++ })
+        onNodeWithText("Waiting for the guest to open the link…").assertDoesNotExist()
+        onNodeWithText("Add files…").assertIsEnabled()
+        onNodeWithText("Add files…").performClick()
+        assertEquals(1, adds)
     }
 
     @Test fun blankLinkShowsRoomWithoutLinkOrQr() = runComposeUiTest {

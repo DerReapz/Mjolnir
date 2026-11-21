@@ -183,6 +183,8 @@ class FakeRelayApi : RelayApi {
     var room: RoomResponse? = null
     /** The guest in [room]; shown by [currentRoom]. */
     var roomGuest: Peer? = null
+    /** File ids [currentRoom] reports as downloaded by the guest. */
+    var roomDownloaded: List<String> = emptyList()
     /** The relay's clock as [currentRoom] reports it. */
     var serverNowEpochMs = 0L
     val endedRooms = mutableListOf<String>()
@@ -200,7 +202,7 @@ class FakeRelayApi : RelayApi {
     override suspend fun currentRoom(): RoomStatus? {
         check()
         val r = room
-        val status = r?.let { RoomStatus(it.roomId, it.expiresAtEpochMs, serverNowEpochMs, roomGuest) }
+        val status = r?.let { RoomStatus(it.roomId, it.expiresAtEpochMs, serverNowEpochMs, roomGuest, roomDownloaded) }
         currentRoomGate?.await()
         return status
     }

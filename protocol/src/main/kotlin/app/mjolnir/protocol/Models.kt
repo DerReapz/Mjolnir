@@ -1,11 +1,27 @@
 package app.mjolnir.protocol
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 
 /** GUEST: a browser in a guest room, linked only to the room's owner and gone when the room ends. */
-@Serializable enum class DeviceKind { PHONE, PC, GUEST }
+@Serializable(with = DeviceKindSerializer::class) enum class DeviceKind { PHONE, PC, GUEST }
+
+/** Decodes leniently: a kind this version doesn't know (a newer relay's) reads as PC rather than failing the whole message. */
+object DeviceKindSerializer : KSerializer<DeviceKind> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("app.mjolnir.protocol.DeviceKind", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: DeviceKind) = encoder.encodeString(value.name)
+    override fun deserialize(decoder: Decoder): DeviceKind {
+        val name = decoder.decodeString()
+        return DeviceKind.entries.firstOrNull { it.name == name } ?: DeviceKind.PC
+    }
+}
 @Serializable data class Tab(val url: String, val title: String? = null)
 @Serializable data class SpaceRef(val id: String, val name: String)
 @Serializable data class Peer(val deviceId: String, val name: String, val kind: DeviceKind, val space: SpaceRef? = null)
@@ -61,7 +77,14 @@ import kotlinx.serialization.json.Json
 @Serializable data class RenameSpaceRequest(val name: String)
 @Serializable data class TransferAdminRequest(val deviceId: String)
 @Serializable data class RoomResponse(val roomId: String, val secret: String, val expiresAtEpochMs: Long)
-@Serializable data class RoomStatus(val roomId: String, val expiresAtEpochMs: Long, val serverNowEpochMs: Long, val guest: Peer?)
+/** [downloadedFileIds]: files sent to the room's guest that the guest has already downloaded, so an owner app that wasn't listening can catch up. */
+@Serializable data class RoomStatus(
+    val roomId: String,
+    val expiresAtEpochMs: Long,
+    val serverNowEpochMs: Long,
+    val guest: Peer?,
+    val downloadedFileIds: List<String> = emptyList(),
+)
 /** Either [fileId], or [deliveryId] with the top [folder] to download as one zip. */
 @Serializable data class TicketRequest(val fileId: String? = null, val deliveryId: String? = null, val folder: String? = null)
 @Serializable data class TicketResponse(val ticket: String)

@@ -283,6 +283,18 @@ class RoomRoutesTest {
         assertEquals(HttpStatusCode.OK, client.get("/v1/files/${small.id}") { bearerAuth(guest.token) }.status)
     }
 
+    @Test fun currentRoomListsFilesTheGuestDownloaded() = relayTest {
+        val owner = register("Desk", DeviceKind.PC)
+        val (_, guest) = guestOf(owner)
+        val a = upload(owner, "a.txt", "aa".toByteArray())
+        val b = upload(owner, "b.txt", "bb".toByteArray())
+        sendFiles(owner, guest.deviceId, listOf(a.id))
+        sendFiles(owner, guest.deviceId, listOf(b.id))
+        assertEquals(emptyList(), client.get("/v1/rooms/current") { bearerAuth(owner.token) }.body<RoomStatus>().downloadedFileIds)
+        client.get("/v1/files/${a.id}") { bearerAuth(guest.token) }.readRawBytes()
+        assertEquals(listOf(a.id), client.get("/v1/rooms/current") { bearerAuth(owner.token) }.body<RoomStatus>().downloadedFileIds)
+    }
+
     @Test fun perRoomCapEnforced() = relayTest(limits = RelayLimits(guestMaxBytes = 10)) {
         val owner = register("Desk", DeviceKind.PC)
         val (_, guest) = guestOf(owner)

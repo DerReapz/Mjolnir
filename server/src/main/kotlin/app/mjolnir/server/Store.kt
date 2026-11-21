@@ -850,6 +850,16 @@ class Store(jdbcUrl: String) {
             it.setLong(1, nowMs); it.setString(2, fileId); it.executeUpdate() > 0
         }
 
+    /** Ids of files delivered to [toId] that it has downloaded in full. */
+    @Synchronized
+    fun downloadedFileIdsTo(toId: String): List<String> =
+        conn.prepareStatement(
+            "SELECT f.id FROM files f JOIN deliveries d ON d.id=f.delivery_id WHERE d.to_id=? AND f.downloaded_at IS NOT NULL AND f.acked_at IS NULL ORDER BY f.downloaded_at, f.id"
+        ).use {
+            it.setString(1, toId)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+        }
+
     @Synchronized
     fun downloadedAt(fileId: String): Long? =
         conn.prepareStatement("SELECT downloaded_at FROM files WHERE id=?").use {

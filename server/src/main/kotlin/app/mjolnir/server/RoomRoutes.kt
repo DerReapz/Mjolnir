@@ -124,7 +124,8 @@ fun Route.roomRoutes(deps: RelayDeps) {
             val now = deps.clock.nowMs()
             val room = store.openRoomOf(me.deviceId, now) ?: return@get call.respond(HttpStatusCode.NoContent)
             val guest = room.guestId?.let { store.device(it)?.toPeer() }
-            call.respond(RoomStatus(room.id, room.expiresAtMs, now, guest))
+            val downloaded = room.guestId?.let { store.downloadedFileIdsTo(it) }.orEmpty()
+            call.respond(RoomStatus(room.id, room.expiresAtMs, now, guest, downloaded))
         }
 
         delete("/v1/rooms/{id}") {

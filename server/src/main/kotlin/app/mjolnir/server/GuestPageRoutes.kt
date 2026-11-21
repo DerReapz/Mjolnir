@@ -56,8 +56,8 @@ fun Route.guestPageRoutes() {
 
     get("/guest/{path...}") {
         val path = call.parameters.getAll("path").orEmpty().joinToString("/")
-        val type = GUEST_ASSETS[path] ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("not_found"))
         call.guestHeaders()
+        val type = GUEST_ASSETS[path] ?: return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("not_found"))
         // Script and style revalidate so a relay update never pairs a new page with an old script; the rest is static.
         val cache = if (type == FONT_TTF || type == ContentType.Image.PNG) "public, max-age=86400" else "no-cache"
         call.response.header(HttpHeaders.CacheControl, cache)
