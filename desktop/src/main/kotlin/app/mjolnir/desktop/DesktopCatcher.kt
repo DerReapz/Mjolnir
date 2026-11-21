@@ -6,6 +6,7 @@ import app.mjolnir.client.RelayApi
 import app.mjolnir.client.receiveFiles
 import app.mjolnir.client.uniqueTarget
 import app.mjolnir.protocol.Delivery
+import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.isSafeTabUrl
 import java.io.File
@@ -37,7 +38,9 @@ class DesktopCatcher(
             markDownloaded(dest)
             target to dest
         }
-        val tabsOpened = if (openLinks()) opener.open(d.tabs) else d.tabs.count { isSafeTabUrl(it.url) }
+        // A guest is a stranger with a browser: its links are recorded and announced but never opened on their own.
+        val autoOpen = openLinks() && d.from.kind != DeviceKind.GUEST
+        val tabsOpened = if (autoOpen) opener.open(d.tabs) else d.tabs.count { isSafeTabUrl(it.url) }
         record(d, root, saved)
         if (tabsOpened > 0 || saved.isNotEmpty()) {
             // A failed notification must not fail the delivery: a redelivery would save the files again.

@@ -121,14 +121,8 @@ fun Route.fileRoutes(deps: RelayDeps) {
                     store.setUploadOffset(id, offset)
                     return@put call.respond(UploadStatus(id, offset))
                 }
-                val sha = withContext(Dispatchers.IO) { files.complete(id) }
-                val ref = try {
-                    store.completeUpload(id, sha, deps.clock.nowMs())
-                } catch (e: IllegalStateException) {
-                    // The upload was purged meanwhile (e.g. its guest room ended): drop the blob it left behind.
-                    files.delete(id)
-                    return@put call.respond(HttpStatusCode.NotFound, ErrorResponse("not_found"))
-                }
+                val ref = finishUpload(deps, id)
+                    ?: return@put call.respond(HttpStatusCode.NotFound, ErrorResponse("not_found"))
                 call.respond(UploadStatus(id, offset, ref))
             } finally {
                 inFlight.remove(id)
@@ -152,7 +146,10 @@ fun Route.fileRoutes(deps: RelayDeps) {
             call.response.header(HttpHeaders.ContentDisposition, attachment("$folder.zip"))
             call.response.header("X-Content-Type-Options", "nosniff")
             call.respondOutputStream(ContentType.Application.Zip, HttpStatusCode.OK) {
-                withContext(Dispatchers.IO) { writeZip(this@respondOutputStream, entries) }
+                withContext(Dispatchers.IO) {
+                    writeZip(this@respondOutputStream, entries)
+                    flush()
+                }
                 // Reached only once the last byte has been handed to the response.
                 markGuestDownload(deps, me, delivery, refs.map { it.id })
             }
@@ -198,6 +195,18 @@ fun Route.fileRoutes(deps: RelayDeps) {
                 if (pos == size) store.deliveryOfFileFor(id, me.deviceId)?.let { markGuestDownload(deps, me, it, listOf(id)) }
             }
         }
+    }
+}
+
+/** Turns the fully written upload [id] into a file; null when it was purged meanwhile (its blob is then dropped too). */
+internal suspend fun finishUpload(deps: RelayDeps, id: String): FileRef? {
+    val sha = withContext(Dispatchers.IO) { deps.files.complete(id) }
+    return try {
+        deps.store.completeUpload(id, sha, deps.clock.nowMs())
+    } catch (e: IllegalStateException) {
+        // The upload row was purged meanwhile (e.g. its guest room ended): drop the blob it left behind.
+        deps.files.delete(id)
+        null
     }
 }
 

@@ -22,6 +22,7 @@ import ch.qos.logback.core.read.ListAppender
 import io.ktor.client.call.body
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -377,6 +378,59 @@ class RoomRoutesTest {
     @Test fun joinIsRateLimitedPerIp() = relayTest {
         repeat(10) { assertEquals(HttpStatusCode.Gone, joinResponse("guess-$it").status) }
         assertEquals(HttpStatusCode.TooManyRequests, joinResponse("guess-11").status)
+    }
+
+    @Test fun unpairingTheGuestEndsTheRoom() = relayTest {
+        val owner = register("Desk", DeviceKind.PC)
+        val (room, guest) = guestOf(owner)
+        val toGuest = upload(owner, "b.txt", "yo".toByteArray())
+        sendFiles(owner, guest.deviceId, listOf(toGuest.id))
+        withEvents(owner) {
+            assertEquals(HttpStatusCode.NoContent, client.delete("/v1/peers/${guest.deviceId}") { bearerAuth(owner.token) }.status)
+            assertEquals(RelayEvent.RoomEnded(room.roomId), next())
+        }
+        assertNull(store.room(room.roomId))
+        assertNull(store.device(guest.deviceId))
+        assertFalse(deps.files.file(toGuest.id).exists())
+        assertEquals(HttpStatusCode.Unauthorized, client.get("/v1/devices/me") { bearerAuth(guest.token) }.status)
+    }
+
+    @Test fun ownerSendRacingTheEndCreatesNothing() = relayTest {
+        val owner = register("Desk", DeviceKind.PC)
+        val (room, guest) = guestOf(owner)
+        val file = upload(owner, "b.txt", "yo".toByteArray())
+        // The route's checks passed, then the room ended before the delivery was written.
+        assertNotNull(store.endRoom(room.roomId))
+        val (result, row) = store.createFileDelivery(owner.deviceId, guest.deviceId, listOf(file.id), clock.now)
+        assertEquals(AttachResult.NOT_ALLOWED, result)
+        assertNull(row)
+        assertEquals(0, store.rowCount("deliveries"))
+        assertEquals(2L, store.unsentBytes(owner.deviceId, listOf(file.id)), "the file stays unsent, so the unsent-file purge takes it")
+    }
+
+    @Test fun joinRacingTheEndIsClosed() = relayTest {
+        val owner = register("Desk", DeviceKind.PC)
+        val ended = openRoom(owner)
+        // The route found the room, then it ended before the join was written.
+        assertNotNull(store.endRoom(ended.roomId))
+        assertEquals(Store.JoinResult.Closed, store.joinRoom(ended.roomId, sha256Hex("t1"), clock.now))
+        val expired = openRoom(owner)
+        assertEquals(Store.JoinResult.Closed, store.joinRoom(expired.roomId, sha256Hex("t2"), clock.now + Limits.GUEST_ROOM_TTL_MS))
+        assertTrue(store.joinRoom(expired.roomId, sha256Hex("t3"), clock.now) is Store.JoinResult.Joined)
+        assertEquals(Store.JoinResult.InUse, store.joinRoom(expired.roomId, sha256Hex("t4"), clock.now))
+        assertEquals(2, store.rowCount("devices"))
+    }
+
+    @Test fun uploadPurgedMidCompletionDropsItsBlob() = relayTest {
+        val owner = register("Desk", DeviceKind.PC)
+        val (room, guest) = guestOf(owner)
+        val open = createUpload(guest, "a.bin", "application/octet-stream", 4)
+        // Every byte arrived, then the room ended (its rows went) before the upload was recorded as a file.
+        store.endRoom(room.roomId)
+        assertNull(finishUpload(deps, open.uploadId))
+        assertFalse(deps.files.file(open.uploadId).exists())
+        assertFalse(java.io.File(deps.files.dir, "${open.uploadId}.part").exists())
+        assertEquals(0, store.rowCount("files"))
     }
 
     @Test fun secretNotInLogs() {

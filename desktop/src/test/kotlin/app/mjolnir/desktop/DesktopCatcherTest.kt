@@ -72,6 +72,14 @@ class DesktopCatcherTest {
         assertTrue(files.single().canonicalPath.startsWith(dir.canonicalPath + File.separator))
         assertEquals("evil.bat", files.single().name)
     }
+    // G-R4: a guest is a stranger: its links are recorded and announced, never opened automatically
+    @Test fun guestLinksAreNeverOpenedAutomatically(@TempDir dir: File) = runTest {
+        val guest = Peer("g1", "Guest", DeviceKind.GUEST)
+        catcher(FakeRelayApi(), dir).handle(Delivery("d1", guest, listOf(Tab("https://a.com", "A")), 0))
+        assertTrue(opened.isEmpty())
+        assertEquals(listOf("https://a.com"), history.entries.value.map { it.target })
+        assertEquals(listOf("Caught 1 tab from Guest"), notes)
+    }
     // R15: a failing notification does not fail the delivery (which would save it again on redelivery)
     @Test fun notifyFailureDoesNotFailHandle(@TempDir dir: File) = runTest {
         val api = FakeRelayApi(); val ref = api.putBlob("f1", "a.txt", "x".toByteArray())

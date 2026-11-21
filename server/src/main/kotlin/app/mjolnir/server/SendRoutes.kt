@@ -86,6 +86,7 @@ fun Route.sendRoutes(deps: RelayDeps) {
                     val (result, row) = store.createFileDelivery(me.deviceId, req.to, req.fileIds, now, ref?.id, ref?.name)
                     return@post when (result) {
                         AttachResult.INVALID -> call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_files"))
+                        AttachResult.NOT_ALLOWED -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("not_paired"))
                         AttachResult.ALREADY_SENT -> call.respond(HttpStatusCode.Conflict, ErrorResponse("already_sent"))
                         AttachResult.OK -> {
                             row!!

@@ -93,8 +93,11 @@ fun Route.roomRoutes(deps: RelayDeps) {
             if (room.guestId != null) return@post call.error(HttpStatusCode.Conflict, "in_use")
             val owner = store.device(room.ownerId) ?: return@post call.error(HttpStatusCode.Gone, "closed")
             val token = newToken()
-            val guest = store.joinRoom(room.id, sha256Hex(token), now)
-                ?: return@post call.error(HttpStatusCode.Conflict, "in_use")
+            val guest = when (val joined = store.joinRoom(room.id, sha256Hex(token), now)) {
+                is Store.JoinResult.Joined -> joined.guest
+                Store.JoinResult.InUse -> return@post call.error(HttpStatusCode.Conflict, "in_use")
+                Store.JoinResult.Closed -> return@post call.error(HttpStatusCode.Gone, "closed")
+            }
             deps.hub.emit(owner.id, RelayEvent.GuestJoined(room.id, guest.toPeer()))
             call.respond(
                 HttpStatusCode.Created,

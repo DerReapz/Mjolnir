@@ -113,6 +113,9 @@ class SpacesStoreTest {
                 it.executeUpdate("INSERT INTO devices VALUES('d1','Old','PC','h1',NULL,5)")
                 it.executeUpdate("INSERT INTO pairings VALUES('p1','CODE','d1',NULL,'PENDING',9999999999999)")
                 it.executeUpdate("INSERT INTO deliveries VALUES('x1','d1','d2','[]',7)")
+                // files as it was before tombstones and guest rooms (no acked_at, no downloaded_at); no rooms table.
+                it.executeUpdate("CREATE TABLE files(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL, relative_path TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at INTEGER NOT NULL, delivery_id TEXT NULL, sent_to TEXT NULL)")
+                it.executeUpdate("INSERT INTO files VALUES('f1','d1','a.txt','a.txt','text/plain',3,'abc',5,NULL,NULL)")
             }
         }
         val s = Store("jdbc:sqlite:$file")
@@ -124,6 +127,12 @@ class SpacesStoreTest {
         val d = s.inbox("d2", 8).single()
         assertEquals("x1", d.id)
         assertNull(d.spaceId)
+        assertNull(s.downloadedAt("f1"))
+        assertTrue(s.markDownloaded("f1", 42))
+        assertEquals(42L, s.downloadedAt("f1"))
+        val room = s.createRoom("d1", "hash", 100, 1_000)!!
+        assertEquals(room, s.openRoomOf("d1", 100))
+        assertEquals(1, s.rowCount("rooms"))
         // reopening an already-upgraded db is a no-op
         Store("jdbc:sqlite:$file")
     }

@@ -98,7 +98,9 @@ class GuestGuardTest {
             setBody(SendRequest(pc.deviceId, listOf(Tab("https://a.com")), spaceId = "s1"))
         }
         assertEquals(HttpStatusCode.Forbidden, withSpace.status)
-        assertEquals(HttpStatusCode.Accepted, sendStatus(guest, pc.deviceId, listOf(Tab("https://a.com"))))
+        // To its owner a guest may send files (and links, which the owner's apps never open on their own).
+        val file = upload(guest, "a.txt", "hi".toByteArray())
+        assertEquals(HttpStatusCode.Accepted, sendFiles(guest, pc.deviceId, listOf(file.id)).status)
         assertEquals(1, inbox(pc).size)
         assertEquals(0, inbox(phone).size)
     }

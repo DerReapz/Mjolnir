@@ -39,7 +39,6 @@ import app.mjolnir.client.RelayException
 import app.mjolnir.client.cleanStaging
 import app.mjolnir.protocol.Delivery
 import app.mjolnir.protocol.FileRef
-import app.mjolnir.protocol.cleanTabs
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
@@ -254,7 +253,7 @@ class InboxWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(openCaught(applicationContext))
             .setAutoCancel(true)
-        val urls = safeUrls(cleanTabs(d.tabs))
+        val urls = launchableUrls(d)
         if (urls.isNotEmpty()) {
             // An activity, not a BroadcastReceiver trampoline (Android 12+ blocks starting activities from those).
             val openAll = PendingIntent.getActivity(

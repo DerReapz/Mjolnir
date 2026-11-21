@@ -47,6 +47,17 @@ class PhoneCatcherTest {
         assertEquals(listOf("Caught 2 tabs from DESKTOP-4F2K"), notes)
     }
 
+    // G-R4: a guest's links go to Caught only; the notification never offers to launch them.
+    @Test fun guestLinksAreNeverOpenedAutomatically() = runTest {
+        val guest = Peer("g1", "Guest", DeviceKind.GUEST)
+        val fromGuest = Delivery("d1", guest, listOf(Tab("https://a.com")), 0)
+        c.handle(fromGuest)
+        assertEquals(listOf("https://a.com"), store.read().mapNotNull { it.tab?.url })
+        assertEquals(listOf("Caught 1 tab from Guest"), notes)
+        assertEquals(emptyList(), launchableUrls(fromGuest))
+        assertEquals(listOf("https://a.com"), launchableUrls(fromGuest.copy(from = pc)))
+    }
+
     @Test fun caughtNotificationUsesNickname() = runTest {
         val named = PhoneCatcher(api, store, staging, publisher, notify = { notes += it }, decide = { NetDecision.GO }, now = { 1_000 },
             displayName = { if (it.deviceId == "pc1") "Work PC" else it.name })

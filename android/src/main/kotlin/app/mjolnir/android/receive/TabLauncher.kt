@@ -9,11 +9,21 @@ import android.provider.Browser
 import android.widget.Toast
 import androidx.core.net.toUri
 import app.mjolnir.android.data.SavedFile
+import app.mjolnir.protocol.Delivery
+import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Tab
+import app.mjolnir.protocol.cleanTabs
 import app.mjolnir.protocol.isSafeTabUrl
 
 /** The URLs of [tabs] that may be opened (http/https only); checked again right before launching. */
 fun safeUrls(tabs: List<Tab>): List<String> = tabs.map { it.url }.filter(::isSafeTabUrl)
+
+/**
+ * The links of [d] that its Caught notification may offer to open with one tap. None from a guest: a guest's links
+ * go to Caught only, where the user opens each one deliberately.
+ */
+fun launchableUrls(d: Delivery): List<String> =
+    if (d.from.kind == DeviceKind.GUEST) emptyList() else safeUrls(cleanTabs(d.tabs))
 
 private fun Intent.fromContext(context: Context): Intent =
     if (context is Activity) this else addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

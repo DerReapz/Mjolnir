@@ -49,7 +49,7 @@ data class UploadRow(
     val createdAtMs: Long,
 )
 
-enum class AttachResult { OK, ALREADY_SENT, INVALID }
+enum class AttachResult { OK, ALREADY_SENT, INVALID, NOT_ALLOWED }
 
 /** A guest room: open until [expiresAtMs] (or until ended, which deletes the row); [guestId] once redeemed. */
 data class RoomRow(val id: String, val ownerId: String, val guestId: String?, val createdAtMs: Long, val expiresAtMs: Long)
@@ -658,6 +658,11 @@ class Store(jdbcUrl: String) {
         spaceId: String? = null, spaceName: String? = null,
     ): Pair<AttachResult, DeliveryRow?> =
         transaction {
+            // The route checked the link (or the shared space) before; re-check it here, under the lock, so a send
+            // racing the end of a guest room (or an unpair) never attaches files to a device that is gone.
+            val allowed = device(toId) != null &&
+                (if (spaceId != null) shareSpace(fromId, toId, spaceId) else areLinked(fromId, toId))
+            if (!allowed) return@transaction AttachResult.NOT_ALLOWED to null
             val id = newId()
             val result = attachFiles(fileIds, fromId, toId, id)
             if (result != AttachResult.OK) return@transaction result to null
@@ -752,17 +757,24 @@ class Store(jdbcUrl: String) {
         }
 
     /**
-     * Redeems room [roomId] for a new guest device holding [tokenHash] and links it to the owner, all at once;
-     * null when the room is gone or already redeemed.
+     * Redeems room [roomId] for a new guest device holding [tokenHash] and links it to the owner, all at once.
+     * [JoinResult.Closed] when the room is gone or expired, [JoinResult.InUse] when it was already redeemed.
      */
+    sealed interface JoinResult {
+        data class Joined(val guest: DeviceRow) : JoinResult
+        data object InUse : JoinResult
+        data object Closed : JoinResult
+    }
+
     @Synchronized
-    fun joinRoom(roomId: String, tokenHash: String, nowMs: Long): DeviceRow? = transaction {
+    fun joinRoom(roomId: String, tokenHash: String, nowMs: Long): JoinResult = transaction {
         val guestId = newId()
-        val room = room(roomId) ?: return@transaction null
-        if (!redeemRoom(roomId, guestId)) return@transaction null
+        // Re-checked under the lock: a room that ended or expired since the caller looked it up is closed, not in use.
+        val room = room(roomId)?.takeIf { it.expiresAtMs > nowMs } ?: return@transaction JoinResult.Closed
+        if (!redeemRoom(roomId, guestId)) return@transaction JoinResult.InUse
         val guest = createDevice("Guest", DeviceKind.GUEST, tokenHash, nowMs, guestId)
         link(room.ownerId, guestId)
-        guest
+        JoinResult.Joined(guest)
     }
 
     /** Ids of rooms past their expiry that are not yet ended. */

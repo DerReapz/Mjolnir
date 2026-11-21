@@ -150,6 +150,12 @@ fun Route.pairingRoutes(deps: RelayDeps) {
             val me = call.me()
             val other = call.parameters["deviceId"]!!
             if (!store.areLinked(me.deviceId, other)) return@delete call.notFound()
+            // Unpairing the guest of one's own room ends the room (with all that ending removes).
+            val guestRoom = store.roomOfGuest(other)?.takeIf { it.ownerId == me.deviceId }
+            if (guestRoom != null) {
+                endRoomAndNotify(deps, guestRoom.id)
+                return@delete call.respond(HttpStatusCode.NoContent)
+            }
             store.unlink(me.deviceId, other)
             hub.emit(other, RelayEvent.Unpaired(me.deviceId))
             call.respond(HttpStatusCode.NoContent)
