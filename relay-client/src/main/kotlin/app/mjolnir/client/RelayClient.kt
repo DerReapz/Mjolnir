@@ -1,6 +1,17 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.ChatInvite
+import app.mjolnir.protocol.ChatMessage
+import app.mjolnir.protocol.ChatSummary
+import app.mjolnir.protocol.ChatSync
 import app.mjolnir.protocol.ClaimRequest
+import app.mjolnir.protocol.CreateChatRequest
+import app.mjolnir.protocol.EditMessageRequest
+import app.mjolnir.protocol.InviteRequest
+import app.mjolnir.protocol.PostMessageRequest
+import app.mjolnir.protocol.ReadRequest
+import app.mjolnir.protocol.RenameChatRequest
+import app.mjolnir.protocol.TransferOwnerRequest
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.CreateSpaceRequest
@@ -261,6 +272,64 @@ class RelayClient(
     }
 
     override suspend fun deleteSpace(id: String) { call { http.delete("$base/v1/spaces/$id") { auth() } } }
+
+    private inline fun <reified T> HttpRequestBuilder.jsonBody(body: T) { contentType(ContentType.Application.Json); setBody(body) }
+
+    override suspend fun chats(spaceId: String): List<ChatSummary> = callBody { http.get("$base/v1/spaces/$spaceId/chats") { auth() } }
+
+    override suspend fun createChat(spaceId: String, name: String): ChatSummary = callBody {
+        http.post("$base/v1/spaces/$spaceId/chats") { auth(); jsonBody(CreateChatRequest(name)) }
+    }
+
+    override suspend fun renameChat(id: String, name: String): ChatSummary = callBody {
+        http.patch("$base/v1/chats/$id") { auth(); jsonBody(RenameChatRequest(name)) }
+    }
+
+    override suspend fun deleteChat(id: String) { call { http.delete("$base/v1/chats/$id") { auth() } } }
+
+    override suspend fun inviteToChat(chatId: String, deviceId: String): ChatInvite = callBody {
+        http.post("$base/v1/chats/$chatId/invites") { auth(); jsonBody(InviteRequest(deviceId)) }
+    }
+
+    override suspend fun chatInvites(): List<ChatInvite> = callBody { http.get("$base/v1/chat-invites") { auth() } }
+
+    override suspend fun approveInvite(id: String) { call { http.post("$base/v1/chat-invites/$id/approve") { auth() } } }
+
+    override suspend fun denyInvite(id: String) { call { http.post("$base/v1/chat-invites/$id/deny") { auth() } } }
+
+    override suspend fun joinInvite(id: String): ChatSummary = callBody { http.post("$base/v1/chat-invites/$id/join") { auth() } }
+
+    override suspend fun declineInvite(id: String) { call { http.post("$base/v1/chat-invites/$id/decline") { auth() } } }
+
+    override suspend fun transferChatOwner(chatId: String, deviceId: String): ChatSummary = callBody {
+        http.post("$base/v1/chats/$chatId/owner") { auth(); jsonBody(TransferOwnerRequest(deviceId)) }
+    }
+
+    override suspend fun removeChatMember(chatId: String, deviceId: String) {
+        call { http.delete("$base/v1/chats/$chatId/members/$deviceId") { auth() } }
+    }
+
+    override suspend fun adminJoinChat(chatId: String): ChatSummary = callBody { http.post("$base/v1/chats/$chatId/join") { auth() } }
+
+    override suspend fun syncChat(chatId: String, sinceRev: Long): ChatSync = callBody {
+        http.get("$base/v1/chats/$chatId/sync") { auth(); url.parameters.append("sinceRev", sinceRev.toString()) }
+    }
+
+    override suspend fun postMessage(chatId: String, text: String): ChatMessage = callBody {
+        http.post("$base/v1/chats/$chatId/messages") { auth(); jsonBody(PostMessageRequest(text)) }
+    }
+
+    override suspend fun editMessage(chatId: String, msgId: String, text: String): ChatMessage = callBody {
+        http.patch("$base/v1/chats/$chatId/messages/$msgId") { auth(); jsonBody(EditMessageRequest(text)) }
+    }
+
+    override suspend fun deleteMessage(chatId: String, msgId: String) {
+        call { http.delete("$base/v1/chats/$chatId/messages/$msgId") { auth() } }
+    }
+
+    override suspend fun markChatRead(chatId: String, rev: Long) {
+        call { http.post("$base/v1/chats/$chatId/read") { auth(); jsonBody(ReadRequest(rev)) } }
+    }
 
     override suspend fun openRoom(): RoomResponse = callBody { http.post("$base/v1/rooms") { auth() } }
 

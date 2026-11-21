@@ -44,6 +44,35 @@ object Messages {
     fun leftOut(n: Int) = if (n == 1) "1 file over 100 MB was left out" else "$n files over 100 MB were left out"
     fun notSent(reason: String) = "Not sent: $reason."
 
+    // ---- Chats ----
+    const val APPROVE = "Approve"
+    const val DENY = "Deny"
+    const val JOIN = "Join"
+    const val DECLINE = "Decline"
+    const val NEW_CHAT_PC = "New chat…"
+    const val NEW_CHAT_PHONE = "New chat"
+    const val INVITE = "Invite…"
+    const val MAKE_OWNER = "Make owner"
+    const val RENAME_CHAT = "Rename chat"
+    const val LEAVE_CHAT = "Leave chat"
+    const val DELETE_CHAT = "Delete chat"
+    const val EDITED = "(edited)"
+    const val MESSAGE_DELETED = "Message deleted"
+    const val DELETED_BY_ADMIN = "Deleted by the space admin"
+    const val REMOVED_BY_ADMIN = "Removed by the space admin"
+    const val ADMIN_VIEW = "admin view"
+    const val COPY_LINK = "Copy link"
+    const val SHARE = "Share…"
+    const val EDIT = "Edit"
+    const val DELETE = "Delete"
+
+    /** The owner's approval prompt: "Sam wants to add Ann". */
+    fun inviteApproval(inviter: String, name: String) = "$inviter wants to add $name"
+    fun invitedTo(chat: String) = "You're invited to $chat"
+    /** The composer's placeholder. */
+    fun messageChat(chat: String) = "Message $chat"
+    fun chatNotification(name: String, chat: String, text: String) = "$name in $chat: $text"
+
     fun failureReason(kind: RelayErrorKind, peerName: String): String = when (kind) {
         RelayErrorKind.NETWORK -> "no connection"
         RelayErrorKind.NOT_PAIRED -> "$peerName is no longer paired"

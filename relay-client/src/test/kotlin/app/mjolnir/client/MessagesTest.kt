@@ -26,4 +26,12 @@ class MessagesTest {
         assertEquals("Thrown 2 tabs to Sam · Friends", Messages.thrown(2, 0, "Sam", space = "Friends"))
         assertEquals("Caught 1 tab from Sam", Messages.caught(1, 0, "Sam", space = null))
     }
+
+    @Test fun chatCopyIsExact() {
+        assertEquals("Sam in General: hi", Messages.chatNotification("Sam", "General", "hi"))
+        assertEquals("Sam wants to add Ann", Messages.inviteApproval("Sam", "Ann"))
+        assertEquals("You're invited to General", Messages.invitedTo("General"))
+        assertEquals("Message General", Messages.messageChat("General"))
+        assertEquals("Deleted by the space admin", Messages.DELETED_BY_ADMIN)
+    }
 }

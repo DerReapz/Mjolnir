@@ -1,5 +1,9 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.ChatInvite
+import app.mjolnir.protocol.ChatMessage
+import app.mjolnir.protocol.ChatSummary
+import app.mjolnir.protocol.ChatSync
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.Space
@@ -57,6 +61,36 @@ interface RelayApi {
     suspend fun takeOverAdmin(spaceId: String): Space
     /** Leaves [spaceId]: [removeMember] of this device. */
     suspend fun leaveSpace(spaceId: String) = removeMember(spaceId, me().deviceId)
+
+    // ---- Chats. Errors carry the relay's code as the exception message (not_owner, too_long, 429 as RATE_LIMITED, ...). ----
+
+    /** The chats of [spaceId] that this device may see: its own, or all of them for the space's admin. */
+    suspend fun chats(spaceId: String): List<ChatSummary>
+    suspend fun createChat(spaceId: String, name: String): ChatSummary
+    suspend fun renameChat(id: String, name: String): ChatSummary
+    suspend fun deleteChat(id: String)
+
+    /** Any member invites a space member; the owner's invites are approved at once. */
+    suspend fun inviteToChat(chatId: String, deviceId: String): ChatInvite
+    /** The invites this device can act on: approvals it owes as owner and its own approved invitations. */
+    suspend fun chatInvites(): List<ChatInvite>
+    suspend fun approveInvite(id: String)
+    suspend fun denyInvite(id: String)
+    suspend fun joinInvite(id: String): ChatSummary
+    suspend fun declineInvite(id: String)
+
+    suspend fun transferChatOwner(chatId: String, deviceId: String): ChatSummary
+    /** The owner can't remove itself (owner_must_transfer); the space admin removes others; anyone else removes only themselves. */
+    suspend fun removeChatMember(chatId: String, deviceId: String)
+    /** The space admin joins a chat without approval. */
+    suspend fun adminJoinChat(chatId: String): ChatSummary
+
+    /** One page (200) of the messages with rev above [sinceRev], including edited and deleted ones; see [ChatSync.hasMore]. */
+    suspend fun syncChat(chatId: String, sinceRev: Long): ChatSync
+    suspend fun postMessage(chatId: String, text: String): ChatMessage
+    suspend fun editMessage(chatId: String, msgId: String, text: String): ChatMessage
+    suspend fun deleteMessage(chatId: String, msgId: String)
+    suspend fun markChatRead(chatId: String, rev: Long)
 
     /** Opens the guest room (ALREADY_SENT when one is open: 409 room_open). */
     suspend fun openRoom(): RoomResponse

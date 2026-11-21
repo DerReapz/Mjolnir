@@ -1,5 +1,9 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.ChatInvite
+import app.mjolnir.protocol.ChatMessage
+import app.mjolnir.protocol.ChatSummary
+import app.mjolnir.protocol.ChatSync
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.Delivery
@@ -152,7 +156,7 @@ class FakeRelayApi : RelayApi {
         return updateSpace(id) { it.copy(name = valid) }
     }
 
-    override suspend fun deleteSpace(id: String) { check(); adminSpace(id); spaceList.removeAll { it.id == id } }
+    override suspend fun deleteSpace(id: String) { check(); adminSpace(id); spaceList.removeAll { it.id == id }; chatState.onSpaceDeleted(id) }
 
     override suspend fun createInvite(spaceId: String): PairingCodeResponse { check(); adminSpace(spaceId); return pairingCodeResult }
 
@@ -163,6 +167,7 @@ class FakeRelayApi : RelayApi {
         if (space.members.none { it.deviceId == deviceId }) throw err(RelayErrorKind.NOT_FOUND, "not_found")
         if (deviceId == space.adminId) throw err(RelayErrorKind.ALREADY_SENT, "admin_must_transfer")
         updateSpace(spaceId) { it.copy(members = it.members.filter { m -> m.deviceId != deviceId }) }
+        chatState.onLeftSpace(spaceId, deviceId)
     }
 
     override suspend fun transferAdmin(spaceId: String, deviceId: String): Space {
@@ -178,6 +183,44 @@ class FakeRelayApi : RelayApi {
         }
         return updateSpace(spaceId) { it.copy(adminId = me.deviceId, adminSilent = false) }
     }
+
+    /** In-memory chats with the relay's rules and error codes, for the viewer [me]. */
+    val chatState = FakeChats(this)
+    /** `(chatId, sinceRev)` of every [syncChat] call. */
+    val syncCalls get() = chatState.syncCalls
+    val postCalls get() = chatState.postCalls
+
+    /** Test setup: a chat in [spaceId] (rev 0) owned by [owner] with [members] (the owner is always one); returns its id. */
+    fun addChat(spaceId: String, name: String, owner: Peer = me, members: List<Peer> = listOf(owner)): String = chatState.add(spaceId, name, owner, members)
+    /** Test setup: [author] posts to [chatId] as someone other than the viewer. */
+    fun incoming(chatId: String, author: Peer, text: String): ChatMessage = chatState.incoming(chatId, author, text)
+    fun incomingEdit(chatId: String, msgId: String, text: String) = chatState.incomingEdit(chatId, msgId, text)
+    fun incomingDelete(chatId: String, msgId: String) = chatState.incomingDelete(chatId, msgId)
+    /** Test setup: the chat disappears (someone deleted it). */
+    fun dropChat(chatId: String) = chatState.drop(chatId)
+    /** Test setup: member [by] invites [inviteeId] to [chatId]. */
+    fun invitedBy(by: Peer, chatId: String, inviteeId: String): ChatInvite = chatState.invitedBy(by, chatId, inviteeId)
+    /** The viewer's read marker in [chatId]. */
+    fun readRevOf(chatId: String): Long = chatState.readRev(chatId)
+
+    override suspend fun chats(spaceId: String): List<ChatSummary> { check(); return chatState.list(spaceId) }
+    override suspend fun createChat(spaceId: String, name: String): ChatSummary { check(); return chatState.create(spaceId, name) }
+    override suspend fun renameChat(id: String, name: String): ChatSummary { check(); return chatState.rename(id, name) }
+    override suspend fun deleteChat(id: String) { check(); chatState.delete(id) }
+    override suspend fun inviteToChat(chatId: String, deviceId: String): ChatInvite { check(); return chatState.inviteTo(chatId, deviceId) }
+    override suspend fun chatInvites(): List<ChatInvite> { check(); return chatState.invitesForMe() }
+    override suspend fun approveInvite(id: String) { check(); chatState.approve(id) }
+    override suspend fun denyInvite(id: String) { check(); chatState.deny(id) }
+    override suspend fun joinInvite(id: String): ChatSummary { check(); return chatState.join(id) }
+    override suspend fun declineInvite(id: String) { check(); chatState.decline(id) }
+    override suspend fun transferChatOwner(chatId: String, deviceId: String): ChatSummary { check(); return chatState.transferOwner(chatId, deviceId) }
+    override suspend fun removeChatMember(chatId: String, deviceId: String) { check(); chatState.removeMember(chatId, deviceId) }
+    override suspend fun adminJoinChat(chatId: String): ChatSummary { check(); return chatState.adminJoin(chatId) }
+    override suspend fun syncChat(chatId: String, sinceRev: Long): ChatSync { check(); return chatState.sync(chatId, sinceRev) }
+    override suspend fun postMessage(chatId: String, text: String): ChatMessage { check(); return chatState.post(chatId, text) }
+    override suspend fun editMessage(chatId: String, msgId: String, text: String): ChatMessage { check(); return chatState.edit(chatId, msgId, text) }
+    override suspend fun deleteMessage(chatId: String, msgId: String) { check(); chatState.deleteMessage(chatId, msgId) }
+    override suspend fun markChatRead(chatId: String, rev: Long) { check(); chatState.markRead(chatId, rev) }
 
     /** The open guest room, if any (test setup may assign it directly). */
     var room: RoomResponse? = null

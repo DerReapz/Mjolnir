@@ -23,8 +23,12 @@ private val URL_REGEX = Regex("https?://\\S+", RegexOption.IGNORE_CASE)
 private val OPENER = mapOf(')' to '(', ']' to '[', '}' to '{')
 private const val TRAILING_PUNCT = ".,;:!?'\""
 
-fun extractUrls(text: String): List<String> {
-    val out = LinkedHashSet<String>()
+/** A safe URL found in a text: [range] is where it sits in the text (trailing punctuation excluded), [url] its value. */
+data class UrlSpan(val range: IntRange, val url: String)
+
+/** The safe http(s) URLs of [text] in order, with their positions; the trimming rules of [extractUrls]. */
+fun urlSpans(text: String): List<UrlSpan> {
+    val out = ArrayList<UrlSpan>()
     for (m in URL_REGEX.findAll(text)) {
         var u = m.value
         while (true) {
@@ -37,10 +41,12 @@ fun extractUrls(text: String): List<String> {
                 u = u.dropLast(1)
             } else break
         }
-        if (isSafeTabUrl(u)) out.add(u)
+        if (isSafeTabUrl(u)) out.add(UrlSpan(m.range.first until m.range.first + u.length, u))
     }
-    return out.toList()
+    return out
 }
+
+fun extractUrls(text: String): List<String> = urlSpans(text).mapTo(LinkedHashSet()) { it.url }.toList()
 
 fun cleanTabs(tabs: List<Tab>): List<Tab> {
     val seen = HashSet<String>()
