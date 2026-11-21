@@ -1,5 +1,7 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.Attachment
+import app.mjolnir.protocol.AttachmentKind
 import app.mjolnir.protocol.ChatEvent
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.DeviceKind
@@ -188,5 +190,24 @@ class RelayClientChatTest {
         assertEquals(200, page.messages.size); assertTrue(page.hasMore)
         val rest = c.ann.api.syncChat(chat.id, page.messages.maxOf { it.rev })
         assertEquals(5, rest.messages.size); assertFalse(rest.hasMore)
+    }
+
+    @Test fun attachmentPostDownloadAndDelete() = clientTest {
+        val c = crew()
+        val chat = c.ann.api.createChat(c.spaceId, "General")
+        c.bob.api.joinInvite(c.ann.api.inviteToChat(chat.id, c.bob.id).id)
+        val bytes = ByteArray(3000) { (it % 251).toByte() }
+        val ref = uploadResumable(c.ann.api, LocalUpload("mem", "doc.pdf", "application/pdf", bytes.size.toLong()), { off -> bytes.inputStream().apply { skip(off) } }, {})
+        val posted = c.ann.api.postMessage(chat.id, null, attachments = listOf(Attachment(ref.id, AttachmentKind.FILE, "doc.pdf", 1, "x/y")))
+        assertNull(posted.text)
+        val att = posted.attachments.single()
+        assertEquals(3000L to "application/pdf", att.sizeBytes to att.mime) // the relay's own values
+        assertError(RelayErrorKind.INVALID, "invalid_files") { c.ann.api.postMessage(chat.id, "again", attachments = listOf(att)) } // used once
+        val target = kotlin.io.path.createTempFile("chat-dl").toFile()
+        c.bob.api.downloadChatFile(att.fileId, target)
+        assertEquals(bytes.toList(), target.readBytes().toList())
+        c.ann.api.deleteMessage(chat.id, posted.id)
+        assertError(RelayErrorKind.NOT_FOUND, "not_found") { c.bob.api.downloadChatFile(att.fileId, target) }
+        assertFalse(target.exists())
     }
 }

@@ -255,7 +255,7 @@ private fun ChatListItem(chat: ChatSummary, selected: Boolean, unread: Int, ment
     val preview = when {
         last == null -> "No messages yet"
         last.event != null -> Messages.systemLine(last.event!!, ui.nameResolver(last))
-        else -> "${ui.nicknameOf(last.author)}: ${last.text.orEmpty()}"
+        else -> "${ui.nicknameOf(last.author)}: ${Messages.messagePreview(last)}"
     }
     Column(
         Modifier.fillMaxWidth().background(if (selected) Forge.surface else Color.Transparent).clickable(onClick = onClick)

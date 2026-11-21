@@ -1,5 +1,7 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.Attachment
+import app.mjolnir.protocol.AttachmentKind
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.InviteState
@@ -11,6 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
@@ -723,5 +726,251 @@ class ChatControllerTest {
         assertTrue(seen.isEmpty(), "got $seen")
         assertTrue(c.messages(chat).value.isEmpty()); assertTrue(c.chats.value.isEmpty())
         assertEquals(emptySet(), ChatStore(dir).cachedIds())
+    }
+
+    // ---- Media ----
+
+    private val mediaDir: File = Files.createTempDirectory("chat-media").toFile().also { it.deleteOnExit() }
+    private val picked: File = Files.createTempDirectory("picked").toFile().also { it.deleteOnExit() }
+
+    private fun TestScope.mediaController(
+        api: RelayApi,
+        scope: CoroutineScope = TestScope(UnconfinedTestDispatcher(testScheduler)),
+    ) = ChatController(
+        { api }, ChatStore(dir), scope,
+        outbox = ChatOutbox(File(mediaDir, "outbox"), chunkBytes = 4),
+        media = ChatMediaCache(File(mediaDir, "cache")),
+    ) { "dev-1" }
+
+    private fun pick(name: String, size: Int): File = File(picked, name).apply { parentFile.mkdirs(); writeBytes(ByteArray(size) { (it * 5 + name.length).toByte() }) }
+
+    private fun pickPng(name: String, w: Int = 40, h: Int = 30): File = File(picked, name).apply {
+        javax.imageio.ImageIO.write(java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", this)
+    }
+
+    /** [fake], except that upload chunk number [failChunk] (1-based, counting all) fails with a network error. */
+    private class FlakyUploads(val fake: FakeRelayApi, var failChunk: Int? = null) : RelayApi by fake {
+        var chunks = 0
+        override suspend fun uploadChunk(uploadId: String, start: Long, total: Long, bytes: ByteArray, length: Int): app.mjolnir.protocol.UploadStatus {
+            if (++chunks == failChunk) throw RelayException(RelayErrorKind.NETWORK, "down")
+            return fake.uploadChunk(uploadId, start, total, bytes, length)
+        }
+    }
+
+    @Test fun messagePostedOnlyAfterAllUploads() = runTest {
+        val (fake, chat) = fakeWithChat()
+        var finishedAtPost: Int? = null
+        val api = object : RelayApi by FlakyUploads(fake, failChunk = 4) {
+            override suspend fun postMessage(chatId: String, text: String?, mentions: List<String>, attachments: List<Attachment>): ChatMessage {
+                assertTrue(fake.sessions.isEmpty(), "an upload is still open when posting")
+                finishedAtPost = fake.uploads.size
+                return fake.postMessage(chatId, text, mentions, attachments)
+            }
+        }
+        val c = mediaController(api)
+        val png = pickPng("photo.png"); val txt = pick("notes.txt", 10); val bin = pick("data.bin", 12)
+        c.send(chat, "look", listOf(png, txt, bin), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        // Interrupted halfway: nothing posted, the send stays on screen with its progress.
+        assertEquals(0, fake.postCalls)
+        val pending = c.pendingSends.value.single()
+        assertEquals(chat, pending.chatId); assertEquals("look", pending.text); assertNull(pending.failure)
+        assertEquals(listOf("photo.png", "notes.txt", "data.bin"), pending.files.map { it.name })
+        assertEquals(listOf(AttachmentKind.IMAGE, AttachmentKind.FILE, AttachmentKind.FILE), pending.files.map { it.kind })
+        assertTrue(pending.sentBytes in 1 until pending.totalBytes, "progress ${pending.sentBytes}/${pending.totalBytes}")
+        c.resumeSends().join()
+        assertEquals(1, fake.postCalls)
+        assertEquals(4, finishedAtPost) // three files and the photo's thumbnail
+        val posted = c.messages(chat).value.single { it.author.deviceId == "dev-1" }
+        assertEquals("look", posted.text)
+        assertEquals(listOf("photo.png", "notes.txt", "data.bin"), posted.attachments.map { it.name })
+        val photo = posted.attachments.first()
+        assertEquals(AttachmentKind.IMAGE, photo.kind); assertEquals(40 to 30, photo.width to photo.height)
+        assertNotNull(photo.thumbFileId); assertNull(photo.relativePath)
+        assertEquals(bin.readBytes().toList(), fake.blobs.getValue(posted.attachments[2].fileId).toList())
+        assertTrue(c.pendingSends.value.isEmpty())
+        assertTrue(File(mediaDir, "outbox").walk().none { it.isFile && it.extension == "jpg" }, "thumbnails cleaned up")
+    }
+
+    @Test fun uploadResumesAfterRestart() = runTest {
+        val (fake, chat) = fakeWithChat()
+        val c1 = mediaController(FlakyUploads(fake, failChunk = 2))
+        c1.send(chat, null, listOf(pick("big.bin", 10)), ImageIoThumbnailer)
+        c1.awaitSendsIdle()
+        assertEquals(0, fake.postCalls); assertEquals(1, fake.sessions.size)
+        // The app restarts: the send is still shown, then resumes the same upload session and posts.
+        val c2 = mediaController(fake)
+        assertEquals(listOf("big.bin"), c2.pendingSends.value.single().files.map { it.name })
+        c2.onEvent(RelayEvent.Connected)
+        c2.awaitSendsIdle()
+        assertEquals(1, fake.postCalls)
+        assertEquals(listOf("up-1"), fake.uploads.map { it.id }) // no second session
+        val posted = fake.chatState.sync(chat, 0).messages.single { it.author.deviceId == "dev-1" }
+        assertNull(posted.text); assertEquals(listOf("up-1"), posted.attachments.map { it.fileId })
+        assertTrue(c2.pendingSends.value.isEmpty())
+        assertEquals(posted.id, c2.messages(chat).value.last().id)
+    }
+
+    @Test fun folderAndMoreThanTwentyFilesSplitIntoMessages() = runTest {
+        val (fake, chat) = fakeWithChat()
+        val c = mediaController(fake)
+        val folder = File(picked, "Album").apply { mkdirs() }
+        repeat(43) { File(folder, "sub/p%02d.txt".format(it)).apply { parentFile.mkdirs(); writeText("$it") } }
+        val single = pick("readme.md", 3)
+        c.send(chat, "trip @Sam", listOf(single, folder), ImageIoThumbnailer, mentions = listOf("sam"))
+        c.awaitSendsIdle()
+        val mine = c.messages(chat).value.filter { it.author.deviceId == "dev-1" }
+        assertEquals(listOf(20, 20, 4), mine.map { it.attachments.size })
+        assertEquals(listOf("trip @Sam", null, null), mine.map { it.text })
+        assertEquals(listOf(listOf("sam"), emptyList(), emptyList()), mine.map { it.mentions })
+        val all = mine.flatMap { it.attachments }
+        assertEquals(listOf(null) + (0 until 43).map { "Album/sub/p%02d.txt".format(it) }, all.map { it.relativePath })
+        val groups = groupAttachments(mine.first().attachments)
+        assertEquals(AttachmentGroup.Single(all.first()), groups.first())
+        val album = groups[1] as AttachmentGroup.Folder
+        assertEquals("Album", album.name); assertEquals(19, album.count); assertEquals(19L * 1 + 9, album.totalBytes)
+        assertEquals("Folder · 19 files · 28 B", Messages.folderDetail(album.count, album.totalBytes))
+    }
+
+    @Test fun expiredUploadIsUploadedAgainOnce() = runTest {
+        val (fake, chat) = fakeWithChat()
+        var expireOnPost = 1
+        val api = object : RelayApi by fake {
+            override suspend fun postMessage(chatId: String, text: String?, mentions: List<String>, attachments: List<Attachment>): ChatMessage {
+                if (expireOnPost-- > 0) fake.expire(attachments.first().fileId) // purged by the relay's 1-hour rule
+                return fake.postMessage(chatId, text, mentions, attachments)
+            }
+        }
+        val c = mediaController(api)
+        c.send(chat, null, listOf(pick("a.bin", 5), pick("b.bin", 5)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        assertEquals(2, fake.postCalls)
+        assertEquals(listOf("up-2", "up-3"), fake.uploads.map { it.id }) // a (up-1) expired: b, then a again; b kept
+        val posted = c.messages(chat).value.single { it.author.deviceId == "dev-1" }
+        assertEquals(listOf("a.bin", "b.bin"), posted.attachments.map { it.name })
+        assertTrue(c.pendingSends.value.isEmpty())
+        // Expired again after the second upload: the send fails instead of looping.
+        expireOnPost = 2
+        c.send(chat, null, listOf(pick("c.bin", 5)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        assertEquals(4, fake.postCalls)
+        val failed = c.pendingSends.value.single()
+        assertEquals("Not sent: a file expired on the relay.", failed.failure)
+        c.dismissSend(failed.id)
+        assertTrue(c.pendingSends.value.isEmpty())
+        assertTrue(ChatOutbox(File(mediaDir, "outbox")).pending().isEmpty())
+    }
+
+    @Test fun lostPostResponseIsNotPostedTwice() = runTest {
+        val (fake, chat) = fakeWithChat()
+        var lose = true
+        val api = object : RelayApi by fake {
+            override suspend fun postMessage(chatId: String, text: String?, mentions: List<String>, attachments: List<Attachment>): ChatMessage =
+                fake.postMessage(chatId, text, mentions, attachments).also { if (lose) { lose = false; throw RelayException(RelayErrorKind.NETWORK, "reset") } }
+        }
+        val c = mediaController(api)
+        c.send(chat, "once", listOf(pick("a.bin", 5)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        assertEquals(1, c.pendingSends.value.size)
+        c.resumeSends().join()
+        assertTrue(c.pendingSends.value.isEmpty())
+        assertEquals(1, fake.uploads.size)
+        assertEquals(listOf("once"), c.messages(chat).value.filter { it.author.deviceId == "dev-1" }.map { it.text })
+    }
+
+    @Test fun permanentUploadFailureShowsWhy() = runTest {
+        val (fake, chat) = fakeWithChat()
+        fake.failUploadsWith = RelayException(RelayErrorKind.STORAGE_FULL, "relay_full")
+        val c = mediaController(fake)
+        c.send(chat, "hi", listOf(pick("a.bin", 5)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        assertEquals("Not sent: the relay is out of space.", c.pendingSends.value.single().failure)
+        assertEquals(0, fake.postCalls)
+    }
+
+    @Test fun clearDropsPendingSends() = runTest {
+        val (fake, chat) = fakeWithChat()
+        val flaky = FlakyUploads(fake, failChunk = 1)
+        val c = mediaController(flaky)
+        c.send(chat, null, listOf(pick("a.bin", 5)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        assertEquals(1, c.pendingSends.value.size)
+        c.clear()
+        assertTrue(c.pendingSends.value.isEmpty())
+        c.resumeSends().join()
+        assertEquals(0, fake.postCalls)
+        assertTrue(ChatOutbox(File(mediaDir, "outbox")).pending().isEmpty())
+    }
+
+    @Test fun sendRejectsNothingToSend() = runTest {
+        val (fake, chat) = fakeWithChat()
+        val c = mediaController(fake)
+        assertEquals("empty", assertFailsWith<RelayException> { c.send(chat, "  ", emptyList(), ImageIoThumbnailer) }.message)
+        assertEquals("empty", assertFailsWith<RelayException> { c.send(chat, null, listOf(File(picked, "Empty").apply { mkdirs() }), ImageIoThumbnailer) }.message)
+        c.send(chat, "just text", emptyList(), ImageIoThumbnailer)
+        assertEquals(listOf("just text"), c.messages(chat).value.map { it.text })
+        assertTrue(c.pendingSends.value.isEmpty())
+    }
+
+    @Test fun downloadCopiesFromTheCache() = runTest {
+        val (fake, chat) = fakeWithChat()
+        val bytes = ByteArray(9) { it.toByte() }
+        fake.putBlob("f-1", "doc.pdf", bytes)
+        fake.incoming(chat, sam, null, attachments = listOf(Attachment("f-1", AttachmentKind.FILE, "doc.pdf", 9, "application/pdf")))
+        val c = mediaController(fake)
+        c.sync(chat)
+        val att = c.messages(chat).value.single().attachments.single()
+        val saveDir = Files.createTempDirectory("saved").toFile()
+        c.download(chat, att, File(saveDir, "doc.pdf"))
+        c.download(chat, att, File(saveDir, "doc (1).pdf"))
+        assertEquals(listOf("f-1"), fake.chatDownloads) // the second copy came from the cache
+        assertEquals(setOf("doc.pdf", "doc (1).pdf"), saveDir.list()!!.toSet())
+        assertEquals(bytes.toList(), File(saveDir, "doc (1).pdf").readBytes().toList())
+    }
+
+    @Test fun downloadOfDeletedMessageFails() = runTest {
+        val (fake, chat) = fakeWithChat()
+        fake.putBlob("f-1", "doc.pdf", ByteArray(9))
+        val m = fake.incoming(chat, sam, "the doc", attachments = listOf(Attachment("f-1", AttachmentKind.FILE, "doc.pdf", 9, "application/pdf")))
+        val c = mediaController(fake)
+        c.sync(chat)
+        val att = c.messages(chat).value.single().attachments.single()
+        fake.incomingDelete(chat, m.id) // the relay frees the file at once
+        val saveDir = Files.createTempDirectory("saved").toFile()
+        val e = assertFailsWith<RelayException> { c.download(chat, att, File(saveDir, "doc.pdf")) }
+        assertEquals(Messages.MESSAGE_DELETED, e.userMessage); assertEquals(RelayErrorKind.NOT_FOUND, e.kind)
+        assertTrue(saveDir.list()!!.isEmpty(), "left ${saveDir.list()!!.toList()}")
+        assertTrue(c.messages(chat).value.single().deleted) // the chat caught up with the deletion
+        // A 404 halfway through a download (deleted meanwhile) leaves no partial file either.
+        fake.putBlob("f-2", "b.bin", ByteArray(9))
+        val halfway = object : RelayApi by fake {
+            override suspend fun downloadChatFile(fileId: String, target: File, onProgress: (Long) -> Unit) {
+                target.writeBytes(ByteArray(4)); throw RelayException(RelayErrorKind.NOT_FOUND, "not_found")
+            }
+        }
+        val c2 = mediaController(halfway)
+        val e2 = assertFailsWith<RelayException> { c2.download(chat, att.copy(fileId = "f-2"), File(saveDir, "b.bin")) }
+        assertEquals(Messages.MESSAGE_DELETED, e2.userMessage)
+        assertTrue(saveDir.list()!!.isEmpty())
+        assertTrue(File(mediaDir, "cache").list().orEmpty().isEmpty(), "cache left ${File(mediaDir, "cache").list()?.toList()}")
+    }
+
+    @Test fun notificationLabelsForMedia() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        fun att(kind: AttachmentKind) = Attachment("f-$kind", kind, "x", 1, "application/octet-stream")
+        for (kind in listOf(AttachmentKind.IMAGE, AttachmentKind.GIF, AttachmentKind.VIDEO, AttachmentKind.FILE)) {
+            api.incoming(chat, sam, null, attachments = listOf(att(kind)))
+        }
+        api.incoming(chat, sam, "with a caption", attachments = listOf(att(AttachmentKind.IMAGE)))
+        c.sync(chat)
+        assertEquals(listOf("Photo", "GIF", "Video", "File", "with a caption"), seen.map { it.text })
+        assertEquals("with a caption", Messages.messagePreview(c.chats.value.single().lastMessage!!))
+        api.incoming(chat, sam, null, attachments = listOf(att(AttachmentKind.GIF), att(AttachmentKind.IMAGE)))
+        c.sync(chat)
+        assertEquals("GIF", Messages.messagePreview(c.chats.value.single().lastMessage!!))
+        assertEquals("GIF", seen.last().text)
     }
 }

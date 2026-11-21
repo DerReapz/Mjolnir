@@ -38,7 +38,8 @@ class SwitchingRelayApi(private val current: () -> RelayApi) : RelayApi {
     override suspend fun removeChatMember(chatId: String, deviceId: String) = current().removeChatMember(chatId, deviceId)
     override suspend fun adminJoinChat(chatId: String) = current().adminJoinChat(chatId)
     override suspend fun syncChat(chatId: String, sinceRev: Long) = current().syncChat(chatId, sinceRev)
-    override suspend fun postMessage(chatId: String, text: String, mentions: List<String>) = current().postMessage(chatId, text, mentions)
+    override suspend fun postMessage(chatId: String, text: String?, mentions: List<String>, attachments: List<app.mjolnir.protocol.Attachment>) =
+        current().postMessage(chatId, text, mentions, attachments)
     override suspend fun editMessage(chatId: String, msgId: String, text: String, mentions: List<String>) = current().editMessage(chatId, msgId, text, mentions)
     override suspend fun deleteMessage(chatId: String, msgId: String) = current().deleteMessage(chatId, msgId)
     override suspend fun markChatRead(chatId: String, rev: Long) = current().markChatRead(chatId, rev)
@@ -59,5 +60,7 @@ class SwitchingRelayApi(private val current: () -> RelayApi) : RelayApi {
         current().uploadChunk(uploadId, start, total, bytes, length)
     override suspend fun downloadFile(ref: FileRef, target: File, onProgress: (Long) -> Unit) =
         current().downloadFile(ref, target, onProgress)
+    override suspend fun downloadChatFile(fileId: String, target: File, onProgress: (Long) -> Unit) =
+        current().downloadChatFile(fileId, target, onProgress)
     override fun events() = current().events()
 }

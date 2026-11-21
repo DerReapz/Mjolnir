@@ -1,6 +1,8 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.AttachmentKind
 import app.mjolnir.protocol.ChatEvent
+import app.mjolnir.protocol.ChatMessage
 import java.util.Locale
 
 /** User-facing copy shared by the desktop and Android apps. */
@@ -78,6 +80,36 @@ object Messages {
     fun messageChat(chat: String) = "Message $chat"
     fun chatNotification(name: String, chat: String, text: String) = "$name in $chat: $text"
     fun mentionNotification(name: String, chat: String, text: String) = "$name mentioned you in $chat: $text"
+
+    /** What a photo, GIF, video or file stands for in a notification and the chat list. */
+    fun mediaLabel(kind: AttachmentKind): String = when (kind) {
+        AttachmentKind.IMAGE -> "Photo"
+        AttachmentKind.GIF -> "GIF"
+        AttachmentKind.VIDEO -> "Video"
+        AttachmentKind.FILE -> "File"
+    }
+
+    /** A message in a notification or the chat list: its text, else the label of its first attachment ("Photo"). */
+    fun messagePreview(m: ChatMessage): String =
+        m.text?.takeIf { it.isNotBlank() } ?: m.attachments.firstOrNull()?.let { mediaLabel(it.kind) } ?: m.text.orEmpty()
+
+    /** A file bubble's detail line: "report.pdf · 2 MB". */
+    fun attachmentDetail(name: String, bytes: Long) = "$name · ${size(bytes)}"
+    /** A folder bubble's detail line: "Folder · 12 files · 3 MB". */
+    fun folderDetail(files: Int, bytes: Long) = "Folder · ${files(files)} · ${size(bytes)}"
+
+    /** Why a send with attachments failed for good, as the failed bubble shows it. */
+    fun mediaNotSent(e: RelayException): String = notSent(
+        e.userMessage ?: when {
+            e.kind == RelayErrorKind.TOO_LARGE -> "a file is too big for the relay"
+            e.kind == RelayErrorKind.STORAGE_FULL -> failureReason(e.kind, "")
+            e.kind == RelayErrorKind.UNAUTHORIZED -> failureReason(e.kind, "")
+            e.message == "invalid_files" -> "a file expired on the relay"
+            e.message == "not_member" -> "you're no longer in this chat"
+            e.kind == RelayErrorKind.NOT_FOUND -> "that chat is no longer there"
+            else -> "the relay had a problem"
+        },
+    )
 
     /** The line under your latest message: who has read and who has only seen it; empty while nobody has. */
     fun receiptLine(read: List<String>, seen: List<String>, everyone: Boolean): String = when {

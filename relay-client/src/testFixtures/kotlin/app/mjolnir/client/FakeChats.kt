@@ -1,5 +1,6 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.ChatEvent
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
@@ -119,9 +120,9 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     }
 
     /** [author] posts [text]; the viewer's relay connection is told. */
-    fun incoming(chatId: String, author: Peer, text: String, mentions: List<String> = emptyList()): ChatMessage {
+    fun incoming(chatId: String, author: Peer, text: String?, mentions: List<String> = emptyList(), attachments: List<Attachment> = emptyList()): ChatMessage {
         val chat = chats.getValue(chatId)
-        val m = ChatMessage("m-${++nextMessage}", chatId, author, ++chat.rev, tick(), text = text, mentions = mentions, createdRev = chat.rev)
+        val m = ChatMessage("m-${++nextMessage}", chatId, author, ++chat.rev, tick(), text = text, mentions = mentions, createdRev = chat.rev, attachments = attachments)
         chat.messages += m
         changed(chat)
         return m
@@ -139,13 +140,19 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     fun incomingDelete(chatId: String, msgId: String) {
         val chat = chats.getValue(chatId)
         val i = chat.messages.indexOfFirst { it.id == msgId }
-        chat.messages[i] = chat.messages[i].copy(rev = ++chat.rev, deleted = true, text = null)
+        freeFiles(chat.messages[i])
+        chat.messages[i] = chat.messages[i].copy(rev = ++chat.rev, deleted = true, text = null, attachments = emptyList())
         changed(chat)
     }
 
     /** The chat vanishes (deleted by someone else), without any event. */
     fun drop(chatId: String) {
-        chats.remove(chatId); invites.removeAll { it.chatId == chatId }
+        chats.remove(chatId)?.messages?.forEach(::freeFiles); invites.removeAll { it.chatId == chatId }
+    }
+
+    /** As the relay does on every deletion: the message's files and thumbnails are gone at once (downloads get 404). */
+    private fun freeFiles(m: ChatMessage) {
+        for (a in m.attachments) { api.blobs.remove(a.fileId); a.thumbFileId?.let(api.blobs::remove) }
     }
 
     /** [by], a member of the chat, invites [inviteeId] (approved at once when [by] is the owner). */
@@ -354,17 +361,31 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
 
     private fun limited() { if (rateLimited) throw err(RelayErrorKind.RATE_LIMITED, "rate_limited") }
 
-    fun post(chatId: String, raw: String, mentions: List<String> = emptyList()): ChatMessage {
+    /** Files (and thumbnails) already attached to a message: each upload is used once. */
+    private val attachedFiles = mutableSetOf<String>()
+
+    fun post(chatId: String, raw: String?, mentions: List<String> = emptyList(), attachments: List<Attachment> = emptyList()): ChatMessage {
         postCalls++
         limited()
         val a = access(chatId)
         if (!a.isMember) throw err(RelayErrorKind.NOT_PAIRED, "not_member")
-        val body = text(raw)
+        val body = if (attachments.isEmpty() || !raw.isNullOrBlank()) text(raw.orEmpty()) else null
+        if (attachments.size > Limits.MAX_ATTACHMENTS_PER_MESSAGE) throw err(RelayErrorKind.INVALID, "too_many_attachments")
         val ids = mentionsOf(a.chat, mentions)
-        val m = ChatMessage("m-${++nextMessage}", chatId, api.me, ++a.chat.rev, tick(), text = body, mentions = ids, createdRev = a.chat.rev)
+        val stored = attach(attachments)
+        val m = ChatMessage("m-${++nextMessage}", chatId, api.me, ++a.chat.rev, tick(), text = body, mentions = ids, createdRev = a.chat.rev, attachments = stored)
         a.chat.messages += m
         changed(a.chat)
         return m
+    }
+
+    /** The relay's attach rules: the poster's own finished, unexpired uploads, each used once; size and mime come from the upload. */
+    private fun attach(attachments: List<Attachment>): List<Attachment> {
+        val fileIds = attachments.flatMap { listOfNotNull(it.fileId, it.thumbFileId) }
+        val valid = fileIds.toSet().size == fileIds.size && fileIds.all { id -> id !in attachedFiles && id in api.blobs && api.uploads.any { it.id == id } }
+        if (!valid) throw err(RelayErrorKind.INVALID, "invalid_files")
+        attachedFiles += fileIds
+        return attachments.map { at -> api.uploads.first { it.id == at.fileId }.let { ref -> at.copy(sizeBytes = ref.sizeBytes, mime = ref.mimeType) } }
     }
 
     private fun realMessage(chat: Chat, msgId: String): Int =
@@ -389,7 +410,8 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         val m = a.chat.messages[i]
         if (m.author.deviceId != meId && !a.isAdmin) throw err(RelayErrorKind.NOT_PAIRED, "not_author")
         if (m.deleted) throw err(RelayErrorKind.ALREADY_SENT, "deleted")
-        a.chat.messages[i] = m.copy(rev = ++a.chat.rev, deleted = true, deletedByAdmin = a.isAdmin && m.author.deviceId != meId, text = null)
+        freeFiles(m)
+        a.chat.messages[i] = m.copy(rev = ++a.chat.rev, deleted = true, deletedByAdmin = a.isAdmin && m.author.deviceId != meId, text = null, attachments = emptyList())
         changed(a.chat)
     }
 

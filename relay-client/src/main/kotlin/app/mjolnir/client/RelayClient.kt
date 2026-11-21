@@ -1,5 +1,6 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
@@ -317,8 +318,8 @@ class RelayClient(
         http.get("$base/v1/chats/$chatId/sync") { auth(); url.parameters.append("sinceRev", sinceRev.toString()) }
     }
 
-    override suspend fun postMessage(chatId: String, text: String, mentions: List<String>): ChatMessage = callBody {
-        http.post("$base/v1/chats/$chatId/messages") { auth(); jsonBody(PostMessageRequest(text, mentions)) }
+    override suspend fun postMessage(chatId: String, text: String?, mentions: List<String>, attachments: List<Attachment>): ChatMessage = callBody {
+        http.post("$base/v1/chats/$chatId/messages") { auth(); jsonBody(PostMessageRequest(text, mentions, attachments)) }
     }
 
     override suspend fun editMessage(chatId: String, msgId: String, text: String, mentions: List<String>): ChatMessage = callBody {
@@ -441,6 +442,32 @@ class RelayClient(
         if (actualSize != ref.sizeBytes || !sha256HexOf(target).equals(ref.sha256, ignoreCase = true)) {
             target.delete()
             throw RelayException(RelayErrorKind.INVALID, "file ${ref.id} failed its size or SHA-256 check")
+        }
+    }
+
+    override suspend fun downloadChatFile(fileId: String, target: File, onProgress: (Long) -> Unit) = withContext(Dispatchers.IO) {
+        target.absoluteFile.parentFile?.mkdirs()
+        try {
+            http.prepareGet("$base/v1/files/$fileId") { auth(); transferTimeout() }.execute { response ->
+                if (response.status.value !in 200..299) throw errorFor(response)
+                val channel = response.bodyAsChannel()
+                FileOutputStream(target).use { out ->
+                    val buf = ByteArray(BUFFER_BYTES)
+                    var have = 0L
+                    onProgress(0)
+                    while (true) {
+                        val n = channel.readAvailable(buf, 0, buf.size)
+                        if (n < 0) break
+                        if (n == 0) continue
+                        out.write(buf, 0, n)
+                        have += n
+                        onProgress(have)
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            target.delete() // a partial chat file is never resumed
+            throw if (e is Exception && e !is CancellationException && e !is RelayException) networkError(e) else e
         }
     }
 

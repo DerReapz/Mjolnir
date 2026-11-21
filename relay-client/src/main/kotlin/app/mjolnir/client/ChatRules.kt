@@ -1,9 +1,11 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
+import app.mjolnir.protocol.topFolder
 
 /** [text] cut to at most [max] code points (never inside a surrogate pair). */
 fun capCodePoints(text: String, max: Int): String =
@@ -141,4 +143,32 @@ fun receiptLineFor(message: ChatMessage, receipts: List<Receipt>, members: List<
     val r = messageReceipts(message, receipts, members)
     fun names(l: List<Receipt>) = l.mapNotNull { rc -> members.firstOrNull { it.deviceId == rc.deviceId }?.let(shownName) }
     return Messages.receiptLine(names(r.read), names(r.seen), r.everyone)
+}
+
+/** How a message's attachments are shown: one bubble per single file, one per top folder of a sent folder. */
+sealed interface AttachmentGroup<out T> {
+    data class Single<T>(val item: T) : AttachmentGroup<T>
+    /** The files of folder [name], in sent order; shown as [Messages.folderDetail] of [count] and [totalBytes]. */
+    data class Folder<T>(val name: String, val items: List<T>, val totalBytes: Long) : AttachmentGroup<T> {
+        val count: Int get() = items.size
+    }
+}
+
+/** [attachments] grouped for display, in order of first appearance: by [topFolder] of their relativePath, singles alone. */
+fun groupAttachments(attachments: List<Attachment>): List<AttachmentGroup<Attachment>> =
+    groupByFolder(attachments, { it.relativePath }, { it.sizeBytes })
+
+/** A pending send's files grouped like [groupAttachments], for its greyed bubbles. */
+fun groupPendingFiles(files: List<PendingFile>): List<AttachmentGroup<PendingFile>> =
+    groupByFolder(files, { it.relativePath }, { it.sizeBytes })
+
+private fun <T> groupByFolder(items: List<T>, path: (T) -> String?, size: (T) -> Long): List<AttachmentGroup<T>> {
+    val byFolder = items.groupBy { path(it)?.let(::topFolder) }
+    val shown = HashSet<String>()
+    return items.mapNotNull { item ->
+        when (val top = path(item)?.let(::topFolder)) {
+            null -> AttachmentGroup.Single(item)
+            else -> if (shown.add(top)) byFolder.getValue(top).let { AttachmentGroup.Folder(top, it, it.sumOf(size)) } else null
+        }
+    }
 }

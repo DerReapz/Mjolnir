@@ -1,5 +1,7 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.Attachment
+import app.mjolnir.protocol.AttachmentKind
 import app.mjolnir.protocol.ChatEvent
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
@@ -9,8 +11,14 @@ import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.RelayEvent
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -21,6 +29,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /** A message by someone else in a chat that isn't open: what the apps turn into a notification (see [Messages.chatNotification]). */
 data class IncomingMessage(
@@ -28,9 +37,35 @@ data class IncomingMessage(
     val chatName: String,
     val authorId: String,
     val authorName: String,
+    /** The message's text, or for one with only attachments the label of the first ([Messages.messagePreview]: "Photo"). */
     val text: String,
     /** The message mentions this device: it gets the louder [Messages.mentionNotification], even if the chat was read elsewhere. */
     val mentionedMe: Boolean = false,
+)
+
+/** A file of a [PendingSend]: what its greyed bubble shows. [path] is the local file, [thumbPath] its thumbnail, if any. */
+data class PendingFile(
+    val name: String,
+    val kind: AttachmentKind,
+    val sizeBytes: Long,
+    val relativePath: String?,
+    val path: String,
+    val thumbPath: String?,
+)
+
+/**
+ * A send with attachments not posted yet, shown as greyed bubbles at the end of its chat. [files] and [text] are what is
+ * still to be posted; [sentBytes] of [totalBytes] is the progress of the whole send. [failure] is set once it failed for good
+ * (e.g. "Not sent: the relay is out of space."); [ChatController.dismissSend] removes it then.
+ */
+data class PendingSend(
+    val id: String,
+    val chatId: String,
+    val text: String?,
+    val files: List<PendingFile>,
+    val sentBytes: Long,
+    val totalBytes: Long,
+    val failure: String? = null,
 )
 
 /**
@@ -39,11 +74,15 @@ data class IncomingMessage(
  *
  * User actions ([send], [createChat], ...) throw the [RelayException] of a refused call; the relay's code is its message.
  * Background work ([refresh], [sync], [onEvent]) swallows network failures and keeps what it has.
+ *
+ * Sends with files go through [outbox] (see [pendingSends]); [download] goes through [media]. Without them those calls fail.
  */
 class ChatController(
     private val api: () -> RelayApi?,
     private val store: ChatStore,
     private val scope: CoroutineScope,
+    private val outbox: ChatOutbox? = null,
+    private val media: ChatMediaCache? = null,
     private val me: () -> String?,
 ) {
     private class Live(
@@ -80,6 +119,11 @@ class ChatController(
      * [sync]: with no collector an emission is dropped. A slow collector holds the sync back (nothing is lost in bursts).
      */
     val newMessages: SharedFlow<IncomingMessage> = _newMessages.asSharedFlow()
+
+    private val _pendingSends = MutableStateFlow(outbox?.pending().orEmpty().map(::pendingOf))
+    /** Sends with attachments still uploading or waiting to post (kept across restarts), oldest first; failed ones until dismissed. */
+    val pendingSends: StateFlow<List<PendingSend>> = _pendingSends.asStateFlow()
+    private val sendLock = Mutex()
 
     /** Bumped by [clear]: background work that was suspended across a clear drops its results instead of writing them back. */
     @Volatile private var generation = 0
@@ -287,8 +331,8 @@ class ChatController(
         val readRev = summary?.readRev ?: cached.readRev
         val mine = me()
         for (m in messages.sortedBy { it.rev }) {
-            val text = m.text ?: continue
             if (m.event != null || m.deleted || m.author.deviceId == mine) continue
+            val text = Messages.messagePreview(m).ifEmpty { null } ?: continue
             val mentionedMe = mine != null && mine in m.mentions
             if ((m.createdRev ?: m.rev) <= readRev && !mentionedMe) continue // read elsewhere (an edit does not make it unread); a mention still gets through
             if (gen != generation) return
@@ -349,6 +393,9 @@ class ChatController(
         _unreadMentions.value = emptySet()
         openChat.value = null
         listed = false
+        outbox?.clear()
+        media?.clear()
+        _pendingSends.value = emptyList()
     }
 
     private fun upsert(summary: ChatSummary) {
@@ -366,7 +413,8 @@ class ChatController(
                 is RelayEvent.ChatChanged -> chatChanged(e.chatId, e.rev, e.receipts)
                 is RelayEvent.ChatDeleted -> forget(e.chatId)
                 RelayEvent.ChatInvitesChanged -> refreshInvites()
-                RelayEvent.Connected, is RelayEvent.SpaceChanged, is RelayEvent.SpaceDeleted -> { refresh(); refreshInvites() }
+                RelayEvent.Connected -> { resumeSends(); refresh(); refreshInvites() }
+                is RelayEvent.SpaceChanged, is RelayEvent.SpaceDeleted -> { refresh(); refreshInvites() }
                 else -> Unit
             }
         }
@@ -430,6 +478,137 @@ class ChatController(
     /** Posts [text]; [mentions] are the device ids of chat members it mentions (see [outgoingMentions]). */
     suspend fun send(chatId: String, text: String, mentions: List<String> = emptyList()): ChatMessage =
         checked(text).let { requireApi().postMessage(chatId, text, mentions) }.also { keep(chatId, it) }
+
+    /**
+     * Sends [text] (optional) with [files]; a folder in [files] is sent as its files, keeping their paths. With no files
+     * this is a plain post. Otherwise the send is queued (see [pendingSends]) and this returns: the files upload in the
+     * background, resuming after a network loss or restart ([resumeSends]), and are posted once all are up, in messages of
+     * at most 20 attachments with [text] and [mentions] on the first. [thumbnailer] makes the photo and GIF previews; a photo
+     * it can't read goes as a file. Throws INVALID "empty" when there is nothing to send, "too_long" for text over the limit.
+     */
+    suspend fun send(chatId: String, text: String?, files: List<File>, thumbnailer: Thumbnailer, mentions: List<String> = emptyList()) {
+        val body = text?.takeIf { it.isNotBlank() }?.also(::checked)
+        val picked = withContext(Dispatchers.IO) {
+            files.flatMap { f ->
+                if (f.isDirectory) walkFolder(f).map { it to it.relativePath }
+                else listOf(LocalUpload(f.absolutePath, f.name, mimeOf(f.name), f.length()) to null)
+            }
+        }
+        if (picked.isEmpty()) {
+            send(chatId, body ?: throw RelayException(RelayErrorKind.INVALID, "empty"), mentions)
+            return
+        }
+        val ob = checkNotNull(outbox) { "this ChatController has no outbox for sending files" }
+        val gen = generation
+        val id = UUID.randomUUID().toString()
+        val attachments = withContext(Dispatchers.IO) {
+            picked.mapIndexed { i, (upload, relativePath) ->
+                val info = mediaInfo(File(upload.path), upload.mimeType, thumbnailer)
+                val thumb = info.thumb?.let { t ->
+                    val f = ob.thumbFile(id, i).apply { parentFile.mkdirs(); writeBytes(t.jpeg) }
+                    LocalUpload(f.absolutePath, f.name, "image/jpeg", f.length())
+                }
+                OutgoingAttachment(upload, info.kind, info.thumb?.width, info.thumb?.height, info.thumb?.durationMs, thumb, relativePath)
+            }
+        }
+        if (gen != generation) { // cleared meanwhile: this send belonged to the old relay
+            attachments.forEach { a -> a.thumb?.let { File(it.path).delete() } }
+            return
+        }
+        val item = OutgoingMessage(id, chatId, body, if (body != null) mentions else emptyList(), attachments, System.currentTimeMillis())
+        ob.enqueue(item)
+        _pendingSends.update { it + pendingOf(item) }
+        resumeSends()
+    }
+
+    /** Uploads and posts the queued sends in order; one that can't go on for now (network) holds back the rest until the next call. */
+    fun resumeSends(): Job {
+        val gen = generation
+        return scope.launch { drainSends(gen) }
+    }
+
+    private suspend fun drainSends(gen: Int) {
+        val ob = outbox ?: return
+        sendLock.withLock {
+            for (item in ob.pending()) {
+                if (gen != generation) return
+                val a = api() ?: return
+                val result = ob.process(
+                    item.id, a,
+                    onProgress = { done, _ -> if (gen == generation) updatePending(item.id) { it.copy(sentBytes = done) } },
+                    onPosted = { m ->
+                        if (gen == generation) {
+                            keep(item.chatId, m)
+                            updatePending(item.id) { it.copy(text = null, files = it.files.drop(m.attachments.size)) }
+                        }
+                    },
+                )
+                if (gen != generation) return
+                when (result) {
+                    is ChatOutboxResult.Done -> {
+                        _pendingSends.update { list -> list.filter { it.id != item.id } }
+                        if (result.unconfirmed) sync(item.chatId)
+                    }
+                    ChatOutboxResult.Retry -> return
+                    is ChatOutboxResult.Failed -> updatePending(item.id) { it.copy(failure = Messages.mediaNotSent(result.error)) }
+                }
+            }
+        }
+    }
+
+    /** Waits for the sends being uploaded and posted right now (tests). */
+    internal suspend fun awaitSendsIdle() = sendLock.withLock { }
+
+    /** Removes a failed send from [pendingSends]; one still in progress stays. */
+    fun dismissSend(id: String) {
+        _pendingSends.update { list -> list.filter { it.id != id || it.failure == null } }
+    }
+
+    private fun updatePending(id: String, change: (PendingSend) -> PendingSend) {
+        _pendingSends.update { list -> list.map { if (it.id == id) change(it) else it } }
+    }
+
+    private fun pendingOf(item: OutgoingMessage): PendingSend {
+        val rest = item.attachments.drop(item.posted)
+        return PendingSend(
+            id = item.id, chatId = item.chatId, text = item.text.takeIf { item.posted == 0 },
+            files = rest.map { PendingFile(it.name, it.kind, it.upload.sizeBytes, it.relativePath, it.upload.path, it.thumb?.path) },
+            sentBytes = item.attachments.take(item.posted).sumOf { it.totalBytes } + rest.sumOf { it.uploadedBytes },
+            totalBytes = item.attachments.sumOf { it.totalBytes },
+        )
+    }
+
+    /**
+     * Saves [att] of a message in [chatId] to [target], from the media cache or downloaded into it first. Nothing is left at
+     * [target] on failure. A deleted message's file fails with NOT_FOUND "deleted" (user message [Messages.MESSAGE_DELETED])
+     * and the chat is synced to show the deletion. Local I/O failures (disk full) throw their IOException.
+     */
+    suspend fun download(chatId: String, att: Attachment, target: File) {
+        val cache = checkNotNull(media) { "this ChatController has no media cache for downloads" }
+        val a = requireApi()
+        cache.pin(att.fileId) // not evicted while being copied
+        try {
+            val cached = try {
+                cache.get(att, a)
+            } catch (e: RelayException) {
+                if (e.kind != RelayErrorKind.NOT_FOUND) throw e
+                sync(chatId)
+                throw RelayException(RelayErrorKind.NOT_FOUND, "deleted", e, userMessage = Messages.MESSAGE_DELETED)
+            }
+            withContext(Dispatchers.IO) {
+                val part = File(target.absoluteFile.parentFile, ".${target.name}.part")
+                try {
+                    cached.copyTo(part, overwrite = true)
+                    Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                } catch (e: Throwable) {
+                    part.delete()
+                    throw e
+                }
+            }
+        } finally {
+            cache.unpin(att.fileId)
+        }
+    }
 
     suspend fun edit(chatId: String, msgId: String, text: String, mentions: List<String> = emptyList()): ChatMessage =
         checked(text).let { requireApi().editMessage(chatId, msgId, text, mentions) }.also { keep(chatId, it) }

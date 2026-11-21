@@ -1,5 +1,6 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
@@ -88,8 +89,12 @@ interface RelayApi {
 
     /** One page (200) of the messages with rev above [sinceRev], including edited and deleted ones; see [ChatSync.hasMore]. */
     suspend fun syncChat(chatId: String, sinceRev: Long): ChatSync
-    /** [mentions] are device ids of chat members (anyone else: 400 invalid_mention). */
-    suspend fun postMessage(chatId: String, text: String, mentions: List<String> = emptyList()): ChatMessage
+    /**
+     * [mentions] are device ids of chat members (anyone else: 400 invalid_mention). [text] may be null when there are
+     * [attachments] (at most 20): finished uploads of this device not yet used anywhere (else 400 invalid_files; a file
+     * over the chat limit: TOO_LARGE). The relay fills in each attachment's size and mime from the upload.
+     */
+    suspend fun postMessage(chatId: String, text: String?, mentions: List<String> = emptyList(), attachments: List<Attachment> = emptyList()): ChatMessage
     suspend fun editMessage(chatId: String, msgId: String, text: String, mentions: List<String> = emptyList()): ChatMessage
     suspend fun deleteMessage(chatId: String, msgId: String)
     suspend fun markChatRead(chatId: String, rev: Long)
@@ -119,6 +124,11 @@ interface RelayApi {
      * [onProgress] receives the number of bytes of [target] present so far.
      */
     suspend fun downloadFile(ref: FileRef, target: File, onProgress: (Long) -> Unit = {})
+    /**
+     * Downloads chat file [fileId] (an [Attachment.fileId] or [Attachment.thumbFileId]) whole into [target], replacing it.
+     * NOT_FOUND once its message is deleted. On any failure [target] is deleted.
+     */
+    suspend fun downloadChatFile(fileId: String, target: File, onProgress: (Long) -> Unit = {})
 
     /** Cold flow of live events; reconnects with backoff, throws RelayException(UNAUTHORIZED) and stops if the token is rejected. */
     fun events(): Flow<RelayEvent>

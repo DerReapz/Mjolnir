@@ -127,7 +127,7 @@ class ChatViewModel(
             val preview = when {
                 last == null -> "No messages yet"
                 last.event != null -> Messages.systemLine(last.event!!) { id -> peerName(id, chat, names) }
-                else -> "${nameOf(last.author)}: ${last.text.orEmpty()}"
+                else -> "${nameOf(last.author)}: ${Messages.messagePreview(last)}"
             }
             ChatRow(chat, unread[chat.id] ?: 0, preview, last?.sentAtEpochMs, chat.id in mentions)
         }

@@ -1,5 +1,6 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
@@ -59,6 +60,8 @@ class FakeRelayApi : RelayApi {
     val sessions: MutableMap<String, ByteArrayOutputStream> = mutableMapOf()
     /** Completed uploads, in order. */
     val uploads: MutableList<FileRef> = mutableListOf()
+    /** The file id of every [downloadChatFile] call, in order. */
+    val chatDownloads: MutableList<String> = mutableListOf()
     /** Thrown by every [uploadChunk] while set. */
     var failUploadsWith: RelayException? = null
     private val sessionMeta = mutableMapOf<String, Triple<String, String, Long>>()
@@ -197,7 +200,8 @@ class FakeRelayApi : RelayApi {
     /** Test setup: a chat in [spaceId] (rev 0) owned by [owner] with [members] (the owner is always one); returns its id. */
     fun addChat(spaceId: String, name: String, owner: Peer = me, members: List<Peer> = listOf(owner)): String = chatState.add(spaceId, name, owner, members)
     /** Test setup: [author] posts to [chatId] as someone other than the viewer. */
-    fun incoming(chatId: String, author: Peer, text: String, mentions: List<String> = emptyList()): ChatMessage = chatState.incoming(chatId, author, text, mentions)
+    fun incoming(chatId: String, author: Peer, text: String?, mentions: List<String> = emptyList(), attachments: List<Attachment> = emptyList()): ChatMessage =
+        chatState.incoming(chatId, author, text, mentions, attachments)
     /** The returned receipt is what the relay's `ChatChanged(receipts)` event would carry. */
     fun incomingSeen(chatId: String, by: Peer, rev: Long): Receipt? = chatState.incomingSeen(chatId, by, rev)
     fun incomingRead(chatId: String, by: Peer, rev: Long): Receipt? = chatState.incomingRead(chatId, by, rev)
@@ -228,7 +232,9 @@ class FakeRelayApi : RelayApi {
     override suspend fun removeChatMember(chatId: String, deviceId: String) { check(); chatState.removeMember(chatId, deviceId) }
     override suspend fun adminJoinChat(chatId: String): ChatSummary { check(); return chatState.adminJoin(chatId) }
     override suspend fun syncChat(chatId: String, sinceRev: Long): ChatSync { check(); return chatState.sync(chatId, sinceRev).also { chatState.syncGate?.await() } }
-    override suspend fun postMessage(chatId: String, text: String, mentions: List<String>): ChatMessage { check(); return chatState.post(chatId, text, mentions) }
+    override suspend fun postMessage(chatId: String, text: String?, mentions: List<String>, attachments: List<Attachment>): ChatMessage {
+        check(); return chatState.post(chatId, text, mentions, attachments)
+    }
     override suspend fun editMessage(chatId: String, msgId: String, text: String, mentions: List<String>): ChatMessage { check(); return chatState.edit(chatId, msgId, text, mentions) }
     override suspend fun deleteMessage(chatId: String, msgId: String) { check(); chatState.deleteMessage(chatId, msgId) }
     override suspend fun markChatRead(chatId: String, rev: Long) { check(); chatState.markRead(chatId, rev) }
@@ -312,6 +318,15 @@ class FakeRelayApi : RelayApi {
             target.delete()
             throw RelayException(RelayErrorKind.INVALID, "hash mismatch")
         }
+    }
+
+    override suspend fun downloadChatFile(fileId: String, target: File, onProgress: (Long) -> Unit) {
+        check()
+        chatDownloads += fileId
+        val bytes = blobs[fileId] ?: throw RelayException(RelayErrorKind.NOT_FOUND, "not_found")
+        target.absoluteFile.parentFile?.mkdirs()
+        target.writeBytes(bytes)
+        onProgress(bytes.size.toLong())
     }
 }
 
