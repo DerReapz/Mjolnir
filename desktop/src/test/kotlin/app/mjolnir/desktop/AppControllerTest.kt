@@ -477,10 +477,10 @@ class AppControllerTest {
     }
 
     @Test fun remoteUnpairRemovesTheNickname() = runTest {
-        val fake = FakeRelayApi().apply { peers += phone }
+        val fake = FakeRelayApi()
         val (c, scope) = controller(fake)
         c.nicknames.set("ph", "Dad's phone")
-        c.onUnpairedByPeer("ph")
+        c.refreshAfterSpaceChange() // what the unpaired event leads to: the relay no longer lists the device
         assertNull(c.nicknames.get("ph"))
         scope.cancel()
     }
@@ -535,6 +535,78 @@ class AppControllerTest {
         assertEquals(listOf("pair-1"), fake.accepted)
         assertNull(c.config.value.lastPhoneId) // joining a space is not a pairing
         assertTrue(notes.isEmpty())
+        scope.cancel()
+    }
+
+    /** A relay that lists [phone] once, as paired when [paired], else under each of [spaceIds], like /v1/peers does. */
+    private inner class DedupingRelay(var paired: Boolean, var spaceIds: Set<String>) : RelayApi by FakeRelayApi() {
+        override suspend fun peers(): List<Peer> =
+            if (paired) listOf(phone) else spaceIds.sorted().map { phone.copy(space = SpaceRef(it, "Space $it")) }
+        override suspend fun unpair(deviceId: String) { paired = false }
+    }
+
+    @Test fun unpairKeepsNicknameWhileASharedSpaceLinksTheDevice() = runTest {
+        val relay = DedupingRelay(paired = true, spaceIds = setOf("s1"))
+        val (c, scope) = controller(relay)
+        c.refreshPeers()
+        assertNull(c.peers.value.single().space) // listed once, as paired
+        c.nicknames.set("ph", "Dad's phone")
+        c.unpair(phone)
+        assertEquals(listOf("s1"), c.peers.value.map { it.space?.id }) // reappears as a space entry
+        assertEquals("Dad's phone", c.nicknames.get("ph"))
+        scope.cancel()
+    }
+
+    @Test fun unpairRemovesNicknameWhenNothingElseLinks() = runTest {
+        val relay = DedupingRelay(paired = true, spaceIds = emptySet())
+        val (c, scope) = controller(relay)
+        c.refreshPeers()
+        c.nicknames.set("ph", "Dad's phone")
+        c.unpair(phone)
+        assertTrue(c.peers.value.isEmpty())
+        assertNull(c.nicknames.get("ph"))
+        scope.cancel()
+    }
+
+    @Test fun remoteLeaveOrRemovalPrunesNicknameWhenNothingLinks() = runTest {
+        val fake = FakeRelayApi()
+        val relay = DedupingRelay(paired = false, spaceIds = setOf("s1"))
+        val api = object : RelayApi by relay { override fun events() = fake.events }
+        val (c, scope) = controller(api)
+        c.start(); runCurrent()
+        c.nicknames.set("ph", "Dad's phone")
+        relay.spaceIds = emptySet() // the phone left, or was removed
+        fake.events.emit(RelayEvent.SpaceChanged("s1")); runCurrent()
+        assertTrue(c.peers.value.isEmpty())
+        assertNull(c.nicknames.get("ph"))
+        scope.cancel()
+    }
+
+    @Test fun sharedSpaceKeepsNicknameAfterOtherSpaceIsDeleted() = runTest {
+        val relay = DedupingRelay(paired = false, spaceIds = setOf("s1", "s2"))
+        val (c, scope) = controller(relay)
+        c.refreshPeers()
+        c.nicknames.set("ph", "Dad's phone")
+        relay.spaceIds = setOf("s1")
+        c.onSpaceDeleted(SpaceRef("s2", "Space s2")); runCurrent()
+        assertEquals("Dad's phone", c.nicknames.get("ph"))
+        relay.spaceIds = emptySet()
+        c.onSpaceDeleted(SpaceRef("s1", "Space s1")); runCurrent()
+        assertNull(c.nicknames.get("ph"))
+        scope.cancel()
+    }
+
+    @Test fun ownDeleteShowsNoDeletedNotice() = runTest {
+        val fake = FakeRelayApi()
+        val (c, scope) = controller(fake)
+        val notes = notes(c)
+        c.spaces.create("Friends"); runCurrent()
+        val space = c.spaces.spaces.value.single()
+        c.spaces.delete(space.id); runCurrent()
+        c.onSpaceDeleted(SpaceRef(space.id, space.name)); runCurrent() // the relay's echo of our own delete
+        assertTrue(notes.isEmpty())
+        c.onSpaceDeleted(SpaceRef("other", "Other")); runCurrent() // someone else's delete is announced
+        assertEquals(listOf("Other was deleted."), notes)
         scope.cancel()
     }
 }

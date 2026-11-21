@@ -216,11 +216,11 @@ class AppController(
                     api,
                     InboxDrainer(api, seen, catcher(api)::handle),
                     onPairRequest = { onPairRequested(it) },
-                    onPeersChanged = { refreshPeers() },
+                    // Also after unpair, space change and space deletion events: the refreshed list decides which nicknames still have a link.
+                    onPeersChanged = { refreshAfterSpaceChange() },
                     afterDrain = { cleanStagingFolder(api) },
                     onConnected = { kickOutbox() },
                     onConnectionChange = { connected.value = it },
-                    onUnpaired = ::onUnpairedByPeer,
                     onSpaceChanged = { spaces.refresh() },
                     onSpaceDeleted = { onSpaceDeleted(it.space) },
                 ).run()
@@ -574,11 +574,6 @@ class AppController(
         if (space == null) _codeUsedUp.tryEmit(Unit) else spaces.onJoinRequestHandled(space.id, accepted = false)
     }
 
-    /** The other device unpaired from this one: its nickname goes with the pairing, unless a shared space still links you. */
-    internal fun onUnpairedByPeer(deviceId: String) {
-        if (_peers.value.none { it.deviceId == deviceId && it.space != null }) nicknames.remove(deviceId)
-    }
-
     /** A space event: the peer list changed, and with it who still has a nickname worth keeping. */
     internal fun onSpaceDeleted(space: SpaceRef) {
         if (spaces.onSpaceDeleted(space)) notify("${space.name} was deleted.")
@@ -586,7 +581,7 @@ class AppController(
     }
 
     /** Refreshes the peer list, then forgets nicknames of devices nothing links you to any more (no pairing, no shared space). */
-    private suspend fun refreshAfterSpaceChange() {
+    internal suspend fun refreshAfterSpaceChange() {
         refreshPeers()
         val linked = _peers.value.mapTo(HashSet()) { it.deviceId }
         nicknames.changes.value.keys.filter { it !in linked }.forEach(nicknames::remove)
@@ -598,13 +593,13 @@ class AppController(
         val api = api() ?: return
         try {
             api.unpair(peer.deviceId)
-            onUnpairedByPeer(peer.deviceId) // a nickname belongs to a pairing
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
             notify(Messages.failureReason(e.kind, nicknames.displayName(peer)))
         }
-        refreshPeers()
+        // The refreshed list shows whether a shared space still links the device: /v1/peers lists it once, as paired, while both hold.
+        refreshAfterSpaceChange()
     }
 
     /** Switches relay in [scope]: forgets credentials and pairings, then registers on the new one. */

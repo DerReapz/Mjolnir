@@ -67,9 +67,10 @@ class SpacesController(
     /** Spaces this device deleted itself: their [onSpaceDeleted] event needs no "was deleted" notice. */
     private val deletedHere = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
 
-    fun refresh(): Job = scope.launch { guarded { fetch() } }
+    /** Background refresh: a failure keeps the last list and stays silent (the next connect or event retries). */
+    fun refresh(): Job = scope.launch { quietly { fetch() } }
 
-    fun create(name: String): Job = scope.launch { guarded { requireApi().createSpace(name); fetch(); onPeersAffected() } }
+    fun create(name: String): Job = scope.launch { if (guarded { requireApi().createSpace(name) }) { quietly { fetch() }; onPeersAffected() } }
 
     fun invite(spaceId: String): Job = scope.launch { guarded { fetchInvite(spaceId) } }
 
@@ -84,7 +85,7 @@ class SpacesController(
             _invite.value = null // used up; a failed fetch must not leave the dead code showing
             if (!accepted) guarded { fetchInvite(spaceId) }
         }
-        guarded { fetch() }
+        quietly { fetch() }
     }
 
     /** Claims [code] as a space invite and waits for the admin; an active attempt is not restarted. */
@@ -103,7 +104,7 @@ class SpacesController(
             val outcome = claimAndAwait(recording, code, onWaiting = { _join.value = JoinUi.Waiting(it.name) }, expect = CodeKind.SPACE_INVITE)
             when (outcome) {
                 is ClaimOutcome.Paired -> {
-                    guarded { fetch(); onPeersAffected() }
+                    quietly { fetch() }; onPeersAffected()
                     val name = claimed?.name ?: _spaces.value.find { it.adminId == outcome.peer.deviceId }?.name ?: "the space"
                     _join.value = JoinUi.Joined(name)
                 }
@@ -143,7 +144,7 @@ class SpacesController(
     fun dismissNotice() { _notice.value = null }
 
     private fun change(action: suspend (RelayApi) -> Unit): Job = scope.launch {
-        guarded { action(requireApi()); fetch(); onPeersAffected() }
+        if (guarded { action(requireApi()) }) { quietly { fetch() }; onPeersAffected() }
     }
 
     private fun requireApi(): RelayApi = api() ?: throw RelayException(RelayErrorKind.NETWORK, "no relay configured")
@@ -160,14 +161,28 @@ class SpacesController(
         _invite.value = InviteUi(spaceId, r.code, clock() + Limits.PAIRING_TTL_MS)
     }
 
-    private suspend fun guarded(block: suspend () -> Unit) {
+    /** Runs [block] for a refresh nobody asked for: no notice on failure, only a rejected token is passed on. */
+    private suspend fun quietly(block: suspend () -> Unit) {
         try {
             block()
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
+            if (e.kind == RelayErrorKind.UNAUTHORIZED) onUnauthorized()
+        }
+    }
+
+    /** Runs [block] for an action the user started; a failure becomes the [notice]. Returns whether it worked. */
+    private suspend fun guarded(block: suspend () -> Unit): Boolean {
+        try {
+            block()
+            return true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: RelayException) {
             _notice.value = if (e.kind == RelayErrorKind.NETWORK) NO_CONNECTION else GENERIC
             if (e.kind == RelayErrorKind.UNAUTHORIZED) onUnauthorized()
+            return false
         }
     }
 }

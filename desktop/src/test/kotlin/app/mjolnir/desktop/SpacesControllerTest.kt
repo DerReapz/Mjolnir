@@ -142,4 +142,18 @@ class SpacesControllerTest {
         assertNull(c.notice.value)
         scope.cancel()
     }
+
+    @Test fun backgroundRefreshFailureIsSilentAndKeepsTheList() = runTest {
+        val api = FakeRelayApi()
+        val (c, scope) = controller(api)
+        c.create("Friends"); advanceUntilIdle()
+        api.failAllWith = RelayException(RelayErrorKind.NETWORK, "offline")
+        c.refresh(); advanceUntilIdle()
+        assertNull(c.notice.value)
+        assertEquals(listOf("Friends"), c.spaces.value.map { it.name })
+        api.failAllWith = null
+        api.createSpace("Work"); c.refresh(); advanceUntilIdle() // retried on the next event
+        assertEquals(listOf("Friends", "Work"), c.spaces.value.map { it.name })
+        scope.cancel()
+    }
 }
