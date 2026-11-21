@@ -36,6 +36,8 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     var rateLimited = false
     /** `(chatId, sinceRev)` of every [sync], in order. */
     val syncCalls = mutableListOf<Pair<String, Long>>()
+    /** The 1-based number, among all [sync] calls so far, of the call that fails with a network error (once). */
+    var failSyncOnCall: Int? = null
     var postCalls = 0
         private set
 
@@ -274,6 +276,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     fun sync(chatId: String, sinceRev: Long): ChatSync {
         val a = access(chatId)
         syncCalls += chatId to sinceRev
+        if (syncCalls.size == failSyncOnCall) throw err(RelayErrorKind.NETWORK, "down")
         val rows = a.chat.messages.filter { it.rev > sinceRev }.sortedBy { it.rev }
         return ChatSync(chatId, a.chat.rev, a.chat.ownerId, a.chat.members.toList(), rows.take(PAGE), rows.size > PAGE)
     }

@@ -189,6 +189,8 @@ class FakeRelayApi : RelayApi {
     /** `(chatId, sinceRev)` of every [syncChat] call. */
     val syncCalls get() = chatState.syncCalls
     val postCalls get() = chatState.postCalls
+    /** The number of the [syncChat] call (1-based, counting all) that fails with a network error. */
+    var failSyncOnCall: Int? by chatState::failSyncOnCall
 
     /** Test setup: a chat in [spaceId] (rev 0) owned by [owner] with [members] (the owner is always one); returns its id. */
     fun addChat(spaceId: String, name: String, owner: Peer = me, members: List<Peer> = listOf(owner)): String = chatState.add(spaceId, name, owner, members)

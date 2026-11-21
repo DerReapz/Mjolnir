@@ -57,6 +57,10 @@ class ChatController(
     val openChat = MutableStateFlow<String?>(null)
 
     private val _newMessages = MutableSharedFlow<IncomingMessage>(extraBufferCapacity = 64)
+    /**
+     * Messages by others in chats that aren't open, for notifications. Start collecting before calling [refresh] or
+     * [sync]: with no collector an emission is dropped. A slow collector holds the sync back (nothing is lost in bursts).
+     */
     val newMessages: SharedFlow<IncomingMessage> = _newMessages.asSharedFlow()
 
     private val live = ConcurrentHashMap<String, Live>()
@@ -80,7 +84,10 @@ class ChatController(
     // ---- Reading ----
 
     /** Re-reads the chat list of every space, forgets chats that are gone, and syncs those that moved on. */
-    suspend fun refresh() {
+    suspend fun refresh() = refreshAll(null)
+
+    /** [trigger] is the chat and rev of the `ChatChanged` that caused this refresh: its messages from that rev on are news. */
+    private suspend fun refreshAll(trigger: Pair<String, Long>?) {
         val a = api() ?: return
         val summaries = try {
             a.spaces().flatMap { space ->
@@ -91,12 +98,23 @@ class ChatController(
         }
         val ids = summaries.mapTo(HashSet()) { it.id }
         (_chats.value.map { it.id } + store.cachedIds()).filter { it !in ids }.toSet().forEach(::forget)
+        for (s in summaries) {
+            val c = store.read(s.id)
+            if (c.name != s.name || c.readRev < s.readRev) store.update(s.id) { it.copy(name = s.name, readRev = maxOf(it.readRev, s.readRev)) }
+        }
         _chats.value = summaries
+        listed = true
         recountUnread()
         for (s in summaries) {
             val have = store.read(s.id).rev
-            // A chat seen for the first time is history, not news.
-            if (have < s.rev) syncChat(s.id, notify = have > 0)
+            if (have >= s.rev) continue
+            // With a cache, everything above it is news. Without one it is history, except what the triggering event announced.
+            val floor = when {
+                have > 0 -> null
+                trigger != null && trigger.first == s.id -> trigger.second - 1
+                else -> Long.MAX_VALUE
+            }
+            syncChat(s.id, floor)
         }
     }
 
@@ -106,16 +124,25 @@ class ChatController(
     }
 
     /** Fetches what [chatId] gained since the cache's rev, page after page; a NOT_FOUND answer forgets the chat. */
-    suspend fun sync(chatId: String) = syncChat(chatId, notify = true)
+    suspend fun sync(chatId: String) = syncChat(chatId, null)
 
-    private suspend fun syncChat(chatId: String, notify: Boolean) {
+    /**
+     * Messages with rev above [floor] are announced to [newMessages]; Long.MAX_VALUE announces none. Without a [floor]:
+     * everything above the cache's announced watermark when the chat has a history here, else nothing (it is history).
+     */
+    private suspend fun syncChat(chatId: String, floor: Long?) {
         val a = api() ?: return
         syncLocks.getOrPut(chatId) { Mutex() }.withLock {
             val before = store.read(chatId)
-            val incoming = ArrayList<ChatMessage>()
+            val hasHistory = before.rev > 0 || _chats.value.firstOrNull { it.id == chatId }?.rev == 0L
+            val start = floor ?: if (hasHistory) before.announcedRev else Long.MAX_VALUE
+            // New to the user: above the start, and not an edit of something already announced.
+            fun fresh(m: ChatMessage) = m.rev > start && (before.messages[m.id]?.let { it.rev > before.announcedRev } ?: true)
             var since = before.rev
             var latest = before
+            var renamed: String? = null
             try {
+                announce(chatId, before.messages.values.filter(::fresh), before) // fetched earlier, never announced
                 while (true) {
                     val page = a.syncChat(chatId, since)
                     val last = page.messages.maxOfOrNull { it.rev }
@@ -129,28 +156,30 @@ class ChatController(
                             messages = c.messages + page.messages.associateBy { it.id },
                         )
                     }
-                    incoming += page.messages.filter { it.id !in before.messages }
+                    (page.messages.filter { it.event is ChatEvent.Renamed }.maxByOrNull { it.rev }?.event as? ChatEvent.Renamed)?.let { renamed = it.name }
                     show(chatId, latest)
+                    announce(chatId, page.messages.filter(::fresh).map { latest.messages.getValue(it.id) }, latest)
+                    // Only now, so a failure before this point leaves the page's messages to be announced on the retry.
+                    val upTo = if (done) page.rev else last!!
+                    latest = store.update(chatId) { it.copy(announcedRev = maxOf(it.announcedRev, upTo)) }
                     if (done) break
                     since = last!!
                 }
             } catch (e: RelayException) {
-                if (e.kind == RelayErrorKind.NOT_FOUND) forget(chatId)
-                return
+                if (e.kind == RelayErrorKind.NOT_FOUND) { forget(chatId); return }
             }
-            refreshSummary(chatId, latest, incoming)
-            if (notify) announce(chatId, incoming)
+            refreshSummary(chatId, latest, renamed)
         }
     }
 
     /** Brings the chat's list entry up to date with what the sync found. */
-    private fun refreshSummary(chatId: String, cached: CachedChat, incoming: List<ChatMessage>) {
-        val renamed = incoming.filter { it.event is ChatEvent.Renamed }.maxByOrNull { it.rev }?.event as? ChatEvent.Renamed
+    private fun refreshSummary(chatId: String, cached: CachedChat, renamed: String?) {
         val last = cached.messages.values.filter { !it.deleted }.maxByOrNull { it.rev }
+        var name: String? = null
         _chats.update { list ->
             list.map { s ->
                 if (s.id != chatId) s else s.copy(
-                    name = renamed?.name ?: s.name,
+                    name = (renamed ?: s.name).also { name = it },
                     ownerId = cached.ownerId,
                     rev = cached.rev,
                     member = me()?.let { id -> cached.members.any { it.deviceId == id } } ?: s.member,
@@ -158,18 +187,21 @@ class ChatController(
                 )
             }
         }
+        name?.let { n -> if (n != cached.name) store.update(chatId) { it.copy(name = n) } }
         recountUnread()
     }
 
-    private fun announce(chatId: String, incoming: List<ChatMessage>) {
+    /** Emits [messages] to [newMessages] unless the chat is open; system entries, deleted ones and our own never are. */
+    private suspend fun announce(chatId: String, messages: Collection<ChatMessage>, cached: CachedChat) {
         if (openChat.value == chatId) return
         val summary = _chats.value.firstOrNull { it.id == chatId }
-        val readRev = summary?.readRev ?: 0
+        val name = summary?.name ?: cached.name
+        val readRev = summary?.readRev ?: cached.readRev
         val mine = me()
-        for (m in incoming.sortedBy { it.rev }) {
+        for (m in messages.sortedBy { it.rev }) {
             val text = m.text ?: continue
             if (m.event != null || m.deleted || m.author.deviceId == mine || m.rev <= readRev) continue
-            _newMessages.tryEmit(IncomingMessage(chatId, summary?.name.orEmpty(), m.author.name, text))
+            _newMessages.emit(IncomingMessage(chatId, name, m.author.name, text))
         }
     }
 
@@ -181,16 +213,23 @@ class ChatController(
         recountUnread()
     }
 
+    /** True once a [refresh] has listed the chats; until then the unread counts come from the cache alone. */
+    @Volatile private var listed = false
+
     private fun recountUnread() {
         val mine = me()
+        // (chat, read marker): the relay's list once we have it, else what the cache remembers.
+        val chats = if (listed) _chats.value.filter { it.member }.map { it.id to it.readRev }
+        else store.cachedIds().map { it to store.read(it).readRev }
         _unread.value = buildMap {
-            for (s in _chats.value) {
-                if (!s.member) continue
-                val n = live(s.id).messages.value.count { it.event == null && !it.deleted && it.author.deviceId != mine && it.rev > s.readRev }
-                if (n > 0) put(s.id, n)
+            for ((id, readRev) in chats) {
+                val n = live(id).messages.value.count { it.event == null && !it.deleted && it.author.deviceId != mine && it.rev > readRev }
+                if (n > 0) put(id, n)
             }
         }
     }
+
+    init { recountUnread() } // from the cache, until a refresh brings the relay's list
 
     /** Drops everything about [chatId]: cache, list entry, invites. */
     private fun forget(chatId: String) {
@@ -223,9 +262,10 @@ class ChatController(
     }
 
     private suspend fun chatChanged(chatId: String, rev: Long) {
-        if (_chats.value.none { it.id == chatId }) refresh() // a chat we have not seen yet
-        if (store.read(chatId).rev >= rev && _chats.value.any { it.id == chatId }) return
-        sync(chatId)
+        if (_chats.value.none { it.id == chatId }) refreshAll(chatId to rev) // a chat we have not seen yet
+        val have = store.read(chatId).rev
+        if (have >= rev && _chats.value.any { it.id == chatId }) return
+        syncChat(chatId, if (have == 0L) rev - 1 else null)
     }
 
     // ---- Actions ----
@@ -249,7 +289,7 @@ class ChatController(
 
     suspend fun joinInvite(id: String) {
         val chat = requireApi().joinInvite(id)
-        upsert(chat); refreshInvites(); syncChat(chat.id, notify = false)
+        upsert(chat); refreshInvites(); syncChat(chat.id, Long.MAX_VALUE) // its history is not news
     }
 
     suspend fun transferChatOwner(chatId: String, deviceId: String) {
@@ -287,6 +327,7 @@ class ChatController(
         val summary = _chats.value.firstOrNull { it.id == chatId }
         if (rev == 0L || (summary != null && (!summary.member || summary.readRev >= rev))) return
         requireApi().markChatRead(chatId, rev)
+        store.update(chatId) { it.copy(readRev = maxOf(it.readRev, rev)) }
         _chats.update { list -> list.map { if (it.id == chatId) it.copy(readRev = maxOf(it.readRev, rev)) else it } }
         recountUnread()
     }

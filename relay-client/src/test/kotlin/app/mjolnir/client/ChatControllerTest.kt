@@ -278,4 +278,113 @@ class ChatControllerTest {
         c.onEvent(RelayEvent.Connected)
         assertEquals(listOf("missed"), c.messages(chat).value.map { it.text })
     }
+
+    private fun TestScope.collect(c: ChatController, into: MutableList<IncomingMessage>) {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.newMessages.collect { into += it } }
+    }
+
+    @Test fun firstMessageInNewlyVisibleChatNotifies() = runTest {
+        val (api, _) = fakeWithChat()
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        c.refresh()
+        val plans = api.addChat("s1", "Plans", owner = sam, members = listOf(sam, api.me))
+        api.incoming(plans, sam, "old 1"); api.incoming(plans, sam, "old 2")
+        val first = api.incoming(plans, sam, "news")
+        c.onEvent(RelayEvent.ChatChanged(plans, first.rev))
+        assertEquals(listOf(IncomingMessage(plans, "Plans", "Sam", "news")), seen) // below the event's rev is history
+        assertEquals(3, c.messages(plans).value.size)
+    }
+
+    @Test fun firstMessageAloneInNewlyVisibleChatNotifies() = runTest {
+        val (api, _) = fakeWithChat()
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        val plans = api.addChat("s1", "Plans", owner = sam, members = listOf(sam, api.me))
+        val first = api.incoming(plans, sam, "hello")
+        c.onEvent(RelayEvent.ChatChanged(plans, first.rev))
+        assertEquals(listOf("hello"), seen.map { it.text })
+    }
+
+    @Test fun joinedChatHistoryIsSilent() = runTest {
+        val (api, _) = fakeWithChat()
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        val plans = api.addChat("s1", "Plans", owner = sam, members = listOf(sam))
+        api.incoming(plans, sam, "before you came")
+        val invite = api.invitedBy(sam, plans, api.me.deviceId)
+        c.refreshInvites()
+        c.joinInvite(invite.id)
+        assertTrue(c.messages(plans).value.any { it.text == "before you came" })
+        assertTrue(seen.isEmpty(), "got $seen")
+        val m = api.incoming(plans, sam, "after")
+        c.onEvent(RelayEvent.ChatChanged(plans, m.rev))
+        assertEquals(listOf("after"), seen.map { it.text })
+    }
+
+    @Test fun freshControllerWithExistingCacheNotifiesFromRefresh() = runTest {
+        val (api, chat) = fakeWithChat()
+        api.incoming(chat, sam, "seen already")
+        controller(api).sync(chat)
+        api.incoming(chat, sam, "while the app was closed")
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        c.refresh()
+        assertEquals(listOf("while the app was closed"), seen.map { it.text })
+    }
+
+    @Test fun unreadAndAnnouncementsWorkBeforeTheFirstRefresh() = runTest {
+        val (api, chat) = fakeWithChat()
+        api.incoming(chat, sam, "a"); api.incoming(chat, sam, "b")
+        api.markChatRead(chat, 1)
+        controller(api).refresh() // caches the chat with its name and read marker
+        val offline = FakeRelayApi().apply { failAllWith = RelayException(RelayErrorKind.NETWORK, "down") }
+        val restarted = ChatController({ offline }, ChatStore(dir), TestScope(UnconfinedTestDispatcher(testScheduler))) { "dev-1" }
+        assertEquals(mapOf(chat to 1), restarted.unread.value) // only "b" is above the persisted read marker
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        api.incoming(chat, sam, "c")
+        c.sync(chat) // no refresh yet: the name comes from the cache
+        assertEquals(listOf(IncomingMessage(chat, "General", "Sam", "c")), seen)
+    }
+
+    @Test fun aBurstOfMessagesIsNotLost() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        val seen = mutableListOf<IncomingMessage>()
+        backgroundScope.launch { c.newMessages.collect { seen += it } } // runs only when the test yields
+        testScheduler.runCurrent()
+        repeat(200) { api.incoming(chat, sam, "m$it") }
+        c.sync(chat)
+        kotlinx.coroutines.delay(10) // lets the collector drain what is still buffered
+        assertEquals((0 until 200).map { "m$it" }, seen.map { it.text })
+    }
+
+    @Test fun pagesFetchedBeforeAFailureAreAnnouncedOnceAndTheRestOnRetry() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        repeat(450) { api.incoming(chat, sam, "m$it") }
+        api.failSyncOnCall = api.syncCalls.size + 2 // page 2 fails
+        c.sync(chat)
+        assertEquals(200, seen.size)
+        api.failSyncOnCall = null
+        c.sync(chat)
+        assertEquals((0 until 450).map { "m$it" }, seen.map { it.text }) // no gaps, no repeats
+    }
+
+    @Test fun messagesCachedButNeverAnnouncedAreAnnouncedOnTheNextSync() = runTest {
+        val (api, chat) = fakeWithChat()
+        // As left behind by a sync that died between caching a page and announcing it.
+        val stuck = api.incoming(chat, sam, "stuck")
+        ChatStore(dir).update(chat) { it.copy(rev = stuck.rev, ownerId = api.me.deviceId, messages = mapOf(stuck.id to stuck), name = "General", announcedRev = 0) }
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        c.sync(chat)
+        assertEquals(listOf("stuck"), seen.map { it.text })
+        c.sync(chat)
+        assertEquals(1, seen.size)
+    }
 }

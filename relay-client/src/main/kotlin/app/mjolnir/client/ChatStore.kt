@@ -6,13 +6,21 @@ import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 
-/** What this device knows of one chat: everything up to [rev], with messages (system entries included) by id. */
+/**
+ * What this device knows of one chat: everything up to [rev], with messages (system entries included) by id.
+ * [readRev] and [name] are the last values the relay reported, so unread counts and notifications work before the
+ * first refresh. [announcedRev] is the watermark of messages already announced (or deliberately skipped as history):
+ * cached messages above it were fetched but not yet announced, e.g. when a later page of a sync failed.
+ */
 @Serializable
 data class CachedChat(
     val rev: Long = 0,
     val ownerId: String = "",
     val members: List<Peer> = emptyList(),
     val messages: Map<String, ChatMessage> = emptyMap(),
+    val readRev: Long = 0,
+    val name: String = "",
+    val announcedRev: Long = 0,
 )
 
 /** The on-device chat cache: one JSON file per chat, `chat-{id}.json` in [dir]. */
