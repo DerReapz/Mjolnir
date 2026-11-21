@@ -35,7 +35,7 @@ fun RelayDeps.spaceView(row: SpaceRow): Space =
     Space(row.id, row.name, row.adminId, store.members(row.id).map { it.toPeer() }, adminSilent(row.adminId))
 
 /** Trimmed name, or null when empty, too long or containing control characters (device names have no such rule; this one is stricter). */
-private fun validSpaceName(raw: String): String? =
+internal fun validSpaceName(raw: String): String? =
     raw.trim().takeIf { it.isNotEmpty() && it.length <= Limits.MAX_SPACE_NAME_LENGTH && it.none(Char::isISOControl) }
 
 private suspend fun ApplicationCall.error(status: HttpStatusCode, code: String) = respond(status, ErrorResponse(code))
@@ -100,8 +100,9 @@ fun Route.spaceRoutes(deps: RelayDeps) {
 
         delete("/v1/spaces/{id}") {
             val (row, me) = call.adminSpace() ?: return@delete
-            val members = store.deleteSpace(row.id, me)?.memberIds ?: return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
-            members.filter { it != me }.forEach { deps.hub.emit(it, RelayEvent.SpaceDeleted(row.toRef())) }
+            val deleted = store.deleteSpace(row.id, me) ?: return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
+            deleted.memberIds.filter { it != me }.forEach { deps.hub.emit(it, RelayEvent.SpaceDeleted(row.toRef())) }
+            deleted.chats.forEach { (chatId, members) -> (members + row.adminId).toSet().forEach { deps.hub.emit(it, RelayEvent.ChatDeleted(chatId)) } }
             call.respond(HttpStatusCode.NoContent)
         }
 
@@ -114,13 +115,15 @@ fun Route.spaceRoutes(deps: RelayDeps) {
         delete("/v1/spaces/{id}/members/{deviceId}") {
             val (row, me) = call.memberSpace() ?: return@delete
             val target = call.parameters["deviceId"]!!
-            when (store.removeMember(row.id, target, me, deps.clock.nowMs()).result) {
+            val removal = store.removeMember(row.id, target, me, deps.clock.nowMs())
+            when (removal.result) {
                 Store.Removed.NOT_ADMIN -> return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
                 Store.Removed.ADMIN_MUST_TRANSFER -> return@delete call.error(HttpStatusCode.Conflict, "admin_must_transfer")
                 Store.Removed.NOT_MEMBER -> return@delete call.error(HttpStatusCode.NotFound, "not_found")
                 Store.Removed.REMOVED -> Unit
             }
             emitSpaceChanged(deps, row.id, also = listOf(target))
+            emitLeftSpace(deps, row.adminId, target, removal.chats)
             call.respond(HttpStatusCode.NoContent)
         }
 

@@ -21,30 +21,13 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import org.slf4j.LoggerFactory
 import kotlinx.coroutines.withContext
-
-private val log = LoggerFactory.getLogger("app.mjolnir.server.Push")
 
 fun Route.sendRoutes(deps: RelayDeps) {
     val store = deps.store
 
-    /** Rings the recipient's phone doorbell, if it has a push token. Never fails the send. */
-    fun ping(to: String) {
-        val token = store.device(to)?.pushToken ?: return
-        deps.asyncScope.launch {
-            try {
-                deps.push.ping(token)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log.warn("push ping failed: {}", e.toString())
-            }
-        }
-    }
+    fun ping(to: String) = deps.pingDevice(to)
 
     authenticate("device") {
         rateLimit(SendLimit) {

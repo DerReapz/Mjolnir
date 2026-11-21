@@ -178,6 +178,7 @@ fun Application.relayModule(deps: RelayDeps) {
         deviceRoutes(deps)
         pairingRoutes(deps)
         spaceRoutes(deps)
+        chatRoutes(deps)
         sendRoutes(deps)
         fileRoutes(deps)
         roomRoutes(deps)

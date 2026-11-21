@@ -780,6 +780,17 @@ class Store(jdbcUrl: String) {
             it.setString(1, id); it.setString(2, chatId); it.executeQuery().use { rs -> if (rs.next()) rs.toChatMessage() else null }
         }
 
+    /** A real message (not a system entry) of [chatId], deleted or not. */
+    @Synchronized
+    fun message(chatId: String, id: String): ChatMessageRow? = chatMessage(chatId, id)
+
+    /** The newest entry of [chatId] that is not deleted (a message or a system entry), for the chat list preview. */
+    @Synchronized
+    fun lastChatMessage(chatId: String): ChatMessageRow? =
+        conn.prepareStatement("SELECT * FROM chat_messages WHERE chat_id=? AND deleted=0 ORDER BY rev DESC LIMIT 1").use {
+            it.setString(1, chatId); it.executeQuery().use { rs -> if (rs.next()) rs.toChatMessage() else null }
+        }
+
     /** Appends a message at a new chat revision; null when the chat is gone or [authorId] is not a member. */
     @Synchronized
     fun postMessage(chatId: String, authorId: String, text: String, nowMs: Long): ChatMessageRow? = transaction {
