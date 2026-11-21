@@ -81,6 +81,9 @@ class ChatController(
      */
     val newMessages: SharedFlow<IncomingMessage> = _newMessages.asSharedFlow()
 
+    /** Bumped by [clear]: background work that was suspended across a clear drops its results instead of writing them back. */
+    @Volatile private var generation = 0
+
     private val live = ConcurrentHashMap<String, Live>()
     private val syncLocks = ConcurrentHashMap<String, Mutex>()
 
@@ -114,6 +117,7 @@ class ChatController(
     /** [trigger] is the chat and rev of the `ChatChanged` that caused this refresh: its messages from that rev on are news. */
     private suspend fun refreshAll(trigger: Pair<String, Long>?) {
         val a = api() ?: return
+        val gen = generation
         val summaries = try {
             a.spaces().flatMap { space ->
                 try { a.chats(space.id) } catch (e: RelayException) { if (e.kind == RelayErrorKind.NOT_FOUND) emptyList() else throw e }
@@ -121,17 +125,22 @@ class ChatController(
         } catch (e: RelayException) {
             return
         }
+        if (gen != generation) return
         val ids = summaries.mapTo(HashSet()) { it.id }
         (_chats.value.map { it.id } + store.cachedIds()).filter { it !in ids }.toSet().forEach(::forget)
         for (s in summaries) {
             val c = store.read(s.id)
-            if (c.name != s.name || c.readRev < s.readRev) store.update(s.id) { it.copy(name = s.name, readRev = maxOf(it.readRev, s.readRev)) }
+            if (c.name != s.name || c.readRev < s.readRev || (s.rev == 0L && !c.listedEmpty && c.rev == 0L)) {
+                store.update(s.id) { it.copy(name = s.name, readRev = maxOf(it.readRev, s.readRev), listedEmpty = it.listedEmpty || (s.rev == 0L && it.rev == 0L)) }
+            }
         }
-        val known = _chats.value.filter { it.rev == 0L }.mapTo(HashSet()) { it.id } // listed empty before: its first messages are news (a chat listed with history and no cache is unseen history)
+        // Listed empty before (in this run, or remembered on disk): its first messages are news (a chat listed with history and no cache is unseen history).
+        val known = (_chats.value.filter { it.rev == 0L }.map { it.id } + store.cachedIds().filter { store.read(it).listedEmpty }).toHashSet()
         _chats.value = summaries
         listed = true
         recountUnread()
         for (s in summaries) {
+            if (gen != generation) return
             val cached = store.read(s.id)
             val have = cached.rev
             if (have >= s.rev) { if (s.member) reportSeen(s.id); continue }
@@ -161,7 +170,9 @@ class ChatController(
      */
     private suspend fun syncChat(chatId: String, floor: Long?) {
         val a = api() ?: return
+        val gen = generation
         syncLocks.getOrPut(chatId) { Mutex() }.withLock {
+            if (gen != generation) return
             val before = store.read(chatId)
             val hasHistory = before.rev > 0 || before.announcedRev > 0 || _chats.value.firstOrNull { it.id == chatId }?.rev == 0L
             val start = floor ?: if (hasHistory) before.announcedRev else Long.MAX_VALUE
@@ -175,9 +186,10 @@ class ChatController(
             var renamed: String? = null
             var synced = false
             try {
-                announce(chatId, before.messages.values.filter(::fresh), before) // fetched earlier, never announced
+                announce(chatId, before.messages.values.filter(::fresh), before, gen) // fetched earlier, never announced
                 while (true) {
                     val page = a.syncChat(chatId, since)
+                    if (gen != generation) return
                     val last = page.messages.maxOfOrNull { it.rev }
                     val done = !page.hasMore || last == null || last <= since
                     // A page cut short keeps the rev of its last message, so an interrupted sync resumes where it stopped.
@@ -188,11 +200,13 @@ class ChatController(
                             members = page.members,
                             receipts = page.receipts,
                             messages = c.messages + page.messages.associateBy { it.id },
+                            listedEmpty = false,
                         )
                     }
                     (page.messages.filter { it.event is ChatEvent.Renamed }.maxByOrNull { it.rev }?.event as? ChatEvent.Renamed)?.let { renamed = it.name }
                     show(chatId, latest)
-                    announce(chatId, page.messages.filter(::fresh).map { latest.messages.getValue(it.id) }, latest)
+                    announce(chatId, page.messages.filter(::fresh).map { latest.messages.getValue(it.id) }, latest, gen)
+                    if (gen != generation) return
                     // Only now, so a failure before this point leaves the page's messages to be announced on the retry.
                     val upTo = if (done) page.rev else last!!
                     latest = store.update(chatId) { it.copy(announcedRev = maxOf(it.announcedRev, upTo)) }
@@ -201,8 +215,10 @@ class ChatController(
                 }
                 synced = true
             } catch (e: RelayException) {
+                if (gen != generation) return
                 if (e.kind == RelayErrorKind.NOT_FOUND) { forget(chatId); return }
             }
+            if (gen != generation) return
             refreshSummary(chatId, latest, renamed)
             if (synced) afterSync(chatId)
         }
@@ -233,17 +249,19 @@ class ChatController(
     /** Reports everything cached of [chatId] as seen unless that was done; a failure is retried by the next sync or refresh. */
     private suspend fun reportSeen(chatId: String) {
         val a = api() ?: return
+        val gen = generation
         val cached = store.read(chatId)
         if (cached.rev == 0L || cached.seenRev >= cached.rev || !isMember(cached)) return
         try {
             a.markChatSeen(chatId, cached.rev)
+            if (gen != generation) return
             store.update(chatId) { it.copy(seenRev = maxOf(it.seenRev, cached.rev)) }
         } catch (e: RelayException) { /* try again later */ }
     }
 
     /** Brings the chat's list entry up to date with what the sync found. */
     private fun refreshSummary(chatId: String, cached: CachedChat, renamed: String?) {
-        val last = cached.messages.values.filter { !it.deleted }.maxByOrNull { it.rev }
+        val last = cached.messages.values.filter { !it.deleted }.maxByOrNull { it.createdRev ?: it.rev } // an edit keeps its place in the preview
         var name: String? = null
         _chats.update { list ->
             list.map { s ->
@@ -261,9 +279,10 @@ class ChatController(
     }
 
     /** Emits [messages] to [newMessages] unless the chat is open; system entries, deleted ones and our own never are. */
-    private suspend fun announce(chatId: String, messages: Collection<ChatMessage>, cached: CachedChat) {
+    private suspend fun announce(chatId: String, messages: Collection<ChatMessage>, cached: CachedChat, gen: Int) {
         if (openChat.value == chatId) return
         val summary = _chats.value.firstOrNull { it.id == chatId }
+        if (!(summary?.member ?: isMember(cached))) return // a space admin overseeing a chat is not told of its messages
         val name = summary?.name ?: cached.name
         val readRev = summary?.readRev ?: cached.readRev
         val mine = me()
@@ -271,7 +290,8 @@ class ChatController(
             val text = m.text ?: continue
             if (m.event != null || m.deleted || m.author.deviceId == mine) continue
             val mentionedMe = mine != null && mine in m.mentions
-            if (m.rev <= readRev && !mentionedMe) continue // read elsewhere; a mention still gets through
+            if ((m.createdRev ?: m.rev) <= readRev && !mentionedMe) continue // read elsewhere (an edit does not make it unread); a mention still gets through
+            if (gen != generation) return
             _newMessages.emit(IncomingMessage(chatId, name, m.author.deviceId, m.author.name, text, mentionedMe))
         }
     }
@@ -296,7 +316,7 @@ class ChatController(
         val mentioned = linkedSetOf<String>()
         _unread.value = buildMap {
             for ((id, readRev) in chats) {
-                val unread = live(id).messages.value.filter { it.event == null && !it.deleted && it.author.deviceId != mine && it.rev > readRev }
+                val unread = live(id).messages.value.filter { it.event == null && !it.deleted && it.author.deviceId != mine && (it.createdRev ?: it.rev) > readRev }
                 if (unread.isNotEmpty()) put(id, unread.size)
                 if (mine != null && unread.any { mine in it.mentions }) mentioned += id
             }
@@ -318,6 +338,7 @@ class ChatController(
 
     /** Forgets everything: lists, messages, cache files and the open chat (this device was re-registered or moved to another relay). */
     fun clear() {
+        generation++
         store.clearAll()
         live.values.forEach { it.messages.value = emptyList(); it.members.value = emptyList(); it.receipts.value = emptyList() }
         live.clear()
@@ -331,6 +352,7 @@ class ChatController(
     }
 
     private fun upsert(summary: ChatSummary) {
+        if (summary.rev == 0L && summary.member) store.update(summary.id) { it.copy(listedEmpty = it.listedEmpty || it.rev == 0L) } // its first messages are news, even after a restart
         _chats.update { list -> if (list.any { it.id == summary.id }) list.map { if (it.id == summary.id) summary else it } else list + summary }
         recountUnread()
     }
@@ -421,7 +443,9 @@ class ChatController(
         val rev = store.read(chatId).rev
         val summary = _chats.value.firstOrNull { it.id == chatId }
         if (rev == 0L || (summary != null && (!summary.member || summary.readRev >= rev))) return
+        val gen = generation
         requireApi().markChatRead(chatId, rev)
+        if (gen != generation) return
         store.update(chatId) { it.copy(readRev = maxOf(it.readRev, rev)) }
         _chats.update { list -> list.map { if (it.id == chatId) it.copy(readRev = maxOf(it.readRev, rev)) else it } }
         recountUnread()

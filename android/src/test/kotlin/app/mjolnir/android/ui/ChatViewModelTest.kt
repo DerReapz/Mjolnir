@@ -315,4 +315,23 @@ class ChatViewModelTest {
         assertEquals(1, api.postCalls)
         assertEquals("", vm.draft(chat).value)
     }
+
+    @Test fun aResetClosesTheChatAndDropsItsDraftAndPicks() = runTest {
+        val chat = api.addChat("s1", "General", owner = me, members = listOf(me, sam))
+        val other = api.addChat("s1", "Plans", owner = me, members = listOf(me, sam))
+        val handle = SavedStateHandle()
+        val vm = newVm(handle)
+        controller.refresh(); advanceUntilIdle()
+        vm.open(chat); vm.setDraft(chat, "half-written"); vm.setDraft(other, "also unsent")
+        handle["picks/$chat"] = arrayListOf("sam")
+        advanceUntilIdle()
+        // One chat going away takes only its own draft with it.
+        api.dropChat(other); controller.refresh(); advanceUntilIdle()
+        assertNull(handle.get<String>("draft/$other"))
+        assertEquals(chat, vm.selectedId.value); assertEquals("half-written", handle.get<String>("draft/$chat"))
+        // A reset (the controller forgets everything) closes the chat and drops what was typed for it.
+        controller.clear(); advanceUntilIdle()
+        assertNull(vm.selectedId.value)
+        assertNull(handle.get<String>("draft/$chat")); assertNull(handle.get<ArrayList<String>>("picks/$chat"))
+    }
 }

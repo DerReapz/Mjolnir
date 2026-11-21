@@ -393,7 +393,7 @@ class ChatControllerTest {
         val (api, chat) = fakeWithChat()
         // As left behind by a sync that died between caching a page and announcing it.
         val stuck = api.incoming(chat, sam, "stuck")
-        ChatStore(dir).update(chat) { it.copy(rev = stuck.rev, ownerId = api.me.deviceId, messages = mapOf(stuck.id to stuck), name = "General", announcedRev = 0) }
+        ChatStore(dir).update(chat) { it.copy(rev = stuck.rev, ownerId = api.me.deviceId, members = listOf(api.me, sam), messages = mapOf(stuck.id to stuck), name = "General", announcedRev = 0) }
         val c = controller(api)
         val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
         c.sync(chat)
@@ -616,5 +616,91 @@ class ChatControllerTest {
         val m2 = api.incoming(chat, sam, "x"); c.sync(chat); seen.clear()
         api.incomingEdit(chat, m2.id, "x @Me", mentions = listOf("dev-1")); c.sync(chat)
         assertTrue(seen.isEmpty())
+    }
+
+    @Test fun adminOverseeingAChatIsNotToldOfItsMessages() = runTest {
+        val api = FakeRelayApi()
+        api.asMemberOf("s1", api.me, name = "Crew") // I am the space admin, not in the chat
+        api.addMember("s1", sam)
+        val chat = api.addChat("s1", "Private", owner = sam, members = listOf(sam))
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        c.refresh()
+        assertFalse(c.chats.value.single().member)
+        val m = api.incoming(chat, sam, "members only")
+        c.onEvent(RelayEvent.ChatChanged(chat, m.rev))
+        assertEquals(listOf("members only"), c.messages(chat).value.map { it.text }) // overseen, not announced
+        assertTrue(seen.isEmpty(), "got $seen")
+    }
+
+    @Test fun anEditDoesNotMakeAReadMessageUnread() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        val m = api.incoming(chat, sam, "hi @Me", mentions = listOf("dev-1"))
+        c.refresh()
+        assertEquals(mapOf(chat to 1), c.unread.value); assertEquals(setOf(chat), c.unreadMentions.value)
+        c.markRead(chat)
+        api.incomingEdit(chat, m.id, "hi @Me!")
+        c.sync(chat)
+        assertTrue(c.unread.value.isEmpty()); assertTrue(c.unreadMentions.value.isEmpty())
+    }
+
+    @Test fun anEditOfAMessageReadElsewhereIsNotAnnounced() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh() // listed empty: its first messages are news
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        val m = api.incoming(chat, sam, "read on the phone")
+        api.markChatRead(chat, m.rev)
+        api.incomingEdit(chat, m.id, "read on the phone, edited")
+        c.refresh()
+        assertEquals(listOf("read on the phone, edited"), c.messages(chat).value.map { it.text })
+        assertTrue(seen.isEmpty(), "got $seen")
+        assertTrue(c.unread.value.isEmpty())
+    }
+
+    @Test fun firstMessageAfterARestartIsAnnouncedForAChatListedEmpty() = runTest {
+        val (api, chat) = fakeWithChat()
+        controller(api).refresh() // listed empty, then the process dies
+        val c = controller(api) // same store directory, new process
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        api.incoming(chat, sam, "first!")
+        c.refresh()
+        assertEquals(listOf("first!"), seen.map { it.text })
+        assertFalse(ChatStore(dir).read(chat).listedEmpty) // once messages are synced it is history
+        // A chat created here, empty, is remembered the same way.
+        val made = c.createChat("s1", "Fresh").id
+        val c2 = controller(api)
+        val seen2 = mutableListOf<IncomingMessage>(); collect(c2, seen2)
+        api.incoming(made, sam, "hello there")
+        c2.refresh()
+        assertEquals(listOf("hello there"), seen2.map { it.text })
+    }
+
+    @Test fun listPreviewIgnoresEdits() = runTest {
+        val (api, chat) = fakeWithChat()
+        val first = api.incoming(chat, sam, "first"); api.incoming(chat, sam, "second")
+        val c = controller(api)
+        c.refresh()
+        api.incomingEdit(chat, first.id, "first, edited")
+        c.sync(chat)
+        assertEquals("second", c.chats.value.single().lastMessage?.text)
+    }
+
+    @Test fun aSyncSuspendedAcrossClearWritesAndAnnouncesNothing() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        api.incoming(chat, sam, "in flight")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>().also { api.chatState.syncGate = it }
+        val job = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.sync(chat) } // suspends in the fake relay
+        c.clear()
+        gate.complete(Unit)
+        job.join()
+        assertTrue(seen.isEmpty(), "got $seen")
+        assertTrue(c.messages(chat).value.isEmpty()); assertTrue(c.chats.value.isEmpty())
+        assertEquals(emptySet(), ChatStore(dir).cachedIds())
     }
 }

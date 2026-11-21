@@ -15,20 +15,20 @@ import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.PostMessageRequest
 import app.mjolnir.protocol.ReadRequest
 import app.mjolnir.protocol.RelayEvent
-import app.mjolnir.protocol.SeenRequest
 import app.mjolnir.protocol.RenameChatRequest
+import app.mjolnir.protocol.SeenRequest
 import app.mjolnir.protocol.TransferOwnerRequest
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.auth.authenticate
 import io.ktor.server.auth.principal
+import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
-import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.routing.post
 
 /**
@@ -202,7 +202,8 @@ fun Route.chatRoutes(deps: RelayDeps) {
             if (store.isChatMember(a.chat.id, invitee)) return@post call.error(HttpStatusCode.Conflict, "already_member")
             val row = store.createInvite(a.chat.id, invitee, a.me, deps.clock.nowMs())
                 ?: return@post call.error(HttpStatusCode.Conflict, "already_invited")
-            emitInvites(a.chat, a.me, invitee)
+            // While the owner still has to approve, the invitee does not hear of it.
+            if (row.state == InviteState.PENDING_APPROVAL) emitInvites(a.chat, a.me) else emitInvites(a.chat, a.me, invitee)
             call.respond(HttpStatusCode.Created, inviteView(row) ?: return@post call.error(HttpStatusCode.NotFound, "not_found"))
         }
 
@@ -218,7 +219,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
                 if (!store.setInviteState(inv.id, InviteState.PENDING_APPROVAL, to, deps.clock.nowMs())) {
                     return@post call.error(HttpStatusCode.Conflict, "invite_unavailable")
                 }
-                emitInvites(chat, inv.inviterId, inv.inviteeId)
+                if (to == InviteState.APPROVED) emitInvites(chat, inv.inviterId, inv.inviteeId) else emitInvites(chat, inv.inviterId)
                 call.respond(HttpStatusCode.NoContent)
             }
         }
@@ -293,9 +294,9 @@ fun Route.chatRoutes(deps: RelayDeps) {
         get("/v1/chats/{id}/sync") {
             val a = call.access() ?: return@get
             val since = call.request.queryParameters["sinceRev"]?.let { it.toLongOrNull() ?: return@get call.error(HttpStatusCode.BadRequest, "bad_request") } ?: 0L
-            val (rows, more) = store.sync(a.chat.id, since)
+            val page = store.syncPage(a.chat.id, since)
             val chat = store.chat(a.chat.id) ?: return@get call.error(HttpStatusCode.NotFound, "not_found")
-            call.respond(ChatSync(chat.id, chat.rev, chat.ownerId, store.chatMembers(chat.id).map { it.toPeer() }, rows.map { it.toWire() }, more, store.receipts(chat.id)))
+            call.respond(ChatSync(chat.id, page.chatRev, chat.ownerId, store.chatMembers(chat.id).map { it.toPeer() }, page.rows.map { it.toWire() }, page.hasMore, store.receipts(chat.id)))
         }
 
         rateLimit(ChatMessageLimit) {

@@ -184,6 +184,25 @@ class ChatRoutesTest {
         }
     }
 
+    @Test fun pendingInviteIsNotAnnouncedToTheInvitee() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        withEvents(k.outsider) {
+            val inv = invite(k.member, chat.id, k.outsider.deviceId).body<ChatInvite>() // pending approval
+            assertEquals(HttpStatusCode.NoContent, act(k.owner, "/v1/chat-invites/${inv.id}/deny"))
+            // A space-wide event afterwards proves no invite event was queued ahead of it for the invitee.
+            client.patch("/v1/spaces/${k.space.id}") {
+                bearerAuth(k.admin.token); contentType(ContentType.Application.Json); setBody(RenameSpaceRequest("New"))
+            }
+            assertEquals(RelayEvent.SpaceChanged(k.space.id), next())
+        }
+        // Once approved, the invitee is told.
+        val again = invite(k.member, chat.id, k.outsider.deviceId).body<ChatInvite>()
+        withEvents(k.outsider) {
+            assertEquals(HttpStatusCode.NoContent, act(k.owner, "/v1/chat-invites/${again.id}/approve"))
+            assertEquals(RelayEvent.ChatInvitesChanged, next())
+        }
+    }
+
     @Test fun denyDeclineExpiryGiveNoAccess() = relayTest {
         val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
         // Denied.

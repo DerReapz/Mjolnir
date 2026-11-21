@@ -227,7 +227,7 @@ class FakeRelayApi : RelayApi {
     override suspend fun transferChatOwner(chatId: String, deviceId: String): ChatSummary { check(); return chatState.transferOwner(chatId, deviceId) }
     override suspend fun removeChatMember(chatId: String, deviceId: String) { check(); chatState.removeMember(chatId, deviceId) }
     override suspend fun adminJoinChat(chatId: String): ChatSummary { check(); return chatState.adminJoin(chatId) }
-    override suspend fun syncChat(chatId: String, sinceRev: Long): ChatSync { check(); return chatState.sync(chatId, sinceRev) }
+    override suspend fun syncChat(chatId: String, sinceRev: Long): ChatSync { check(); return chatState.sync(chatId, sinceRev).also { chatState.syncGate?.await() } }
     override suspend fun postMessage(chatId: String, text: String, mentions: List<String>): ChatMessage { check(); return chatState.post(chatId, text, mentions) }
     override suspend fun editMessage(chatId: String, msgId: String, text: String, mentions: List<String>): ChatMessage { check(); return chatState.edit(chatId, msgId, text, mentions) }
     override suspend fun deleteMessage(chatId: String, msgId: String) { check(); chatState.deleteMessage(chatId, msgId) }

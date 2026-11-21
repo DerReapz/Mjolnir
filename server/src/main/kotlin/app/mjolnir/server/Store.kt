@@ -831,7 +831,7 @@ class Store(jdbcUrl: String) {
     /** The newest entry of [chatId] that is not deleted (a message or a system entry), for the chat list preview. */
     @Synchronized
     fun lastChatMessage(chatId: String): ChatMessageRow? =
-        conn.prepareStatement("SELECT * FROM chat_messages WHERE chat_id=? AND deleted=0 ORDER BY rev DESC LIMIT 1").use {
+        conn.prepareStatement("SELECT * FROM chat_messages WHERE chat_id=? AND deleted=0 ORDER BY created_rev DESC LIMIT 1").use {
             it.setString(1, chatId); it.executeQuery().use { rs -> if (rs.next()) rs.toChatMessage() else null }
         }
 
@@ -877,15 +877,25 @@ class Store(jdbcUrl: String) {
         true
     }
 
-    /** Messages with rev above [sinceRev] (edits and deletes included), oldest rev first, at most [limit]; true when more remain. */
+    /** One page of [syncPage]: the rows, whether more remain, and the chat's rev as of the same moment as the rows. */
+    class SyncPage(val rows: List<ChatMessageRow>, val hasMore: Boolean, val chatRev: Long)
+
+    /**
+     * Messages with rev above [sinceRev] (edits and deletes included), oldest rev first, at most [limit], with the chat's
+     * rev read in the same synchronized call: a message posted in between can never be claimed by a rev it is not in.
+     */
     @Synchronized
-    fun sync(chatId: String, sinceRev: Long, limit: Int = 200): Pair<List<ChatMessageRow>, Boolean> {
+    fun syncPage(chatId: String, sinceRev: Long, limit: Int = 200): SyncPage {
         val rows = conn.prepareStatement("SELECT * FROM chat_messages WHERE chat_id=? AND rev>? ORDER BY rev LIMIT ?").use {
             it.setString(1, chatId); it.setLong(2, sinceRev); it.setInt(3, limit + 1)
             it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toChatMessage()) } }
         }
-        return rows.take(limit) to (rows.size > limit)
+        return SyncPage(rows.take(limit), rows.size > limit, chat(chatId)?.rev ?: 0L)
     }
+
+    /** Like [syncPage] without the rev. */
+    fun sync(chatId: String, sinceRev: Long, limit: Int = 200): Pair<List<ChatMessageRow>, Boolean> =
+        syncPage(chatId, sinceRev, limit).let { it.rows to it.hasMore }
 
     /**
      * Raises [deviceId]'s read marker in [chatId] to [rev] (never lowers it, never above the chat's rev); reading counts as

@@ -113,6 +113,34 @@ class ChatStoreTest {
         assertEquals(finalRevs.sorted(), finalRevs)
     }
 
+    @Test fun syncPageReadsTheChatRevWithTheRows() {
+        val a = device()
+        val s = space(a)
+        val c = store.createChat(s.id, a.id, "Plans", 100)!!
+        val pool = Executors.newFixedThreadPool(2)
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val poster = pool.submit { while (!stop.get()) store.postMessage(c.id, a.id, "m", 1) }
+        try {
+            repeat(300) {
+                val page = store.syncPage(c.id, 0, 1_000_000)
+                if (!page.hasMore && page.rows.isNotEmpty()) assertEquals(page.rows.maxOf { it.rev }, page.chatRev)
+            }
+        } finally { stop.set(true); poster.get(); pool.shutdown() }
+        val m = store.postMessage(c.id, a.id, "last", 1)!!
+        assertEquals(m.rev, store.syncPage(c.id, 0, 1_000_000).chatRev)
+        assertEquals(m.rev, store.syncPage(c.id, m.rev).chatRev) // nothing new: the rev is still the chat's
+    }
+
+    @Test fun lastChatMessageFollowsCreationNotEdits() {
+        val a = device()
+        val s = space(a)
+        val c = store.createChat(s.id, a.id, "Plans", 100)!!
+        val first = store.postMessage(c.id, a.id, "first", 101)!!
+        store.postMessage(c.id, a.id, "second", 102)
+        store.editMessage(c.id, first.id, a.id, "first, edited", 103)
+        assertEquals("second", store.lastChatMessage(c.id)!!.text)
+    }
+
     @Test fun syncReturnsChangedSinceRevIncludingEditsAndDeletes() {
         val a = device()
         val s = space(a)

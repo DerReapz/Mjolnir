@@ -181,6 +181,10 @@ class ChatViewModel(
     val selfDeviceId: String? get() = selfId()
 
     init {
+        viewModelScope.launch {
+            var known = emptySet<String>()
+            controller.chats.collect { chats -> known = forgetWhenGone(known, chats.mapTo(HashSet()) { it.id }) }
+        }
         // The chat on screen is open (read, no notification) while the app is in the foreground; its messages are read as they arrive.
         viewModelScope.launch {
             combine(selectedId, foreground, chatsVisible) { id, fg, shown -> id.takeIf { fg && shown } }.distinctUntilChanged().collectLatest { id ->
@@ -194,6 +198,15 @@ class ChatViewModel(
                 }
             }
         }
+    }
+
+    /** A chat that left the list (deleted, removed from it, or everything reset): closes it if open and drops its draft, stash and picks. */
+    private fun forgetWhenGone(previous: Set<String>, now: Set<String>): Set<String> {
+        for (gone in previous - now) {
+            if (selectedId.value == gone) { savedState[KEY_EDITING] = null; savedState[KEY_CHAT] = null }
+            listOf(draftKey(gone), stashKey(gone), picksKey(gone)).forEach { savedState.remove<Any?>(it) }
+        }
+        return now
     }
 
     private fun peerName(id: String, chat: ChatSummary, names: Map<String, String>): String =

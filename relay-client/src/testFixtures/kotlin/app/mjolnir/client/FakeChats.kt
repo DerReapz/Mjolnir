@@ -45,6 +45,8 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     val syncCalls = mutableListOf<Pair<String, Long>>()
     /** The 1-based number, among all [sync] calls so far, of the call that fails with a network error (once). */
     var failSyncOnCall: Int? = null
+    /** While set, a sync answers only once this completes (the answer is read before the wait, like a slow network). */
+    var syncGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
     var postCalls = 0
         private set
     /** `(chatId, rev)` of every [markSeen] and [markRead] call that reached the relay, in order. */
@@ -86,7 +88,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
 
     private fun summary(chat: Chat) = ChatSummary(
         chat.id, chat.spaceId, api.spaceList.firstOrNull { it.id == chat.spaceId }?.name.orEmpty(), chat.name, chat.ownerId, chat.rev,
-        chat.readRevs[meId] ?: 0, isMember(chat, meId), chat.messages.filter { !it.deleted }.maxByOrNull { it.rev },
+        chat.readRevs[meId] ?: 0, isMember(chat, meId), chat.messages.filter { !it.deleted }.maxByOrNull { it.createdRev ?: it.rev },
     )
 
     private fun changed(chat: Chat) { api.events.tryEmit(RelayEvent.ChatChanged(chat.id, chat.rev)) }

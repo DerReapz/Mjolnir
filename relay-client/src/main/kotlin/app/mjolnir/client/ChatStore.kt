@@ -26,6 +26,8 @@ data class CachedChat(
     val receipts: List<Receipt> = emptyList(),
     /** The rev this device last reported as seen to the relay. */
     val seenRev: Long = 0,
+    /** The chat was listed with no messages and none synced since: its first messages are news, also after a restart. */
+    val listedEmpty: Boolean = false,
 )
 
 /** The on-device chat cache: one JSON file per chat, `chat-{id}.json` in [dir]. */
