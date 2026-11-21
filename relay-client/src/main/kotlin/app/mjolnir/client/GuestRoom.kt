@@ -69,15 +69,20 @@ class GuestRoomController(
         _state.value = GuestRoomUi.Opening
         scope.launch {
             try {
-                val room = api.openRoom()
+                val room = try {
+                    api.openRoom()
+                } catch (e: RelayException) {
+                    // A room is already open: show it if its secret is here; else it was ended, so open a fresh one.
+                    if (e.kind != RelayErrorKind.ALREADY_SENT || adoptCurrent(api)) throw e
+                    api.openRoom()
+                }
                 _exchanged.value = emptyList()
                 saveSecrets { mapOf(room.roomId to room.secret) }
                 _state.value = GuestRoomUi.Open(room.roomId, link(room.secret), clock() + Limits.GUEST_ROOM_TTL_MS, null)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: RelayException) {
-                // A room is already open (e.g. from another device of ours): show that one instead.
-                if (e.kind == RelayErrorKind.ALREADY_SENT && adoptCurrent(api)) return@launch
+                if (e.kind == RelayErrorKind.ALREADY_SENT && _state.value is GuestRoomUi.Open) return@launch // adopted above
                 fail(e.userMessage ?: "Couldn't open the guest room")
             }
         }
@@ -140,7 +145,7 @@ class GuestRoomController(
     }
 
     /**
-     * Shows the relay's open room if its secret is stored; false when there is no such room. Stored secrets of any
+     * Shows the relay's open room if its secret is stored; else false (a room without its secret is ended). Stored secrets of any
      * other room are dropped. An answer that arrives after the room's state changed meanwhile is discarded (true).
      */
     private suspend fun adoptCurrent(api: RelayApi): Boolean {
@@ -151,6 +156,10 @@ class GuestRoomController(
         saveSecrets { all -> if (status != null && secret != null) mapOf(status.roomId to secret) else emptyMap() }
         if (status == null || secret == null) {
             if (_state.value is GuestRoomUi.Open) close()
+            // Rooms belong to one owner device, so an open room whose secret is gone is unusable: end it.
+            if (status != null) {
+                try { api.endRoom(status.roomId) } catch (e: RelayException) { if (e.kind != RelayErrorKind.NOT_FOUND) throw e }
+            }
             return false
         }
         _state.value = GuestRoomUi.Open(status.roomId, link(secret), clock() + (status.expiresAtEpochMs - status.serverNowEpochMs), status.guest)

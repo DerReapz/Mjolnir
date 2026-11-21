@@ -112,6 +112,25 @@ class GuestRoomTest {
         assertEquals(emptyMap(), secrets.read())
     }
 
+    @Test fun restoreEndsARoomWhoseSecretWasLost() = runTest {
+        val api = FakeRelayApi().apply { room = RoomResponse("room-9", "secret-9", 5_000L); serverNowEpochMs = 2_000L }
+        val c = controller(api)
+        c.restore()
+        assertEquals(GuestRoomUi.Closed, c.state.value)
+        assertEquals(listOf("room-9"), api.endedRooms)
+        assertEquals(null, api.room)
+    }
+
+    @Test fun openReplacesARoomWhoseSecretWasLost() = runTest {
+        val api = FakeRelayApi().apply { room = RoomResponse("room-9", "secret-9", 5_000L); serverNowEpochMs = 2_000L }
+        val c = controller(api)
+        c.open()
+        assertEquals(listOf("room-9"), api.endedRooms)
+        val open = assertIs<GuestRoomUi.Open>(c.state.value)
+        assertEquals("room-1", open.roomId)
+        assertEquals("https://relay.example.com/g/secret-1", open.link)
+    }
+
     @Test fun restoreWithNoRoomClearsStoredSecrets() = runTest {
         secrets.write(mapOf("old" to "stale"))
         controller(FakeRelayApi()).restore()
