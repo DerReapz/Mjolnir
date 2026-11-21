@@ -23,6 +23,7 @@ import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.sendInBatches
 import app.mjolnir.protocol.Limits
+import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
 import java.io.File
 import java.io.IOException
@@ -233,7 +234,7 @@ class ThrowViewModel(
                     ?: keys.firstOrNull { it.deviceId == id }
             }
             _state.update { s ->
-                val target = s.targetKey?.takeIf { it in keys } ?: remembered ?: keys.firstOrNull()
+                val target = s.targetKey?.takeIf { it in keys } ?: remembered ?: peers.firstOrNull { it.kind != DeviceKind.GUEST }?.destinationKey
                 s.copy(targets = peers, targetKey = target, lastUsedId = rememberedId)
             }
         }

@@ -171,6 +171,12 @@ class ThrowViewModelTest {
         assertEquals("pc1", fallback.state.value.targetId)
     }
 
+    @Test fun defaultTargetIsNeverTheGuest() = runTest {
+        api.peers.add(0, Peer("g", "Guest", DeviceKind.GUEST))
+        val fresh = newVm(); fresh.refreshTargets(); advanceUntilIdle()
+        assertEquals("pc1", fresh.state.value.targetId)
+    }
+
     @Test fun selectedTargetIsRemembered() = runTest {
         vm.refreshTargets(); advanceUntilIdle()
         vm.selectTarget("pc2"); advanceUntilIdle()

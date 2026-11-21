@@ -119,7 +119,7 @@ data class SendState(
         val last = lastTargetId?.let { id ->
             keys.firstOrNull { it.deviceId == id && it.spaceId == lastSpaceId } ?: keys.firstOrNull { it.deviceId == id && it.isPaired } ?: keys.firstOrNull { it.deviceId == id }
         }
-        val target = targetKey?.takeIf { it in keys } ?: last ?: keys.firstOrNull()
+        val target = targetKey?.takeIf { it in keys } ?: last ?: peers.firstOrNull { it.kind != DeviceKind.GUEST }?.destinationKey
         return copy(targets = peers, targetKey = target, lastUsedId = lastTargetId)
     }
 

@@ -16,6 +16,13 @@ class SendStateTest {
     @Test fun pastedTextSelectsAllLinks() = assertEquals(setOf("https://a.com", "https://b.com"),
         SendState().withText("see https://a.com and https://b.com").selected)
 
+    @Test fun defaultTargetIsNeverTheGuest() {
+        val guest = Peer("g", "Guest", DeviceKind.GUEST); val pc = Peer("pc1", "Desk", DeviceKind.PC)
+        assertEquals("pc1", SendState().withTargets(listOf(guest, pc), null).targetId)
+        assertEquals("pc1", SendState().withTargets(listOf(guest, pc), "gone").targetId)
+        assertNull(SendState().withTargets(listOf(guest), null).targetId)
+    }
+
     @Test fun togglingDeselects() = assertEquals(listOf(Tab("https://b.com")),
         SendState().withText("https://a.com https://b.com").toggle("https://a.com").tabs())
 

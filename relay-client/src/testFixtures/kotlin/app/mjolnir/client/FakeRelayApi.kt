@@ -24,6 +24,7 @@ import app.mjolnir.protocol.safeRelativePath
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 
@@ -193,10 +194,15 @@ class FakeRelayApi : RelayApi {
         return RoomResponse("room-${++nextRoom}", "secret-$nextRoom", serverNowEpochMs + Limits.GUEST_ROOM_TTL_MS).also { room = it }
     }
 
+    /** While set, [currentRoom] answers with the room as it was when called, but only once this completes. */
+    var currentRoomGate: CompletableDeferred<Unit>? = null
+
     override suspend fun currentRoom(): RoomStatus? {
         check()
-        val r = room ?: return null
-        return RoomStatus(r.roomId, r.expiresAtEpochMs, serverNowEpochMs, roomGuest)
+        val r = room
+        val status = r?.let { RoomStatus(it.roomId, it.expiresAtEpochMs, serverNowEpochMs, roomGuest) }
+        currentRoomGate?.await()
+        return status
     }
 
     override suspend fun endRoom(id: String) {
