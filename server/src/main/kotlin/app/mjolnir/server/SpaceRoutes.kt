@@ -103,6 +103,7 @@ fun Route.spaceRoutes(deps: RelayDeps) {
             val deleted = store.deleteSpace(row.id, me) ?: return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
             deleted.memberIds.filter { it != me }.forEach { deps.hub.emit(it, RelayEvent.SpaceDeleted(row.toRef())) }
             deleted.chats.forEach { (chatId, members) -> (members + row.adminId).toSet().forEach { deps.hub.emit(it, RelayEvent.ChatDeleted(chatId)) } }
+            deleted.invites.forEach { deps.hub.emit(it, RelayEvent.ChatInvitesChanged) }
             call.respond(HttpStatusCode.NoContent)
         }
 

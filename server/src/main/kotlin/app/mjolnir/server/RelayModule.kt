@@ -59,6 +59,7 @@ data class RelayLimits(
     val guestMaxBytes: Long? = null,
     val guestJoinsPerMinutePerIp: Int = 10,
     val roomsPerHourPerDevice: Int = 30,
+    val chatMessagesPerMinute: Int = 60,
 )
 
 data class RelayDeps(
@@ -86,6 +87,7 @@ data class DevicePrincipal(val deviceId: String, val name: String, val kind: Dev
 val RegisterLimit = RateLimitName("register")
 val ClaimLimit = RateLimitName("claim")
 val SendLimit = RateLimitName("send")
+val ChatMessageLimit = RateLimitName("chat-message")
 
 fun Application.relayModule(deps: RelayDeps) {
     install(ContentNegotiation) { json(MjolnirJson) }
@@ -140,6 +142,10 @@ fun Application.relayModule(deps: RelayDeps) {
         }
         register(RoomLimit) {
             rateLimiter(limit = deps.limits.roomsPerHourPerDevice, refillPeriod = 1.hours)
+            requestKey { call -> call.principal<DevicePrincipal>()?.deviceId ?: call.request.origin.remoteHost }
+        }
+        register(ChatMessageLimit) {
+            rateLimiter(limit = deps.limits.chatMessagesPerMinute, refillPeriod = 1.minutes)
             requestKey { call -> call.principal<DevicePrincipal>()?.deviceId ?: call.request.origin.remoteHost }
         }
         register(SendLimit) {

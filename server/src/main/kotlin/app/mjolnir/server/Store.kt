@@ -90,13 +90,15 @@ data class ChatMessageRow(
 data class LeftSpaceResult(
     val changed: Map<String, List<String>> = emptyMap(),
     val deleted: Map<String, List<String>> = emptyMap(),
+    /** Owners, inviters and invitees of the invites that went with the leaver (to tell their invite lists changed). */
+    val invites: Set<String> = emptySet(),
 )
 
 /** [result] of removing a space member, plus the chat fallout in [chats] (empty unless REMOVED). */
 data class SpaceRemoval(val result: Store.Removed, val chats: LeftSpaceResult = LeftSpaceResult())
 
 /** A deleted space: its [memberIds] and the chats that went with it (chat id to member ids). */
-data class DeletedSpace(val memberIds: List<String>, val chats: Map<String, List<String>>)
+data class DeletedSpace(val memberIds: List<String>, val chats: Map<String, List<String>>, val invites: Set<String> = emptySet())
 
 /** What `chat_messages.body_json` holds; attachments join it in the media plan. */
 @Serializable
@@ -529,11 +531,12 @@ class Store(jdbcUrl: String) {
     fun deleteSpace(id: String, actingId: String): DeletedSpace? = transaction {
         if (space(id)?.adminId != actingId) return@transaction null
         val ids = members(id).map { it.id }
+        val invites = chatsIn(id).flatMap { inviteParties(it.id) }.toSet()
         val chats = chatsIn(id).associate { it.id to deleteChat(it.id) }
         conn.prepareStatement("DELETE FROM space_members WHERE space_id=?").use { it.setString(1, id); it.executeUpdate() }
         conn.prepareStatement("DELETE FROM pairings WHERE space_id=?").use { it.setString(1, id); it.executeUpdate() }
         conn.prepareStatement("DELETE FROM spaces WHERE id=?").use { it.setString(1, id); it.executeUpdate() }
-        DeletedSpace(ids, chats)
+        DeletedSpace(ids, chats, invites)
     }
 
     // ---- Chats ----
@@ -685,6 +688,19 @@ class Store(jdbcUrl: String) {
         ) > 0
         if (changed) recordEvent(chatId, from, ChatEvent.OwnerChanged(to), nowMs)
         changed
+    }
+
+    /**
+     * Who should hear that invites of [chatId] changed: its owner plus the inviter and invitee of every invite, limited to
+     * invites involving [involving] (as invitee, or also as inviter when [asInviter]) when given. Empty when none match.
+     */
+    @Synchronized
+    fun inviteParties(chatId: String, involving: String? = null, asInviter: Boolean = true): Set<String> {
+        val chat = chat(chatId) ?: return emptySet()
+        val rows = conn.prepareStatement("SELECT * FROM chat_invites WHERE chat_id=?").use {
+            it.setString(1, chatId); it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toInvite()) } }
+        }.filter { involving == null || it.inviteeId == involving || (asInviter && it.inviterId == involving) }
+        return if (rows.isEmpty()) emptySet() else rows.flatMapTo(linkedSetOf(chat.ownerId)) { listOf(it.inviterId, it.inviteeId) }
     }
 
     private fun inviteExpired(inv: ChatInviteRow, chat: ChatRow, nowMs: Long): Boolean =
@@ -867,14 +883,16 @@ class Store(jdbcUrl: String) {
     fun onLeftSpace(spaceId: String, deviceId: String, nowMs: Long, actingId: String = deviceId): LeftSpaceResult = transaction {
         val changed = LinkedHashMap<String, List<String>>()
         val deleted = LinkedHashMap<String, List<String>>()
+        val invites = linkedSetOf<String>()
         for (chat in chatsIn(spaceId)) {
+            invites += inviteParties(chat.id, deviceId)
             update("DELETE FROM chat_invites WHERE chat_id=? AND (invitee_id=? OR inviter_id=?)", chat.id, deviceId, deviceId)
             if (!isChatMember(chat.id, deviceId)) continue
             val before = chatMembers(chat.id).map { it.id }
             update("DELETE FROM chat_members WHERE chat_id=? AND device_id=?", chat.id, deviceId)
             if (afterMemberGone(chat, deviceId, actingId != deviceId, actingId, nowMs)) changed[chat.id] = before else deleted[chat.id] = before
         }
-        LeftSpaceResult(changed, deleted)
+        LeftSpaceResult(changed, deleted, invites)
     }
 
     /** One UPDATE guarded by the current admin and the target's membership, so of two racing transfers exactly one wins. */

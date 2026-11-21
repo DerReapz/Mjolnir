@@ -107,7 +107,7 @@ class ChatRoutesTest {
         }
     }
 
-    @Test fun nonMemberSpaceMemberSees404Everywhere() = relayTest {
+    @Test fun nonMemberSpaceMemberSees404Everywhere() = relayTest(limits = RelayLimits(registrationsPerHourPerIp = 20)) {
         val k = cast(); val chat = newChat(k.owner, k.space.id)
         val m = say(k.owner, chat.id, "secret")
         assertHidden(k.outsider, chat.id, m.id)
@@ -115,6 +115,9 @@ class ChatRoutesTest {
         val stranger = register("S")
         assertHidden(stranger, chat.id, m.id)
         assertHidden(k.outsider, "nonexistent", m.id)
+        // The admin of a different space has no say here either.
+        val otherAdmin = register("OtherAdmin"); spaceWith(otherAdmin)
+        assertHidden(otherAdmin, chat.id, m.id)
         assertEquals(HttpStatusCode.NotFound, client.get("/v1/spaces/${k.space.id}/chats") { bearerAuth(stranger.token) }.status)
         assertEquals(HttpStatusCode.NotFound, chatResponse(stranger, k.space.id).status)
         // Nothing changed.
@@ -286,7 +289,7 @@ class ChatRoutesTest {
         // The last member leaving the space deletes the chat, and the admin hears of it.
         withEvents(k.admin) {
             client.delete("/v1/spaces/${k.space.id}/members/${k.outsider.deviceId}") { bearerAuth(k.outsider.token) }
-            val events = List(3) { next() }
+            val events = List(2) { next() }
             assertTrue(RelayEvent.ChatDeleted(chat2.id) in events, events.toString())
         }
         assertNull(store.chat(chat2.id))
@@ -442,10 +445,11 @@ class ChatRoutesTest {
     @Test fun pushPingsOtherMembers() { val push = RecordingPush(); relayTest(push = push) {
         val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
         setPushToken(k.admin, "tok-admin"); setPushToken(k.owner, "tok-owner"); setPushToken(k.member, "tok-member"); setPushToken(k.outsider, "tok-out")
-        say(k.member, chat.id, "ping")
-        withTimeout(5_000) { while (push.pinged.isEmpty()) delay(20) }
-        delay(200)
-        assertEquals(listOf("tok-owner"), push.pinged.toList())
+        say(k.member, chat.id, "from member")
+        say(k.owner, chat.id, "from owner")
+        withTimeout(5_000) { while (push.pinged.size < 2) delay(20) }
+        // Each message rang only the other member; never the author, the non-member admin or an outsider.
+        assertEquals(listOf("tok-member", "tok-owner"), push.pinged.sorted())
     } }
 
     @Test fun syncPagesLargeBacklog() = relayTest {
@@ -475,6 +479,85 @@ class ChatRoutesTest {
             post(guest, chat.id, "hi"),
         )) {
             assertEquals(HttpStatusCode.Forbidden, r.status); assertEquals("guest", r.body<ErrorResponse>().error)
+        }
+    }
+
+    @Test fun selfTransferIsRejected() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id)
+        val r = client.post("/v1/chats/${chat.id}/owner") { bearerAuth(k.owner.token); contentType(ContentType.Application.Json); setBody(TransferOwnerRequest(k.owner.deviceId)) }
+        assertEquals(HttpStatusCode.BadRequest, r.status); assertEquals("already_owner", r.body<ErrorResponse>().error)
+    }
+
+    @Test fun messageRoutesAreRateLimited() = relayTest(limits = RelayLimits(chatMessagesPerMinute = 3)) {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        val m = say(k.owner, chat.id, "1")                                    // 1
+        assertEquals(HttpStatusCode.OK, editMessage(k.owner, chat.id, m.id, "2").status) // 2
+        assertEquals(HttpStatusCode.NoContent, delMessage(k.owner, chat.id, m.id).status) // 3
+        assertEquals(HttpStatusCode.TooManyRequests, post(k.owner, chat.id, "4").status)
+        assertEquals(HttpStatusCode.TooManyRequests, editMessage(k.owner, chat.id, m.id, "5").status)
+        assertEquals(HttpStatusCode.TooManyRequests, delMessage(k.owner, chat.id, m.id).status)
+        // The limit is per device, and reading is not limited.
+        assertEquals(HttpStatusCode.Created, post(k.member, chat.id, "x").status)
+        assertEquals(HttpStatusCode.OK, syncResponse(k.owner, chat.id).status)
+    }
+
+    @Test fun chatDeleteTellsPendingInvitees() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        invite(k.member, chat.id, k.outsider.deviceId) // pending: the owner owes an approval
+        withEvents(k.outsider) {
+            assertEquals(HttpStatusCode.NoContent, client.delete("/v1/chats/${chat.id}") { bearerAuth(k.owner.token) }.status)
+            assertEquals(RelayEvent.ChatInvitesChanged, next())
+        }
+        assertEquals(emptyList(), invites(k.outsider))
+    }
+
+    @Test fun inviteeLeavingSpaceTellsOwner() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        invite(k.member, chat.id, k.outsider.deviceId) // the outsider is not in the chat
+        assertEquals(1, invites(k.owner).size)
+        withEvents(k.owner) {
+            client.delete("/v1/spaces/${k.space.id}/members/${k.outsider.deviceId}") { bearerAuth(k.outsider.token) }
+            val events = List(2) { next() }
+            assertTrue(RelayEvent.ChatInvitesChanged in events, events.toString())
+        }
+        assertEquals(emptyList(), invites(k.owner))
+    }
+
+    @Test fun inviterLeavingSpaceTellsApprovedInvitee() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        val inv = invite(k.member, chat.id, k.outsider.deviceId).body<ChatInvite>()
+        act(k.owner, "/v1/chat-invites/${inv.id}/approve")
+        assertEquals(1, invites(k.outsider).size)
+        withEvents(k.outsider) {
+            client.delete("/v1/spaces/${k.space.id}/members/${k.member.deviceId}") { bearerAuth(k.admin.token) }
+            val events = List(2) { next() }
+            assertTrue(RelayEvent.ChatInvitesChanged in events, events.toString())
+        }
+        assertEquals(emptyList(), invites(k.outsider))
+    }
+
+    @Test fun adminRemovalTellsInviteesOfRemovedMember() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        val inv = invite(k.member, chat.id, k.outsider.deviceId).body<ChatInvite>()
+        act(k.owner, "/v1/chat-invites/${inv.id}/approve")
+        withEvents(k.outsider) {
+            assertEquals(HttpStatusCode.NoContent, leaveChat(k.admin, chat.id, k.member.deviceId).status)
+            assertEquals(RelayEvent.ChatInvitesChanged, next())
+        }
+        assertEquals(emptyList(), invites(k.outsider))
+    }
+
+    @Test fun removedMemberGetsChatDeleted() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        val c2 = newChat(k.owner, k.space.id, "Two"); addMember(k.owner, c2.id, k.member)
+        withEvents(k.member) {
+            // Admin removes the member from one chat.
+            leaveChat(k.admin, chat.id, k.member.deviceId)
+            assertEquals(RelayEvent.ChatDeleted(chat.id), next())
+            // Admin removes the member from the space: the other chat goes too.
+            client.delete("/v1/spaces/${k.space.id}/members/${k.member.deviceId}") { bearerAuth(k.admin.token) }
+            val events = List(2) { next() }
+            assertTrue(RelayEvent.ChatDeleted(c2.id) in events, events.toString())
         }
     }
 
