@@ -637,10 +637,10 @@ class ChatRoutesTest {
         assertEquals(0L, first.readRev); assertNull(first.seenAtEpochMs); assertNull(first.readAtEpochMs)
         withEvents(k.owner) {
             assertEquals(HttpStatusCode.NoContent, report(k.member, chat.id, "seen", m.rev).status)
-            assertEquals(RelayEvent.ChatChanged(chat.id, m.rev, receipts = true), next())
+            assertEquals(RelayEvent.ChatChanged(chat.id, m.rev, receipts = listOf(Receipt(k.member.deviceId, m.rev, 0, 5_000, null))), next())
             clock.now = 9_000
             assertEquals(HttpStatusCode.NoContent, report(k.member, chat.id, "read", m.rev).status)
-            assertEquals(RelayEvent.ChatChanged(chat.id, m.rev, receipts = true), next())
+            assertEquals(RelayEvent.ChatChanged(chat.id, m.rev, receipts = listOf(Receipt(k.member.deviceId, m.rev, m.rev, 5_000, 9_000))), next())
             // Repeating changes nothing, so it rings nobody.
             assertEquals(HttpStatusCode.NoContent, report(k.member, chat.id, "read", m.rev).status)
             assertEquals(HttpStatusCode.NoContent, report(k.member, chat.id, "seen", 1).status)
@@ -666,5 +666,32 @@ class ChatRoutesTest {
         assertEquals(HttpStatusCode.OK, client.post("/v1/chats/${chat.id}/join") { bearerAuth(k.admin.token) }.status)
         assertEquals(HttpStatusCode.NoContent, report(k.admin, chat.id, "seen", m.rev).status)
         assertTrue(k.admin.deviceId in sync(k.owner, chat.id).receipts.map { it.deviceId })
+    }
+
+    private suspend fun RelayTestScope.msgReceipts(d: RegisterResponse, chatId: String, msgId: String): HttpResponse =
+        client.get("/v1/chats/$chatId/messages/$msgId/receipts") { bearerAuth(d.token) }
+
+    @Test fun infoTimesArePerMessage() = relayTest {
+        val k = cast(); val chat = newChat(k.owner, k.space.id); addMember(k.owner, chat.id, k.member)
+        val m1 = say(k.owner, chat.id, "one"); val m2 = say(k.owner, chat.id, "two")
+        clock.now = 1_000; report(k.member, chat.id, "seen", m1.rev)
+        clock.now = 2_000; report(k.member, chat.id, "seen", m2.rev)
+        clock.now = 3_000; report(k.member, chat.id, "read", m1.rev)
+        clock.now = 4_000; report(k.member, chat.id, "read", m2.rev)
+        clock.now = 5_000; report(k.owner, chat.id, "read", m2.rev) // read counts as seen
+        fun List<MessageReceipt>.of(d: RegisterResponse) = single { it.deviceId == d.deviceId }
+        val first = msgReceipts(k.owner, chat.id, m1.id).body<List<MessageReceipt>>()
+        assertEquals(MessageReceipt(k.member.deviceId, 1_000, 3_000), first.of(k.member)) // not the latest times
+        val second = msgReceipts(k.owner, chat.id, m2.id).body<List<MessageReceipt>>()
+        assertEquals(MessageReceipt(k.member.deviceId, 2_000, 4_000), second.of(k.member))
+        assertEquals(MessageReceipt(k.owner.deviceId, 5_000, 5_000), second.of(k.owner))
+        // Members and the space admin only; the admin is never listed.
+        assertEquals(2, msgReceipts(k.admin, chat.id, m1.id).body<List<MessageReceipt>>().size)
+        assertEquals(HttpStatusCode.NotFound, msgReceipts(k.outsider, chat.id, m1.id).status)
+        assertEquals(HttpStatusCode.NotFound, msgReceipts(k.owner, chat.id, "nope").status)
+        // The marks go with the chat.
+        assertTrue(store.rowCount("chat_receipt_marks") > 0)
+        client.delete("/v1/chats/${chat.id}") { bearerAuth(k.owner.token) }
+        assertEquals(0, store.rowCount("chat_receipt_marks"))
     }
 }

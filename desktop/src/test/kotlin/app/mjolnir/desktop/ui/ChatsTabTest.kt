@@ -6,6 +6,9 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -16,6 +19,7 @@ import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.InviteState
+import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
@@ -203,6 +207,24 @@ class ChatsTabTest {
         onNodeWithContentDescription("Message info").assertExists()
         onNodeWithText("READ").assertExists(); onNodeWithText("SEEN").assertExists()
         onNodeWithText("Fred's phone").assertExists(); onNodeWithText("Zed's laptop").assertExists()
+    }
+
+    @Test fun infoTimesArePerMessage() = runComposeUiTest {
+        val fmt = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
+        fun at(ms: Long) = fmt.format(java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault()))
+        val early = 1_700_000_000_000L; val late = early + 3 * 3_600_000L
+        show(
+            ui(
+                messages = listOf(msg("m1", me, "first", rev = 1), msg("m2", me, "second", rev = 2)),
+                receipts = listOf(Receipt("me", 2, 2), Receipt("fred", 2, 2, late, late)),
+            ),
+            ChatsActions(onLoadReceipts = { m -> listOf(if (m.id == "m1") MessageReceipt("fred", early, early) else MessageReceipt("fred", late, late)) }),
+        )
+        onAllNodesWithContentDescription("Message menu")[0].performClick() // the older message
+        onNodeWithText("Info").performClick()
+        waitForIdle()
+        onAllNodesWithText(at(early)).assertCountEquals(1) // Fred read it then: the time of that message
+        onAllNodesWithText(at(late)).assertCountEquals(0) // not Fred's latest
     }
 
     @Test fun infoOnlyOnOwnMessages() = runComposeUiTest {

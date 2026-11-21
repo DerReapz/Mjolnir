@@ -5,10 +5,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.mjolnir.client.ChatController
 import app.mjolnir.client.Messages
+import app.mjolnir.client.MentionPicks
 import app.mjolnir.client.capCodePoints
+import app.mjolnir.client.insertMention
 import app.mjolnir.client.latestOwnMessage
 import app.mjolnir.client.mentionSpans
-import app.mjolnir.client.outgoingMentions
 import app.mjolnir.client.receiptLineFor
 import app.mjolnir.client.Nicknames
 import app.mjolnir.client.RelayApi
@@ -20,6 +21,7 @@ import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
+import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
@@ -76,6 +78,7 @@ private const val KEY_CHAT = "chat"
 private const val KEY_EDITING = "editing"
 private fun draftKey(chatId: String) = "draft/$chatId"
 private fun stashKey(chatId: String) = "stash/$chatId"
+private fun picksKey(chatId: String) = "picks/$chatId"
 
 /**
  * The phone's chats: the list, the open chat with its composer, and the chat settings actions. The chat open on screen
@@ -153,6 +156,19 @@ class ChatViewModel(
     fun mentionCandidates(query: String): List<Peer> =
         selectedId.value?.let { controller.mentionCandidates(it, query, ::nameOf) }.orEmpty()
 
+    private fun picks(chatId: String) = MentionPicks(savedState.get<ArrayList<String>>(picksKey(chatId)).orEmpty())
+
+    /** [peer] was picked from the @ picker: their shown name replaces what was typed after the `@`, and the mention is recorded. */
+    fun pickMention(chatId: String, peer: Peer) {
+        val draft = savedState.get<String>(draftKey(chatId)).orEmpty()
+        setDraft(chatId, insertMention(draft, nameOf(peer)))
+        savedState[picksKey(chatId)] = ArrayList(picks(chatId).with(peer.deviceId).ids)
+    }
+
+    /** When each member first saw and read [m], for its Info; empty when that can't be fetched. */
+    suspend fun receiptTimes(m: ChatMessage): List<MessageReceipt> =
+        try { controller.messageReceipts(m.chatId, m.id) } catch (e: CancellationException) { throw e } catch (e: RelayException) { emptyList() }
+
     /** The line under the open chat's latest own message, empty while nobody has seen it. */
     fun receiptLine(): String {
         val latest = latestOwnMessage(messages.value, selfId()) ?: return ""
@@ -224,12 +240,14 @@ class ChatViewModel(
         if (savedState.get<String?>(KEY_EDITING) == null) savedState[stashKey(m.chatId)] = savedState.get<String>(draftKey(m.chatId)).orEmpty()
         savedState[KEY_EDITING] = m.id
         savedState[draftKey(m.chatId)] = text
+        savedState[picksKey(m.chatId)] = ArrayList(MentionPicks.of(m).ids)
     }
 
     fun cancelEdit() {
         val chatId = selectedId.value ?: return
         savedState[KEY_EDITING] = null
         savedState[draftKey(chatId)] = savedState.get<String>(stashKey(chatId)).orEmpty()
+        savedState[picksKey(chatId)] = ArrayList<String>()
     }
 
     /** Sends the draft (or saves the edit); on a refusal the draft stays and the reason becomes the [notice]. */
@@ -240,13 +258,13 @@ class ChatViewModel(
         if (sending) return // a double tap
         sending = true
         val editing = savedState.get<String?>(KEY_EDITING)
-        // Whoever's shown name follows an `@` is mentioned; the wire carries their own name and device id.
-        val (wire, mentions) = outgoingMentions(text.trim(), members.value.filter { it.deviceId != selfId() }.map { it to nameOf(it) })
+        // Only members picked from the picker are mentions; the wire carries their own name and device id.
+        val (wire, mentions) = picks(chatId).outgoing(text.trim(), members.value, selfId(), ::nameOf)
         viewModelScope.launch {
             try {
                 val ok = call { if (editing != null) controller.edit(chatId, editing, wire, mentions) else controller.send(chatId, wire, mentions) } != null
                 if (!ok) return@launch
-                if (editing != null) cancelEdit() else savedState[draftKey(chatId)] = ""
+                if (editing != null) cancelEdit() else { savedState[draftKey(chatId)] = ""; savedState[picksKey(chatId)] = ArrayList<String>() }
             } finally {
                 sending = false
             }

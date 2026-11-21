@@ -43,6 +43,7 @@ class SwitchingRelayApi(private val current: () -> RelayApi) : RelayApi {
     override suspend fun deleteMessage(chatId: String, msgId: String) = current().deleteMessage(chatId, msgId)
     override suspend fun markChatRead(chatId: String, rev: Long) = current().markChatRead(chatId, rev)
     override suspend fun markChatSeen(chatId: String, rev: Long) = current().markChatSeen(chatId, rev)
+    override suspend fun messageReceipts(chatId: String, msgId: String) = current().messageReceipts(chatId, msgId)
     override suspend fun openRoom() = current().openRoom()
     override suspend fun currentRoom() = current().currentRoom()
     override suspend fun endRoom(id: String) = current().endRoom(id)

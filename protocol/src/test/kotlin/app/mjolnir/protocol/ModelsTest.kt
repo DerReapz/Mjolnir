@@ -84,7 +84,7 @@ class ChatModelsTest {
 
     @Test fun chatEventsUseTypeDiscriminator() {
         assertEquals(
-            """{"type":"chat_changed","chatId":"c","rev":3,"mentioned":false,"receipts":false}""",
+            """{"type":"chat_changed","chatId":"c","rev":3,"mentioned":false,"receipts":[]}""",
             MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.ChatChanged("c", 3)),
         )
         // An event from a relay before mentions and receipts still reads, as does a sync without receipts.

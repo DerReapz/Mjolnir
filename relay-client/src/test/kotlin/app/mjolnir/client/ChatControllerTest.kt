@@ -514,11 +514,12 @@ class ChatControllerTest {
         val mine = c.send(chat, "hello")
         c.sync(chat)
         assertEquals(setOf("dev-1", "sam"), c.receipts(chat).value.map { it.deviceId }.toSet())
-        api.incomingSeen(chat, sam, mine.rev)
-        c.onEvent(RelayEvent.ChatChanged(chat, mine.rev, receipts = true)) // the same rev as the cache: it still re-syncs
+        val syncs = api.syncCalls.size
+        c.onEvent(RelayEvent.ChatChanged(chat, mine.rev, receipts = listOf(api.incomingSeen(chat, sam, mine.rev)!!)))
+        assertEquals(syncs, api.syncCalls.size) // the event carries the change: no sync request
         assertEquals(mine.rev, c.receipts(chat).value.single { it.deviceId == "sam" }.seenRev)
-        api.incomingRead(chat, sam, mine.rev)
-        c.onEvent(RelayEvent.ChatChanged(chat, mine.rev, receipts = true))
+        c.onEvent(RelayEvent.ChatChanged(chat, mine.rev, receipts = listOf(api.incomingRead(chat, sam, mine.rev)!!)))
+        assertEquals(syncs, api.syncCalls.size)
         val sams = c.receipts(chat).value.single { it.deviceId == "sam" }
         assertEquals(mine.rev, sams.readRev); assertTrue(sams.readAtEpochMs != null)
         // They survive a restart (the cache).
@@ -566,5 +567,39 @@ class ChatControllerTest {
         assertEquals(listOf("sam"), c.mentionCandidates(chat, "SA").map { it.deviceId })
         assertEquals(listOf("sam"), c.mentionCandidates(chat, "buddy") { if (it.deviceId == "sam") "Buddy" else it.name }.map { it.deviceId })
         assertEquals(emptyList(), c.mentionCandidates(chat, "buddy"))
+    }
+
+    @Test fun infoTimesArePerMessage() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        val m1 = c.send(chat, "one"); val m2 = c.send(chat, "two")
+        api.incomingSeen(chat, sam, m1.rev); api.incomingRead(chat, sam, m1.rev)
+        api.incomingSeen(chat, sam, m2.rev)
+        val first = c.messageReceipts(chat, m1.id).single { it.deviceId == "sam" }
+        val second = c.messageReceipts(chat, m2.id).single { it.deviceId == "sam" }
+        assertTrue(first.readAtEpochMs != null && first.seenAtEpochMs != null)
+        assertNull(second.readAtEpochMs) // not read yet
+        assertTrue(second.seenAtEpochMs!! > first.seenAtEpochMs!!, "the later message was seen later") // not Sam's latest time on both
+    }
+
+    @Test fun mentionAddedByAnEditIsAnnounced() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        val m = api.incoming(chat, sam, "psst")
+        c.sync(chat)
+        assertEquals(listOf(false), seen.map { it.mentionedMe }); seen.clear()
+        api.incomingEdit(chat, m.id, "psst @Me", mentions = listOf("dev-1"))
+        c.onEvent(RelayEvent.ChatChanged(chat, api.chatState.chats.getValue(chat).rev, mentioned = true))
+        assertEquals(listOf("psst @Me" to true), seen.map { it.text to it.mentionedMe })
+        // An edit that keeps an existing mention is not news again, and not while the chat is open here.
+        api.incomingEdit(chat, m.id, "psst @Me!", mentions = listOf("dev-1")); c.sync(chat)
+        assertEquals(1, seen.size)
+        c.openChat.value = chat
+        val m2 = api.incoming(chat, sam, "x"); c.sync(chat); seen.clear()
+        api.incomingEdit(chat, m2.id, "x @Me", mentions = listOf("dev-1")); c.sync(chat)
+        assertTrue(seen.isEmpty())
     }
 }

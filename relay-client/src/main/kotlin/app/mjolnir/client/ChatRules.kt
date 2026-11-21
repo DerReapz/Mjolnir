@@ -30,24 +30,36 @@ fun insertMention(text: String, shown: String): String = text.substring(0, text.
 
 /**
  * What goes on the wire for a [draft] with picked mentions (member and the shown name inserted for it): the text with each
- * `@{shown}` rewritten to the member's own name, so every device can show it by its own nickname, and the device ids of
- * the picks still in the text.
+ * picked `@{shown}` rewritten to the member's own name, so every device can show it by its own nickname, and the device ids
+ * in order of appearance. Only picks count: a name typed without picking stays plain text. Whole names only: "@Ann" is not
+ * inside "@Annabel".
  */
 fun outgoingMentions(draft: String, picked: List<Pair<Peer, String>>): Pair<String, List<String>> {
-    // Longest names first, and only whole names: "@Ann" is not inside "@Annabel".
+    val out = StringBuilder()
     val ids = linkedSetOf<String>()
-    var text = draft
-    val ordered = picked.sortedByDescending { it.second.length }
-    val marks = ordered.mapIndexed { i, (peer, shown) ->
-        val token = Regex("@" + Regex.escape(shown) + "(?![\\p{L}\\p{N}])")
-        if (token.containsMatchIn(text)) {
-            ids += peer.deviceId
-            text = token.replace(text) { "@\u0000$i\u0000" } // park it so a later name cannot match inside the replacement
-        }
-        "@\u0000$i\u0000" to "@${peer.name}"
+    var i = 0
+    while (i < draft.length) {
+        val hit = if (draft[i] == '@') picked.filter { isMentionAt(draft, i, it.second) }.maxByOrNull { it.second.length } else null
+        if (hit == null) { out.append(draft[i]); i++; continue }
+        out.append('@').append(hit.first.name)
+        ids += hit.first.deviceId
+        i += 1 + hit.second.length
     }
-    for ((mark, name) in marks) text = text.replace(mark, name)
-    return text to picked.map { it.first.deviceId }.distinct().filter { it in ids }
+    return out.toString() to ids.toList()
+}
+
+/** The members picked from the @ picker for a message being written: the only way a mention is recorded. Both apps track picks with it. */
+data class MentionPicks(val ids: List<String> = emptyList()) {
+    fun with(deviceId: String) = if (deviceId in ids) this else MentionPicks(ids + deviceId)
+
+    /** The wire text and mentions of [draft] (see [outgoingMentions]); never yourself, never a member who left. */
+    fun outgoing(draft: String, members: List<Peer>, selfId: String?, shownName: (Peer) -> String = { it.name }): Pair<String, List<String>> =
+        outgoingMentions(draft, ids.mapNotNull { id -> members.firstOrNull { it.deviceId == id && it.deviceId != selfId } }.map { it to shownName(it) })
+
+    companion object {
+        /** Picks for editing [message]: its mentions are already picked. */
+        fun of(message: ChatMessage) = MentionPicks(message.mentions)
+    }
 }
 
 private fun isMentionAt(text: String, at: Int, name: String): Boolean {
@@ -58,15 +70,24 @@ private fun isMentionAt(text: String, at: Int, name: String): Boolean {
 /** A message's text as shown on this device, with the character ranges of its mention chips. */
 data class ShownText(val text: String, val spans: List<IntRange>)
 
-/** [text] with each mentioned member's `@{name}` shown as `@{shownName}`; [ShownText.spans] mark them for the amber chip style. */
+/**
+ * [text] with each mentioned member's `@{name}` shown as `@{shownName}`; [ShownText.spans] mark them for the amber chip style.
+ * Mentions resolve by the recorded device ids, in order: of two members with the same name, the first `@name` is the first
+ * mentioned id and the second the second, each shown by its own nickname.
+ */
 fun mentionSpans(text: String, mentions: List<String>, members: List<Peer>, shownName: (Peer) -> String = { it.name }): ShownText {
-    val peers = mentions.mapNotNull { id -> members.firstOrNull { it.deviceId == id } }.distinct()
+    val peers = mentions.distinct().mapNotNull { id -> members.firstOrNull { it.deviceId == id } }
+    val used = mutableSetOf<String>()
     val spans = mutableListOf<IntRange>()
     val out = StringBuilder()
     var i = 0
     while (i < text.length) {
-        val hit = if (text[i] == '@') peers.filter { isMentionAt(text, i, it.name) }.maxByOrNull { it.name.length } else null
+        val matching = if (text[i] == '@') peers.filter { isMentionAt(text, i, it.name) } else emptyList()
+        val longest = matching.maxOfOrNull { it.name.length }
+        val named = matching.filter { it.name.length == longest }
+        val hit = named.firstOrNull { it.deviceId !in used } ?: named.firstOrNull()
         if (hit == null) { out.append(text[i]); i++; continue }
+        used += hit.deviceId
         val shown = "@" + shownName(hit)
         spans += out.length until out.length + shown.length
         out.append(shown)

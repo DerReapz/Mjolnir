@@ -138,10 +138,23 @@ class ChatViewModelTest {
         val vm = newVm()
         vm.refresh(); vm.open(chat); advanceUntilIdle()
         assertEquals(listOf("sam"), vm.mentionCandidates("wise").map { it.deviceId })
-        vm.setDraft(chat, "hi @Samwise and @Annabel"); vm.send(); advanceUntilIdle()
+        vm.setDraft(chat, "hi @sam"); vm.pickMention(chat, sam) // picked: "@Samwise" replaces what was typed
+        assertEquals("hi @Samwise ", vm.draft(chat).value)
+        vm.setDraft(chat, vm.draft(chat).value + "and @Ann"); vm.send(); advanceUntilIdle()
         val sent = vm.messages.value.single { it.event == null }
-        assertEquals(listOf("sam"), sent.mentions) // "@Annabel" is nobody: Ann is not "Annabel"
-        assertEquals("hi @Sam and @Annabel", sent.text) // the member's own name on the wire, shown by nickname everywhere
+        assertEquals(listOf("sam"), sent.mentions) // "@Ann" was typed, not picked: plain text
+        assertEquals("hi @Sam and @Ann", sent.text) // the member's own name on the wire, shown by nickname everywhere
+    }
+
+    @Test fun infoTimesComeFromTheRelayPerMessage() = runTest {
+        val chat = api.addChat("s1", "General", owner = me, members = listOf(me, sam))
+        val vm = newVm()
+        vm.refresh(); vm.open(chat); advanceUntilIdle()
+        val m1 = controller.send(chat, "one"); val m2 = controller.send(chat, "two")
+        api.incomingSeen(chat, sam, m1.rev); api.incomingSeen(chat, sam, m2.rev)
+        val t1 = vm.receiptTimes(m1).single { it.deviceId == "sam" }.seenAtEpochMs!!
+        val t2 = vm.receiptTimes(m2).single { it.deviceId == "sam" }.seenAtEpochMs!!
+        assertTrue(t1 < t2)
     }
 
     @Test fun receiptsAndMentionMarkerReachTheScreens() = runTest {
@@ -149,8 +162,7 @@ class ChatViewModelTest {
         val vm = newVm()
         vm.refresh(); vm.open(chat); advanceUntilIdle()
         val mine = controller.send(chat, "hello"); advanceUntilIdle()
-        api.incomingRead(chat, sam, mine.rev)
-        controller.onEvent(app.mjolnir.protocol.RelayEvent.ChatChanged(chat, mine.rev, receipts = true)); advanceUntilIdle()
+        controller.onEvent(app.mjolnir.protocol.RelayEvent.ChatChanged(chat, mine.rev, receipts = listOfNotNull(api.incomingRead(chat, sam, mine.rev)))); advanceUntilIdle()
         assertEquals("Read by everyone", vm.receiptLine())
         chatsVisible.value = false; advanceUntilIdle()
         api.incoming(chat, sam, "@Me", mentions = listOf(me.deviceId))

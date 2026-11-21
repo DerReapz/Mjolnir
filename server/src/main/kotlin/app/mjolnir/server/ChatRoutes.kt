@@ -127,7 +127,8 @@ fun Route.chatRoutes(deps: RelayDeps) {
     /** Receipts changed, not the chat: a rev-less event for everyone who shows them, other than the reporter. */
     fun emitReceipts(chat: ChatRow, actor: String) {
         val rev = store.chat(chat.id)?.rev ?: return
-        (audience(chat) - actor).forEach { deps.hub.emit(it, RelayEvent.ChatChanged(chat.id, rev, receipts = true)) }
+        val changed = store.receipts(chat.id).filter { it.deviceId == actor }
+        (audience(chat) - actor).forEach { deps.hub.emit(it, RelayEvent.ChatChanged(chat.id, rev, receipts = changed)) }
     }
 
     fun emitInvites(chat: ChatRow, vararg others: String) {
@@ -339,6 +340,12 @@ fun Route.chatRoutes(deps: RelayDeps) {
             if (!a.isMember) return@post call.error(HttpStatusCode.Forbidden, "not_member")
             if (store.markRead(a.chat.id, a.me, call.receive<ReadRequest>().rev, deps.clock.nowMs())) emitReceipts(a.chat, a.me)
             call.respond(HttpStatusCode.NoContent)
+        }
+
+        get("/v1/chats/{id}/messages/{msgId}/receipts") {
+            val a = call.access() ?: return@get
+            val msg = store.message(a.chat.id, call.parameters["msgId"]!!) ?: return@get call.error(HttpStatusCode.NotFound, "not_found")
+            call.respond(store.messageReceipts(a.chat.id, msg.rev))
         }
 
         post("/v1/chats/{id}/seen") {

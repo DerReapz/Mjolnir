@@ -61,6 +61,7 @@ class ChatRulesTest {
     @Test fun outgoingMentionsUseTheCanonicalNameAndDropEditedOnes() {
         val picked = listOf(ann to "Annie", bo to "Bo")
         assertEquals("hi @Ann and @Bo" to listOf("ann", "bo"), outgoingMentions("hi @Annie and @Bo", picked))
+        assertEquals("@Bo @Ann" to listOf("bo", "ann"), outgoingMentions("@Bo @Annie", picked)) // in order of appearance
         assertEquals("hi @Ann and Bo" to listOf("ann"), outgoingMentions("hi @Annie and Bo", picked)) // "@Bo" was edited away
         assertEquals("plain" to emptyList(), outgoingMentions("plain", picked))
     }
@@ -126,5 +127,30 @@ class ChatRulesTest {
             segs,
         )
         assertEquals(listOf(Segment("plain")), messageSegments("plain", emptyList(), emptyList()))
+    }
+
+    @Test fun typedNameWithoutPickingIsNotAMention() {
+        val members = listOf(me, ann, bo)
+        assertEquals("hi @Ann" to emptyList(), MentionPicks().outgoing("hi @Ann", members, "me"))
+        val picks = MentionPicks().with("bo").with("bo")
+        assertEquals(listOf("bo"), picks.ids)
+        assertEquals("hi @Ann @Bo" to listOf("bo"), picks.outgoing("hi @Ann @Bo", members, "me")) // only the picked one counts
+        assertEquals("hi @Ann" to emptyList(), picks.outgoing("hi @Ann", members, "me")) // picked, then edited away
+        assertEquals("@Me" to emptyList(), MentionPicks().with("me").outgoing("@Me", members, "me")) // never yourself
+        assertEquals(listOf("ann"), MentionPicks.of(msg("a", me, 1).copy(mentions = listOf("ann"))).ids)
+    }
+
+    @Test fun duplicateNamesResolveByRecordedIds() {
+        val a = Peer("a", "Sam", DeviceKind.PC); val b = Peer("b", "Sam", DeviceKind.PHONE)
+        val nick = { p: Peer -> if (p.deviceId == "a") "Sam A" else "Sam B" }
+        val shown = mentionSpans("@Sam and @Sam", listOf("a", "b"), listOf(me, a, b), nick)
+        assertEquals("@Sam A and @Sam B", shown.text)
+        assertEquals(listOf("@Sam A", "@Sam B"), shown.spans.map { shown.text.substring(it) })
+        // Only the second was mentioned: the one id gets the first `@Sam`, as nothing else tells them apart; no chip for a stranger.
+        val one = mentionSpans("@Sam", listOf("b"), listOf(me, a, b), nick)
+        assertEquals("@Sam B", one.text)
+        assertEquals(emptyList(), mentionSpans("@Sam", emptyList(), listOf(a, b), nick).spans)
+        // On the sending side two picked twins stay apart by their shown names.
+        assertEquals("@Sam @Sam" to listOf("a", "b"), outgoingMentions("@Sam A @Sam B", listOf(a to "Sam A", b to "Sam B")))
     }
 }

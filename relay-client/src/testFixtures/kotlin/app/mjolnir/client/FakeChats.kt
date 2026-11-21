@@ -9,6 +9,7 @@ import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.RelayEvent
 
@@ -125,10 +126,10 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     }
 
     /** The author of [msgId] edits it. */
-    fun incomingEdit(chatId: String, msgId: String, text: String) {
+    fun incomingEdit(chatId: String, msgId: String, text: String, mentions: List<String>? = null) {
         val chat = chats.getValue(chatId)
         val i = chat.messages.indexOfFirst { it.id == msgId }
-        chat.messages[i] = chat.messages[i].copy(rev = ++chat.rev, editedAtEpochMs = tick(), text = text)
+        chat.messages[i] = chat.messages[i].copy(rev = ++chat.rev, editedAtEpochMs = tick(), text = text, mentions = mentions ?: chat.messages[i].mentions)
         changed(chat)
     }
 
@@ -153,18 +154,47 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
 
     fun readRev(chatId: String): Long = chats.getValue(chatId).readRevs[meId] ?: 0
 
+    private class Mark(val deviceId: String, val kind: String, val rev: Long, val at: Long)
+    private val marks = LinkedHashMap<String, MutableList<Mark>>()
+
+    private fun receiptFor(chat: Chat, id: String) =
+        Receipt(id, maxOf(chat.seenRevs[id] ?: 0, chat.readRevs[id] ?: 0), chat.readRevs[id] ?: 0, chat.seenAt[id], chat.readAt[id])
+
+    /** [id] moves its seen (or, with [read], read and seen) marker to [rev] (never above the chat's); the new receipt, or null when nothing moved. */
+    private fun report(chat: Chat, id: String, read: Boolean, rev: Long): Receipt? {
+        val to = minOf(rev, chat.rev)
+        val at = tick()
+        val list = marks.getOrPut(chat.id) { mutableListOf() }
+        var moved = false
+        if (read && to > (chat.readRevs[id] ?: 0)) {
+            chat.readRevs[id] = to; chat.readAt[id] = at; list += Mark(id, "read", to, at); moved = true
+        }
+        if (to > (chat.seenRevs[id] ?: 0)) { chat.seenRevs[id] = to; chat.seenAt[id] = at; list += Mark(id, "seen", to, at); moved = true }
+        return if (moved) receiptFor(chat, id) else null
+    }
+
+    private fun emitReceipt(chat: Chat, r: Receipt?) {
+        if (r != null) api.events.tryEmit(RelayEvent.ChatChanged(chat.id, chat.rev, receipts = listOf(r)))
+    }
+
     /** [by] reports having seen the chat up to [rev]; the viewer's relay connection is told (the rev stays). */
-    fun incomingSeen(chatId: String, by: Peer, rev: Long) {
+    fun incomingSeen(chatId: String, by: Peer, rev: Long): Receipt? {
         val chat = chats.getValue(chatId)
-        chat.seenRevs[by.deviceId] = maxOf(chat.seenRevs[by.deviceId] ?: 0, rev); chat.seenAt[by.deviceId] = tick()
-        api.events.tryEmit(RelayEvent.ChatChanged(chat.id, chat.rev, receipts = true))
+        return report(chat, by.deviceId, read = false, rev = rev).also { emitReceipt(chat, it) }
     }
 
     /** [by] reports having read the chat up to [rev] (which counts as seen). */
-    fun incomingRead(chatId: String, by: Peer, rev: Long) {
+    fun incomingRead(chatId: String, by: Peer, rev: Long): Receipt? {
         val chat = chats.getValue(chatId)
-        chat.readRevs[by.deviceId] = maxOf(chat.readRevs[by.deviceId] ?: 0, rev); chat.readAt[by.deviceId] = tick()
-        api.events.tryEmit(RelayEvent.ChatChanged(chat.id, chat.rev, receipts = true))
+        return report(chat, by.deviceId, read = true, rev = rev).also { emitReceipt(chat, it) }
+    }
+
+    /** When each member first saw and read [msgId]: the first mark at or above its rev. */
+    fun messageReceipts(chatId: String, msgId: String): List<MessageReceipt> {
+        val a = access(chatId)
+        val msg = a.chat.messages.firstOrNull { it.id == msgId && it.event == null } ?: throw notFound
+        fun first(id: String, kind: String) = marks[chatId].orEmpty().filter { it.deviceId == id && it.kind == kind && it.rev >= msg.rev }.minOfOrNull { it.at }
+        return a.chat.members.map { MessageReceipt(it.deviceId, first(it.deviceId, "seen"), first(it.deviceId, "read")) }
     }
 
     fun seenRev(chatId: String): Long = chats.getValue(chatId).seenRevs[meId] ?: 0
@@ -365,8 +395,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         val a = access(chatId)
         if (!a.isMember) throw err(RelayErrorKind.NOT_PAIRED, "not_member")
         readCalls += chatId to rev
-        a.chat.readRevs[meId] = maxOf(a.chat.readRevs[meId] ?: 0, minOf(rev, a.chat.rev))
-        a.chat.readAt[meId] = tick()
+        report(a.chat, meId, read = true, rev = rev)
     }
 
     fun markSeen(chatId: String, rev: Long) {
@@ -374,8 +403,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         if (!a.isMember) throw err(RelayErrorKind.NOT_PAIRED, "not_member")
         if (failSeen) throw err(RelayErrorKind.NETWORK, "down")
         seenCalls += chatId to rev
-        a.chat.seenRevs[meId] = maxOf(a.chat.seenRevs[meId] ?: 0, minOf(rev, a.chat.rev))
-        a.chat.seenAt[meId] = tick()
+        report(a.chat, meId, read = false, rev = rev)
     }
 
     private companion object {

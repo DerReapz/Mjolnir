@@ -28,7 +28,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -67,6 +67,7 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.mjolnir.client.MentionPicks
 import app.mjolnir.client.Messages
 import app.mjolnir.client.Segment
 import app.mjolnir.client.capCodePoints
@@ -78,7 +79,6 @@ import app.mjolnir.client.mentionQuery
 import app.mjolnir.client.mentionSpans
 import app.mjolnir.client.messageReceipts
 import app.mjolnir.client.messageSegments
-import app.mjolnir.client.outgoingMentions
 import app.mjolnir.client.receiptLineFor
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.TextPart
@@ -92,6 +92,7 @@ import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
+import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
@@ -148,6 +149,8 @@ class ChatsActions(
     /** Text and the device ids it mentions. */
     val onSend: suspend (String, List<String>) -> Boolean = { _, _ -> true },
     val onSaveEdit: suspend (ChatMessage, String, List<String>) -> Boolean = { _, _, _ -> true },
+    /** When each member first saw and read the message, for its Info; empty when that can't be fetched. */
+    val onLoadReceipts: suspend (ChatMessage) -> List<MessageReceipt> = { emptyList() },
     val onDeleteMessage: (ChatMessage) -> Unit = {},
     val onCopy: (String) -> Unit = {},
     val onOpenLink: (String) -> Unit = {},
@@ -382,7 +385,7 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
             }
         }
     }
-    info?.let { MessageInfoDialog(it, ui, onClose = { info = null }) }
+    info?.let { MessageInfoDialog(it, ui, actions, onClose = { info = null }) }
 }
 
 /** The line under your latest message ("Read by Ann · Seen by Bo"), or empty while nobody has seen it. */
@@ -390,14 +393,18 @@ private fun receiptLineOf(m: ChatMessage, ui: ChatsUi): String = receiptLineFor(
 
 /** ⋯ → *Info*: who has read and who has only seen the message, with times. */
 @Composable
-private fun MessageInfoDialog(m: ChatMessage, ui: ChatsUi, onClose: () -> Unit) {
+private fun MessageInfoDialog(m: ChatMessage, ui: ChatsUi, actions: ChatsActions, onClose: () -> Unit) {
     val r = messageReceipts(m, ui.receipts, ui.members)
+    val times by produceState(emptyList<MessageReceipt>(), m.id) { value = actions.onLoadReceipts(m) } // this message's own times, not the member's latest
     ForgeModal(onDismiss = onClose) {
         Column(Modifier.semantics { contentDescription = "Message info" }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(Messages.INFO, style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
-            for ((label, list, at) in listOf(Triple(Messages.READ, r.read, { rc: Receipt -> rc.readAtEpochMs }), Triple(Messages.SEEN, r.seen, { rc: Receipt -> rc.seenAtEpochMs }))) {
+            for ((label, list, at) in listOf(
+                Triple(Messages.READ, r.read, { rc: Receipt -> times.firstOrNull { it.deviceId == rc.deviceId }?.readAtEpochMs }),
+                Triple(Messages.SEEN, r.seen, { rc: Receipt -> times.firstOrNull { it.deviceId == rc.deviceId }?.seenAtEpochMs }),
+            )) {
                 ForgeSectionLabel(label)
-                if (list.isEmpty()) Text("Nobody yet", style = body(13, color = Forge.muted))
+                if (list.isEmpty()) Text(Messages.NOBODY_YET, style = body(13, color = Forge.muted))
                 for (rc in list) {
                     val name = ui.members.firstOrNull { it.deviceId == rc.deviceId }?.let(ui.nicknameOf) ?: continue
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -545,30 +552,26 @@ private fun Composer(chat: ChatSummary, editing: ChatMessage?, ui: ChatsUi, acti
     // Editing starts from the text as shown here (nicknames), with the message's mentions already picked.
     val start = remember(chat.id, editing?.id) { editing?.let { mentionSpans(it.text.orEmpty(), it.mentions, ui.members, ui.nicknameOf).text }.orEmpty() }
     var text by remember(chat.id, editing?.id) { mutableStateOf(start) }
-    val picked = remember(chat.id, editing?.id) {
-        mutableStateListOf<Pair<Peer, String>>().also { l ->
-            editing?.mentions?.forEach { id -> ui.members.firstOrNull { it.deviceId == id }?.let { l += it to ui.nicknameOf(it) } }
-        }
-    }
+    // Only members picked from the picker are mentions; typing "@Name" yourself is plain text.
+    var picks by remember(chat.id, editing?.id) { mutableStateOf(editing?.let(MentionPicks::of) ?: MentionPicks()) }
     val query = mentionQuery(text)
     val candidates = if (query == null) emptyList() else mentionCandidates(ui.members, ui.selfId, query, ui.nicknameOf)
     fun pick(peer: Peer) {
         val shown = ui.nicknameOf(peer)
         text = capCodePoints(insertMention(text, shown), Limits.MAX_CHAT_TEXT_LENGTH)
-        picked.removeAll { it.first.deviceId == peer.deviceId }
-        picked += peer to shown
+        picks = picks.with(peer.deviceId)
     }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val canSend = text.isNotBlank() && !busy
     fun submit() {
         if (!canSend) return
-        val (sending, mentions) = outgoingMentions(text, picked.toList())
+        val (sending, mentions) = picks.outgoing(text, ui.members, ui.selfId, ui.nicknameOf)
         busy = true
         scope.launch {
             try {
                 val ok = if (editing != null) actions.onSaveEdit(editing, sending, mentions) else actions.onSend(sending.trim(), mentions)
-                if (ok) { text = ""; picked.clear(); onDone() }
+                if (ok) { text = ""; picks = MentionPicks(); onDone() }
             } finally {
                 busy = false
             }
@@ -682,6 +685,7 @@ fun ChatsTab(c: AppController) {
         onDecline = { i -> run { declineInvite(i.id) } },
         onSend = { text, mentions -> id != null && c.chatCall { send(id, text, mentions) } != null },
         onSaveEdit = { m, text, mentions -> c.chatCall { edit(m.chatId, m.id, text, mentions) } != null },
+        onLoadReceipts = { m -> try { c.chats.messageReceipts(m.chatId, m.id) } catch (_: RelayException) { emptyList() } },
         onDeleteMessage = { m -> run { delete(m.chatId, m.id) } },
         onCopy = ::copyToClipboard,
         onOpenLink = { url -> c.scope.launch(Dispatchers.IO) { try { browseWithSystem(URI(url)) } catch (_: Exception) {} } },

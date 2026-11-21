@@ -4,6 +4,7 @@ import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.FileRef
 import app.mjolnir.protocol.ChatEvent
+import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
@@ -231,6 +232,15 @@ class Store(jdbcUrl: String) {
                     state TEXT NOT NULL,
                     created_at INTEGER NOT NULL)"""
             )
+            it.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS chat_receipt_marks(
+                    chat_id TEXT NOT NULL,
+                    device_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    rev INTEGER NOT NULL,
+                    at INTEGER NOT NULL)"""
+            )
+            it.executeUpdate("CREATE INDEX IF NOT EXISTS chat_receipt_marks_chat ON chat_receipt_marks(chat_id, device_id, kind, rev)")
             it.executeUpdate("CREATE INDEX IF NOT EXISTS chat_invites_chat ON chat_invites(chat_id)")
             it.executeUpdate("CREATE INDEX IF NOT EXISTS chat_invites_invitee ON chat_invites(invitee_id)")
             it.executeUpdate(
@@ -641,6 +651,7 @@ class Store(jdbcUrl: String) {
     fun deleteChat(id: String): List<String> = transaction {
         val ids = chatMembers(id).map { it.id }
         update("DELETE FROM chat_messages WHERE chat_id=?", id)
+        update("DELETE FROM chat_receipt_marks WHERE chat_id=?", id)
         update("DELETE FROM chat_members WHERE chat_id=?", id)
         update("DELETE FROM chat_invites WHERE chat_id=?", id)
         update("DELETE FROM chats WHERE id=?", id)
@@ -670,6 +681,7 @@ class Store(jdbcUrl: String) {
         if (!isChatMember(chatId, deviceId)) return@transaction RemoveResult.NOT_MEMBER
         if (chat.ownerId == deviceId && !byAdmin) return@transaction RemoveResult.OWNER_MUST_TRANSFER
         update("DELETE FROM chat_members WHERE chat_id=? AND device_id=?", chatId, deviceId)
+        update("DELETE FROM chat_receipt_marks WHERE chat_id=? AND device_id=?", chatId, deviceId)
         update("DELETE FROM chat_invites WHERE chat_id=? AND invitee_id=?", chatId, deviceId)
         if (byAdmin) update("DELETE FROM chat_invites WHERE chat_id=? AND inviter_id=?", chatId, deviceId)
         if (afterMemberGone(chat, deviceId, byAdmin, actorId, nowMs)) RemoveResult.REMOVED else RemoveResult.LAST_MEMBER_DELETED
@@ -875,20 +887,43 @@ class Store(jdbcUrl: String) {
      * having seen. True when the marker moved.
      */
     @Synchronized
-    fun markRead(chatId: String, deviceId: String, rev: Long, nowMs: Long): Boolean {
-        val to = minOf(rev, chat(chatId)?.rev ?: return false)
-        return update(
+    fun markRead(chatId: String, deviceId: String, rev: Long, nowMs: Long): Boolean = transaction {
+        val to = minOf(rev, chat(chatId)?.rev ?: return@transaction false)
+        val seenBefore = receipts(chatId).firstOrNull { it.deviceId == deviceId }?.seenRev ?: 0L
+        val moved = update(
             """UPDATE chat_members SET read_rev=?, read_at=?, seen_at=CASE WHEN ?>seen_rev THEN ? ELSE seen_at END,
                seen_rev=MAX(seen_rev, ?) WHERE chat_id=? AND device_id=? AND ?>read_rev""",
             to, nowMs, to, nowMs, to, chatId, deviceId, to,
         ) > 0
+        if (moved) {
+            mark(chatId, deviceId, "read", to, nowMs)
+            if (to > seenBefore) mark(chatId, deviceId, "seen", to, nowMs)
+        }
+        moved
+    }
+
+    /** One more step of a member's marker: what lets a message tell when each member first saw or read it. */
+    private fun mark(chatId: String, deviceId: String, kind: String, rev: Long, nowMs: Long) {
+        update("INSERT INTO chat_receipt_marks(chat_id,device_id,kind,rev,at) VALUES(?,?,?,?,?)", chatId, deviceId, kind, rev, nowMs)
     }
 
     /** Raises [deviceId]'s seen marker in [chatId] to [rev] (never lowers it, never above the chat's rev). True when it moved. */
     @Synchronized
-    fun markSeen(chatId: String, deviceId: String, rev: Long, nowMs: Long): Boolean {
-        val to = minOf(rev, chat(chatId)?.rev ?: return false)
-        return update("UPDATE chat_members SET seen_rev=?, seen_at=? WHERE chat_id=? AND device_id=? AND ?>seen_rev", to, nowMs, chatId, deviceId, to) > 0
+    fun markSeen(chatId: String, deviceId: String, rev: Long, nowMs: Long): Boolean = transaction {
+        val to = minOf(rev, chat(chatId)?.rev ?: return@transaction false)
+        val moved = update("UPDATE chat_members SET seen_rev=?, seen_at=? WHERE chat_id=? AND device_id=? AND ?>seen_rev", to, nowMs, chatId, deviceId, to) > 0
+        if (moved) mark(chatId, deviceId, "seen", to, nowMs)
+        moved
+    }
+
+    /** For each current member of [chatId], when it first saw and first read a message of revision [msgRev]: the first mark at or above it. */
+    @Synchronized
+    fun messageReceipts(chatId: String, msgRev: Long): List<MessageReceipt> = receipts(chatId).map { r ->
+        fun first(kind: String): Long? = conn.prepareStatement("SELECT MIN(at) FROM chat_receipt_marks WHERE chat_id=? AND device_id=? AND kind=? AND rev>=?").use {
+            it.setString(1, chatId); it.setString(2, r.deviceId); it.setString(3, kind); it.setLong(4, msgRev)
+            it.executeQuery().use { rs -> rs.next(); rs.getLong(1).takeIf { _ -> !rs.wasNull() } }
+        }
+        MessageReceipt(r.deviceId, first("seen"), first("read"))
     }
 
     /** One receipt per current member of [chatId], earliest joiner first. */
@@ -929,6 +964,7 @@ class Store(jdbcUrl: String) {
             if (!isChatMember(chat.id, deviceId)) continue
             val before = chatMembers(chat.id).map { it.id }
             update("DELETE FROM chat_members WHERE chat_id=? AND device_id=?", chat.id, deviceId)
+            update("DELETE FROM chat_receipt_marks WHERE chat_id=? AND device_id=?", chat.id, deviceId)
             if (afterMemberGone(chat, deviceId, actingId != deviceId, actingId, nowMs)) changed[chat.id] = before else deleted[chat.id] = before
         }
         LeftSpaceResult(changed, deleted, invites)
@@ -1385,7 +1421,7 @@ class Store(jdbcUrl: String) {
     /** Row count of one of the relay's tables; for tests and diagnostics. */
     @Synchronized
     fun rowCount(table: String): Int {
-        require(table in setOf("devices", "pairings", "links", "deliveries", "uploads", "files", "spaces", "space_members", "rooms", "chats", "chat_members", "chat_invites", "chat_messages")) { "unknown table" }
+        require(table in setOf("devices", "pairings", "links", "deliveries", "uploads", "files", "spaces", "space_members", "rooms", "chats", "chat_members", "chat_invites", "chat_messages", "chat_receipt_marks")) { "unknown table" }
         return conn.createStatement().use { st -> st.executeQuery("SELECT COUNT(*) FROM $table").use { rs -> rs.next(); rs.getInt(1) } }
     }
 

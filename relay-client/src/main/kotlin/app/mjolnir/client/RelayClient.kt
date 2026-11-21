@@ -4,6 +4,7 @@ import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.ChatSync
+import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.ClaimRequest
 import app.mjolnir.protocol.CreateChatRequest
 import app.mjolnir.protocol.EditMessageRequest
@@ -334,6 +335,10 @@ class RelayClient(
 
     override suspend fun markChatSeen(chatId: String, rev: Long) {
         call { http.post("$base/v1/chats/$chatId/seen") { auth(); jsonBody(SeenRequest(rev)) } }
+    }
+
+    override suspend fun messageReceipts(chatId: String, msgId: String): List<MessageReceipt> = callBody {
+        http.get("$base/v1/chats/$chatId/messages/$msgId/receipts") { auth() }
     }
 
     override suspend fun openRoom(): RoomResponse = callBody { http.post("$base/v1/rooms") { auth() } }

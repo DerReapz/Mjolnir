@@ -5,6 +5,7 @@ import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.Limits
+import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.RelayEvent
@@ -165,7 +166,10 @@ class ChatController(
             val hasHistory = before.rev > 0 || before.announcedRev > 0 || _chats.value.firstOrNull { it.id == chatId }?.rev == 0L
             val start = floor ?: if (hasHistory) before.announcedRev else Long.MAX_VALUE
             // New to the user: above the start, and not an edit of something already announced.
-            fun fresh(m: ChatMessage) = m.rev > start && (before.messages[m.id]?.let { it.rev > before.announcedRev } ?: true)
+            val self = me()
+            // A mention of this device added by an edit is news too, though the message itself was announced before.
+            fun addedMention(m: ChatMessage) = m.rev > start && self != null && self in m.mentions && before.messages[m.id]?.let { self !in it.mentions } == true
+            fun fresh(m: ChatMessage) = m.rev > start && (before.messages[m.id]?.let { it.rev > before.announcedRev } ?: true) || addedMention(m)
             var since = before.rev
             var latest = before
             var renamed: String? = null
@@ -203,6 +207,19 @@ class ChatController(
             if (synced) afterSync(chatId)
         }
     }
+
+    /** Replaces the receipts of the members in [changed], in the cache and on screen. */
+    private fun applyReceipts(chatId: String, changed: List<Receipt>) {
+        if (_chats.value.none { it.id == chatId }) return
+        val cached = store.update(chatId) { c ->
+            val byId = changed.associateBy { it.deviceId }
+            c.copy(receipts = c.receipts.map { byId[it.deviceId] ?: it } + changed.filter { n -> c.receipts.none { it.deviceId == n.deviceId } })
+        }
+        live(chatId).receipts.value = cached.receipts
+    }
+
+    /** When each member first saw and read [msgId]; throws the [RelayException] of a refused call (the Info dialog shows no times then). */
+    suspend fun messageReceipts(chatId: String, msgId: String): List<MessageReceipt> = requireApi().messageReceipts(chatId, msgId)
 
     private fun isMember(cached: CachedChat) = me()?.let { id -> cached.members.any { it.deviceId == id } } == true
 
@@ -333,13 +350,11 @@ class ChatController(
         }
     }
 
-    private suspend fun chatChanged(chatId: String, rev: Long, receipts: Boolean) {
+    private suspend fun chatChanged(chatId: String, rev: Long, receipts: List<Receipt>) {
+        if (receipts.isNotEmpty()) applyReceipts(chatId, receipts) // someone's seen or read marker moved: no sync needed for that
         if (_chats.value.none { it.id == chatId }) refreshAll(chatId to rev) // a chat we have not seen yet
         val have = store.read(chatId).rev
-        if (have >= rev && _chats.value.any { it.id == chatId }) {
-            if (receipts) syncChat(chatId, null) // nothing new in the chat, but someone's seen or read marker moved
-            return
-        }
+        if (have >= rev && _chats.value.any { it.id == chatId }) return
         syncChat(chatId, if (have == 0L) rev - 1 else null)
     }
 

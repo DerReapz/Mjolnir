@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -68,13 +69,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Messages
 import app.mjolnir.client.Segment
-import app.mjolnir.client.insertMention
 import app.mjolnir.client.latestOwnMessage
 import app.mjolnir.client.mentionQuery
 import app.mjolnir.client.messageReceipts
 import app.mjolnir.client.messageSegments
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
+import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 
@@ -152,7 +153,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
             val query = mentionQuery(draft)
             val candidates = if (query == null) emptyList() else vm.mentionCandidates(query)
             if (candidates.isNotEmpty()) {
-                MentionPicker(candidates, shownName) { p -> vm.setDraft(current.id, insertMention(draft, shownName(p))) }
+                MentionPicker(candidates, shownName) { p -> vm.pickMention(current.id, p) }
             }
             Composer(current, draft, editing != null, onChange = { vm.setDraft(current.id, it) }, onSend = vm::send, onCancel = vm::cancelEdit)
         } else if (isAdmin) {
@@ -165,7 +166,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
             onEdit = { vm.startEdit(m) }, onDelete = { vm.delete(m) }, onInfo = { info = m },
         )
     }
-    info?.let { m -> MessageInfoDialog(m, receipts, members, shownName, onDismiss = { info = null }) }
+    info?.let { m -> MessageInfoDialog(m, receipts, members, shownName, loadTimes = { vm.receiptTimes(m) }, onDismiss = { info = null }) }
 }
 
 /** The members matching what follows the `@`, above the composer. */
@@ -186,16 +187,23 @@ private fun MentionPicker(candidates: List<Peer>, shownName: (Peer) -> String, o
 
 /** Long-press → *Info*: who has read and who has only seen the message, with times. */
 @Composable
-private fun MessageInfoDialog(m: ChatMessage, receipts: List<Receipt>, members: List<Peer>, shownName: (Peer) -> String, onDismiss: () -> Unit) {
+private fun MessageInfoDialog(
+    m: ChatMessage, receipts: List<Receipt>, members: List<Peer>, shownName: (Peer) -> String,
+    loadTimes: suspend () -> List<MessageReceipt>, onDismiss: () -> Unit,
+) {
     val r = messageReceipts(m, receipts, members)
+    val times by produceState(emptyList<MessageReceipt>(), m.id) { value = loadTimes() } // this message's own times
     AlertDialog(
         onDismissRequest = onDismiss, containerColor = Forge.Surface,
         title = { Text(Messages.INFO) },
         text = {
             Column(Modifier.semantics { contentDescription = "Message info" }, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                for ((label, list, at) in listOf(Triple(Messages.READ, r.read, { rc: Receipt -> rc.readAtEpochMs }), Triple(Messages.SEEN, r.seen, { rc: Receipt -> rc.seenAtEpochMs }))) {
+                for ((label, list, at) in listOf(
+                    Triple(Messages.READ, r.read, { rc: Receipt -> times.firstOrNull { it.deviceId == rc.deviceId }?.readAtEpochMs }),
+                    Triple(Messages.SEEN, r.seen, { rc: Receipt -> times.firstOrNull { it.deviceId == rc.deviceId }?.seenAtEpochMs }),
+                )) {
                     Text(label.uppercase(), color = Forge.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-                    if (list.isEmpty()) Text("Nobody yet", color = Forge.Muted, fontSize = 14.sp)
+                    if (list.isEmpty()) Text(Messages.NOBODY_YET, color = Forge.Muted, fontSize = 14.sp)
                     for (rc in list) {
                         val name = members.firstOrNull { it.deviceId == rc.deviceId }?.let(shownName) ?: continue
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

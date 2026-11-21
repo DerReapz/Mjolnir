@@ -146,6 +146,7 @@ class SpacesStoreTest {
         // chat_members from before receipts gains seen_rev, seen_at and read_at in place
         assertTrue(s.markSeen(chat.id, "d1", 99, 13))
         assertEquals(listOf(Receipt("d1", 2, 0, 13, null)), s.receipts(chat.id))
+        assertEquals(listOf(app.mjolnir.protocol.MessageReceipt("d1", 13, null)), s.messageReceipts(chat.id, 2)) // chat_receipt_marks created in place
         // reopening an already-upgraded db is a no-op
         Store("jdbc:sqlite:$file")
     }

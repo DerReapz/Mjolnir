@@ -4,6 +4,7 @@ import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.ChatSync
+import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.Delivery
@@ -197,13 +198,14 @@ class FakeRelayApi : RelayApi {
     fun addChat(spaceId: String, name: String, owner: Peer = me, members: List<Peer> = listOf(owner)): String = chatState.add(spaceId, name, owner, members)
     /** Test setup: [author] posts to [chatId] as someone other than the viewer. */
     fun incoming(chatId: String, author: Peer, text: String, mentions: List<String> = emptyList()): ChatMessage = chatState.incoming(chatId, author, text, mentions)
-    fun incomingSeen(chatId: String, by: Peer, rev: Long) = chatState.incomingSeen(chatId, by, rev)
-    fun incomingRead(chatId: String, by: Peer, rev: Long) = chatState.incomingRead(chatId, by, rev)
+    /** The returned receipt is what the relay's `ChatChanged(receipts)` event would carry. */
+    fun incomingSeen(chatId: String, by: Peer, rev: Long): Receipt? = chatState.incomingSeen(chatId, by, rev)
+    fun incomingRead(chatId: String, by: Peer, rev: Long): Receipt? = chatState.incomingRead(chatId, by, rev)
     /** What the viewer reported to the relay: `(chatId, rev)` per [markChatSeen] / [markChatRead] call, in order. */
     val seenCalls get() = chatState.seenCalls
     val readCalls get() = chatState.readCalls
     fun seenRevOf(chatId: String): Long = chatState.seenRev(chatId)
-    fun incomingEdit(chatId: String, msgId: String, text: String) = chatState.incomingEdit(chatId, msgId, text)
+    fun incomingEdit(chatId: String, msgId: String, text: String, mentions: List<String>? = null) = chatState.incomingEdit(chatId, msgId, text, mentions)
     fun incomingDelete(chatId: String, msgId: String) = chatState.incomingDelete(chatId, msgId)
     /** Test setup: the chat disappears (someone deleted it). */
     fun dropChat(chatId: String) = chatState.drop(chatId)
@@ -231,6 +233,7 @@ class FakeRelayApi : RelayApi {
     override suspend fun deleteMessage(chatId: String, msgId: String) { check(); chatState.deleteMessage(chatId, msgId) }
     override suspend fun markChatRead(chatId: String, rev: Long) { check(); chatState.markRead(chatId, rev) }
     override suspend fun markChatSeen(chatId: String, rev: Long) { check(); chatState.markSeen(chatId, rev) }
+    override suspend fun messageReceipts(chatId: String, msgId: String) = run { check(); chatState.messageReceipts(chatId, msgId) }
 
     /** The open guest room, if any (test setup may assign it directly). */
     var room: RoomResponse? = null

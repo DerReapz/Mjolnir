@@ -69,6 +69,7 @@ object Messages {
     const val INFO = "Info"
     const val READ = "Read"
     const val SEEN = "Seen"
+    const val NOBODY_YET = "Nobody yet"
 
     /** The owner's approval prompt: "Sam wants to add Ann". */
     fun inviteApproval(inviter: String, name: String) = "$inviter wants to add $name"

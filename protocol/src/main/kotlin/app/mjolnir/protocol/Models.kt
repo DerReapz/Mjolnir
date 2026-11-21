@@ -143,6 +143,8 @@ sealed interface ChatEvent {
     /** One per current member, never for a space admin who isn't in the chat. */
     val receipts: List<Receipt> = emptyList(),
 )
+/** When [deviceId] first saw and first read one message: the first mark at or above its rev. Null while it has not. */
+@Serializable data class MessageReceipt(val deviceId: String, val seenAtEpochMs: Long? = null, val readAtEpochMs: Long? = null)
 /** How far [deviceId] has got in a chat: [seenRev] reached its device, [readRev] was on screen. The times are null while the rev is 0. */
 @Serializable data class Receipt(
     val deviceId: String,
@@ -182,13 +184,14 @@ sealed interface RelayEvent {
 
     /**
      * Sent to a chat's members (and its space admin) when the chat's messages or members changed; [rev] is the chat's revision.
-     * [mentioned] is set for a device a new message mentions; [receipts] for a change of who has seen or read (the rev stays).
+     * [mentioned] is set for a device a new message mentions; [receipts] carries the receipts that changed when only who has
+     * seen or read moved (the rev stays), so receivers need no sync.
      */
     @Serializable @SerialName("chat_changed") data class ChatChanged(
         val chatId: String,
         val rev: Long,
         val mentioned: Boolean = false,
-        val receipts: Boolean = false,
+        val receipts: List<Receipt> = emptyList(),
     ) : RelayEvent
     @Serializable @SerialName("chat_deleted") data class ChatDeleted(val chatId: String) : RelayEvent
     /** Sent when the receiver's list of actionable chat invites changed. */

@@ -4,6 +4,7 @@ import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.ChatSync
+import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.Space
@@ -94,6 +95,8 @@ interface RelayApi {
     suspend fun markChatRead(chatId: String, rev: Long)
     /** Tells the relay that everything up to [rev] reached this device (members only: not_member otherwise). */
     suspend fun markChatSeen(chatId: String, rev: Long)
+    /** When each member first saw and first read the message ([msgId]): what the message's Info shows. */
+    suspend fun messageReceipts(chatId: String, msgId: String): List<MessageReceipt>
 
     /** Opens the guest room (ALREADY_SENT when one is open: 409 room_open). */
     suspend fun openRoom(): RoomResponse
