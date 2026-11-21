@@ -51,6 +51,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import app.mjolnir.client.ClaimOutcome
 import app.mjolnir.client.claimAndAwait
+import app.mjolnir.client.spaceErrorCopy
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -134,7 +135,7 @@ class AppController(
         _openRequests.tryEmit(tab)
     }
 
-    private fun syncTargets() = _send.update { it.withTargets(_peers.value, _config.value.lastPhoneId) }
+    private fun syncTargets() = _send.update { it.withTargets(_peers.value, _config.value.lastPhoneId, _config.value.lastSpaceId) }
 
     private val _tooltip = MutableStateFlow(TOOLTIP_IDLE)
     val tooltip: StateFlow<String> = _tooltip.asStateFlow()
@@ -293,11 +294,13 @@ class AppController(
         syncTargets()
     }
 
-    suspend fun refreshPeers() {
-        val api = api() ?: return
+    /** Reloads the peer list; true only when the relay answered (a failure keeps the old list). */
+    suspend fun refreshPeers(): Boolean {
+        val api = api() ?: return false
         val token = store.read().token
         try {
             setPeers(api.peers())
+            return true
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
@@ -305,6 +308,7 @@ class AppController(
         } catch (e: Exception) {
             // keep the old list
         }
+        return false
     }
 
     // ---- outbox -------------------------------------------------------------------------------------------------
@@ -411,7 +415,7 @@ class AppController(
         val scan = withContext(Dispatchers.IO) { scanFiles(paths) }
         updateSend { s ->
             val last = _config.value.lastPhoneId
-            (if (last != null) s.selectTarget(last) else s).withScanned(scan)
+            (if (last != null) s.selectTarget(last, _config.value.lastSpaceId) else s).withScanned(scan)
         }
         openWindow(MainTab.SEND)
     }
@@ -451,7 +455,7 @@ class AppController(
             parts += Messages.notSent(Messages.failureReason(error.kind, shown))
             if (error.kind == RelayErrorKind.UNAUTHORIZED) scope.launch { recoverUnauthorized(token) }
         }
-        if (sentTabs.isNotEmpty() || files.isNotEmpty()) updateConfig { it.copy(lastPhoneId = target.deviceId) }
+        if (sentTabs.isNotEmpty() || files.isNotEmpty()) updateConfig { it.copy(lastPhoneId = target.deviceId, lastSpaceId = target.space?.id) }
         return SendResult(parts.joinToString(" "), sentTabs, files.isNotEmpty())
     }
 
@@ -459,7 +463,7 @@ class AppController(
     fun sendClipboard() {
         scope.launch {
             val targetId = _config.value.lastPhoneId ?: return@launch // the last target, PC or phone
-            val target = _peers.value.run { find { it.deviceId == targetId && it.space == null } ?: find { it.deviceId == targetId } } ?: Peer(targetId, lastPhoneName(), app.mjolnir.protocol.DeviceKind.PC)
+            val target = lastTargetPeer(_peers.value, targetId, _config.value.lastSpaceId) ?: Peer(targetId, lastPhoneName(), app.mjolnir.protocol.DeviceKind.PC)
             val text = withContext(Dispatchers.Main) { clipboardText() }
             val urls = extractUrls(text ?: "")
             if (urls.isEmpty()) return@launch notify(Messages.NO_LINKS)
@@ -553,7 +557,7 @@ class AppController(
         } catch (e: RelayException) {
             // The dialog is gone, so a failed accept can't be retried; the claim used the code up.
             if (accept && e.kind != RelayErrorKind.UNAUTHORIZED) codeUsedUp(request)
-            notify(couldntAnswer(Messages.failureReason(e.kind, request.from.name)))
+            notify(spaceErrorCopy(e) ?: couldntAnswer(Messages.failureReason(e.kind, request.from.name)))
             return
         }
         request.space?.let { space ->
@@ -582,7 +586,7 @@ class AppController(
 
     /** Refreshes the peer list, then forgets nicknames of devices nothing links you to any more (no pairing, no shared space). */
     internal suspend fun refreshAfterSpaceChange() {
-        refreshPeers()
+        if (!refreshPeers()) return // a stale or empty list must not cost anyone their nickname
         val linked = _peers.value.mapTo(HashSet()) { it.deviceId }
         nicknames.changes.value.keys.filter { it !in linked }.forEach(nicknames::remove)
     }
@@ -609,7 +613,7 @@ class AppController(
         if (RelayUrls.normalize(url) == RelayUrls.normalize(_config.value.relayUrl)) return@withLock
         serviceSwitch.withLock { serviceJob?.cancelAndJoin(); serviceJob = null }
         connected.value = false
-        updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null) }
+        updateConfig { it.copy(relayUrl = url, deviceId = null, token = null, lastPhoneId = null, lastSpaceId = null) }
         nicknames.clear() // every pairing is gone
         spaces.clear()
         setPeers(emptyList())

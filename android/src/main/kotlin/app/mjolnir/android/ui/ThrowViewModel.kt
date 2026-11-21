@@ -15,6 +15,7 @@ import app.mjolnir.client.destinationKey
 import app.mjolnir.client.JsonFileStore
 import app.mjolnir.client.Nicknames
 import app.mjolnir.client.groupDestinations
+import app.mjolnir.client.isPaired
 import app.mjolnir.client.Messages
 import app.mjolnir.client.OutgoingFiles
 import app.mjolnir.client.Outbox
@@ -193,7 +194,7 @@ class ThrowViewModel(
     /** Selects [deviceId]'s paired card, else its first card. */
     fun selectTarget(deviceId: String) {
         val cards = _state.value.targets.filter { it.deviceId == deviceId }.map { it.destinationKey }
-        (cards.firstOrNull { it.spaceId == null } ?: cards.firstOrNull())?.let(::selectTarget)
+        (cards.firstOrNull { it.isPaired } ?: cards.firstOrNull())?.let(::selectTarget)
     }
 
     /** Selects the card [key] (a device under one heading); unknown cards change nothing. */
@@ -228,7 +229,7 @@ class ThrowViewModel(
             val keys = peers.map { it.destinationKey }
             val remembered = rememberedId?.let { id ->
                 keys.firstOrNull { it.deviceId == id && it.spaceId == rememberedSpace }
-                    ?: keys.firstOrNull { it.deviceId == id && it.spaceId == null }
+                    ?: keys.firstOrNull { it.deviceId == id && it.isPaired }
                     ?: keys.firstOrNull { it.deviceId == id }
             }
             _state.update { s ->

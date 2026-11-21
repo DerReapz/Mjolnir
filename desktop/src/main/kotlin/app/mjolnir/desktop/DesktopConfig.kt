@@ -12,6 +12,8 @@ data class DesktopConfig(
     val deviceName: String,
     /** The last device sent to (PC or phone); the persisted key keeps its old name. */
     val lastPhoneId: String? = null,
+    /** The space of the card last sent to; null when that was the device's paired card. */
+    val lastSpaceId: String? = null,
     val launchAtLogin: Boolean = false,
     val saveDir: String? = null,
     val sendToMenu: Boolean = true,

@@ -24,14 +24,23 @@ private const val OWN_CODE_ERROR = "own_code"
 
 private const val ALREADY_MEMBER_ERROR = "already_member"
 
+/** The limit messages say 50 whatever MJOLNIR_MAX_* the relay runs with. */
+private val LIMIT_ERRORS = mapOf(
+    "member_limit" to "This space is full (50 devices).",
+    "space_limit" to "You're in the most spaces allowed (50).",
+)
+
 /** Copy for the relay's 400/409 claim errors, keyed by the error code in the response body. */
 private val CLAIM_ERRORS = mapOf(
     OWN_CODE_ERROR to "That's this device's own code. Enter it on the other device.",
     "wrong_kind_space" to "That's a space invite. Use Join a space.",
     "wrong_kind_pairing" to "That's a pairing code. Use Pair a device.",
-    "member_limit" to "This space is full (50 devices).",
-    "space_limit" to "You're in the most spaces allowed (50).",
+    "member_limit" to LIMIT_ERRORS.getValue("member_limit"),
+    "space_limit" to LIMIT_ERRORS.getValue("space_limit"),
 )
+
+/** Copy for the relay's space-limit errors (create, claim or accept), or null for any other failure. */
+fun spaceErrorCopy(e: RelayException): String? = LIMIT_ERRORS[e.message]
 
 /**
  * Claims a pairing code typed on this device, then waits for the code's owner to accept. Shared by Android and desktop.

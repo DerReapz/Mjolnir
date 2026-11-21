@@ -4,6 +4,9 @@ import app.mjolnir.protocol.*
 import io.ktor.client.call.body
 import io.ktor.client.request.*
 import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -392,10 +395,37 @@ class SpaceRoutesTest {
         assertEquals(HttpStatusCode.Conflict, client.post("/v1/spaces/${s.id}/takeover") { bearerAuth(a.token) }.status)
     }
 
-    @Test fun spaceViewReportsAdminLastSeen() = relayTest {
+    @Test fun spaceViewReportsAdminSilentNotLastSeen() = relayTest {
         val a = register("A"); val b = register("B")
         val s = createSpace(a); join(a, s, b)
-        assertEquals(clock.now, spaces(b).single().adminLastSeenEpochMs)
+        assertEquals(false, spaces(b).single().adminSilent)
+        clock.now += 31 * DAY
+        assertEquals(true, spaces(b).single().adminSilent) // b's own touch does not refresh a
+        assertFalse(client.get("/v1/spaces") { bearerAuth(b.token) }.bodyAsText().contains("adminLastSeen"))
+    }
+
+    @Test fun adminOnWebSocketIsNotSilentAndCannotBeTakenOver() = relayTest(heartbeatMs = 50) {
+        val a = register("A"); val b = register("B")
+        val s = createSpace(a); join(a, s, b)
+        withEvents(a) {
+            clock.now += 31 * DAY
+            // The heartbeat refreshes a's last_seen while the socket is open.
+            withTimeout(5_000) { while (store.lastSeen(a.deviceId) < clock.now) delay(10) }
+            assertEquals(false, spaces(b).single().adminSilent)
+            val r = client.post("/v1/spaces/${s.id}/takeover") { bearerAuth(b.token) }
+            assertEquals(HttpStatusCode.Conflict, r.status); assertEquals("admin_active", r.body<ErrorResponse>().error)
+        }
+        assertEquals(a.deviceId, spaces(b).single().adminId)
+    }
+
+    @Test fun liveConnectionBlocksTakeoverEvenWithStaleLastSeen() = relayTest {
+        val a = register("A"); val b = register("B")
+        val s = createSpace(a); join(a, s, b)
+        withEvents(a) { // default heartbeat is far away; only the live connection protects a
+            clock.now += 31 * DAY
+            assertEquals(false, spaces(b).single().adminSilent)
+            assertEquals(HttpStatusCode.Conflict, client.post("/v1/spaces/${s.id}/takeover") { bearerAuth(b.token) }.status)
+        }
     }
 
     @Test fun memberLimit() = relayTest(limits = RelayLimits(maxMembersPerSpace = 2)) {

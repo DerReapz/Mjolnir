@@ -299,4 +299,67 @@ class SpacesViewModelTest {
         vm.leave("s1"); runCurrent()
         assertEquals(mapOf("zed" to "Zedd"), nicknames.changes.value)
     }
+
+    private fun limited(code: String, on: String) = object : app.mjolnir.client.RelayApi by api {
+        override suspend fun createSpace(name: String): Space =
+            if (on == "create") throw RelayException(RelayErrorKind.ALREADY_SENT, code) else api.createSpace(name)
+        override suspend fun acceptPairing(pairingId: String) =
+            if (on == "accept") throw RelayException(RelayErrorKind.ALREADY_SENT, code) else api.acceptPairing(pairingId)
+    }
+
+    @Test fun createAtTheSpaceLimitSaysSo() = runTest {
+        val vm = SpacesViewModel(limited("space_limit", "create"), nicknames, SavedStateHandle(), clock = { now })
+        vm.create("Friends"); runCurrent()
+        assertEquals("You're in the most spaces allowed (50).", vm.state.value.notice)
+    }
+
+    @Test fun acceptAtTheMemberLimitSaysTheSpaceIsFull() = runTest {
+        val vm = SpacesViewModel(limited("member_limit", "accept"), nicknames, SavedStateHandle(), clock = { now })
+        vm.create("Friends"); runCurrent()
+        val id = vm.state.value.spaces.single().id
+        vm.invite(id); runCurrent()
+        api.events.emit(RelayEvent.PairRequested("p1", Peer("zed", "Zed", DeviceKind.PHONE), SpaceRef(id, "Friends"))); runCurrent()
+        vm.answerRequest(accept = true); runCurrent()
+        assertEquals("This space is full (50 devices).", vm.state.value.notice)
+    }
+
+    @Test fun acceptAtTheSpaceLimitSaysSo() = runTest {
+        val vm = SpacesViewModel(limited("space_limit", "accept"), nicknames, SavedStateHandle(), clock = { now })
+        vm.create("Friends"); runCurrent()
+        val id = vm.state.value.spaces.single().id
+        vm.invite(id); runCurrent()
+        api.events.emit(RelayEvent.PairRequested("p1", Peer("zed", "Zed", DeviceKind.PHONE), SpaceRef(id, "Friends"))); runCurrent()
+        vm.answerRequest(accept = true); runCurrent()
+        assertEquals("You're in the most spaces allowed (50).", vm.state.value.notice)
+    }
+
+    @Test fun aSpaceDeletedRemotelyIsAnnouncedOnTheNextRefresh() = runTest {
+        api.asMemberOf("s1", admin, name = "Friends")
+        val vm = newVm(); vm.refresh(); runCurrent()
+        assertNull(vm.state.value.notice) // the first load announces nothing
+        api.spaceList.clear() // its admin deleted it
+        vm.refresh(); runCurrent()
+        assertEquals("You're no longer in Friends.", vm.state.value.notice)
+    }
+
+    @Test fun beingRemovedFromASpaceIsAnnounced() = runTest {
+        api.asMemberOf("s1", admin, name = "Friends")
+        api.asMemberOf("s2", admin, name = "Work")
+        val vm = newVm(); vm.refresh(); runCurrent()
+        api.spaceList[0] = api.spaceList[0].copy(members = listOf(admin)) // the admin removed this phone from s1
+        vm.refresh(); runCurrent()
+        assertEquals("You're no longer in Friends.", vm.state.value.notice)
+        assertEquals(listOf("Work"), vm.state.value.spaces.map { it.name })
+    }
+
+    @Test fun leavingOrDeletingYourselfAnnouncesNothing() = runTest {
+        api.asMemberOf("s1", admin, name = "Friends")
+        val vm = newVm(); vm.create("Mine"); runCurrent()
+        vm.leave("s1"); runCurrent()
+        assertNull(vm.state.value.notice)
+        vm.delete(vm.state.value.spaces.single().id); runCurrent()
+        assertNull(vm.state.value.notice)
+        vm.refresh(); runCurrent()
+        assertNull(vm.state.value.notice)
+    }
 }

@@ -110,7 +110,7 @@ private fun SpaceCard(
                 ForgeSecondaryButton("Rename space", onClick = { onDialog(SpaceDialog.Rename(space)) })
                 ForgeSecondaryButton("Delete space", onClick = { confirm("Delete ${space.name}?", "Delete space") { actions.onDelete(space) } })
             } else {
-                if (canTakeOver(space, clock())) {
+                if (canTakeOver(space)) {
                     ForgeSecondaryButton("Take over as admin", onClick = { confirm("Take over ${space.name}?", "Take over as admin") { actions.onTakeOver(space) } })
                 }
                 ForgeSecondaryButton("Leave space", onClick = { confirm("Leave ${space.name}?", "Leave space") { actions.onLeave(space) } })

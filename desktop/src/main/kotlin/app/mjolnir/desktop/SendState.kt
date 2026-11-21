@@ -6,6 +6,7 @@ import app.mjolnir.client.LocalUpload
 import app.mjolnir.client.Messages
 import app.mjolnir.client.destinationKey
 import app.mjolnir.client.groupDestinations
+import app.mjolnir.client.isPaired
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
@@ -110,12 +111,14 @@ data class SendState(
     val targetId: String? get() = targetKey?.deviceId
 
     /**
-     * Target: the current card if still listed, else the card of [lastTargetId] (its *My devices* card when it has one),
-     * else the first card (PC or phone), else null.
+     * Target: the current card if still listed, else the card last sent to ([lastTargetId] under [lastSpaceId]; else the
+     * device's *My devices* card when it has one, else any card of it), else the first card (PC or phone), else null.
      */
-    fun withTargets(peers: List<Peer>, lastTargetId: String?): SendState {
+    fun withTargets(peers: List<Peer>, lastTargetId: String?, lastSpaceId: String? = null): SendState {
         val keys = peers.map { it.destinationKey }
-        val last = lastTargetId?.let { id -> keys.firstOrNull { it.deviceId == id && it.spaceId == null } ?: keys.firstOrNull { it.deviceId == id } }
+        val last = lastTargetId?.let { id ->
+            keys.firstOrNull { it.deviceId == id && it.spaceId == lastSpaceId } ?: keys.firstOrNull { it.deviceId == id && it.isPaired } ?: keys.firstOrNull { it.deviceId == id }
+        }
         val target = targetKey?.takeIf { it in keys } ?: last ?: keys.firstOrNull()
         return copy(targets = peers, targetKey = target, lastUsedId = lastTargetId)
     }
@@ -123,10 +126,10 @@ data class SendState(
     /** Selects the card [key] (a device under one heading); unknown cards change nothing. */
     fun selectTarget(key: DestinationKey): SendState = if (targets.any { it.destinationKey == key }) copy(targetKey = key) else this
 
-    /** Selects [id]'s *My devices* card, else its first card. */
-    fun selectTarget(id: String): SendState {
+    /** Selects [id]'s card under [spaceId], else its *My devices* card, else its first card. */
+    fun selectTarget(id: String, spaceId: String? = null): SendState {
         val cards = targets.filter { it.deviceId == id }.map { it.destinationKey }
-        return (cards.firstOrNull { it.spaceId == null } ?: cards.firstOrNull())?.let(::selectTarget) ?: this
+        return (cards.firstOrNull { it.spaceId == spaceId } ?: cards.firstOrNull { it.isPaired } ?: cards.firstOrNull())?.let(::selectTarget) ?: this
     }
 
     /** True for every card of the chosen device, whichever heading it sits under. */
@@ -141,6 +144,12 @@ data class SendState(
 
     /** The chosen card's peer; its `space` is the space the send is made in. */
     val target: Peer? get() = targets.find { it.destinationKey == targetKey }
+}
+
+/** The card last sent to: [lastId] under [lastSpaceId], else its paired card, else any card of it. */
+fun lastTargetPeer(peers: List<Peer>, lastId: String, lastSpaceId: String?): Peer? {
+    val ofDevice = peers.filter { it.deviceId == lastId }
+    return ofDevice.firstOrNull { it.space?.id == lastSpaceId } ?: ofDevice.firstOrNull { it.isPaired } ?: ofDevice.firstOrNull()
 }
 
 /** One added file or folder after reading the disk: its uploads, or why it was refused. */

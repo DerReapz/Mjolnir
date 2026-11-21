@@ -24,10 +24,10 @@ A space is a named group of devices (for example "Friends"). Any member can send
 - **Join:** on the joining device choose *Join a space*, enter the code and wait for the admin. The admin sees `{device} wants to join {space}` and chooses *Accept* or *Reject*; on accept the joiner sees `Joined {space}`.
 - **Admin controls:** only the admin can invite, accept or reject joins, remove members, *Rename space*, *Delete space* and *Make admin* (with a confirmation) on another member. The relay checks this on every request.
 - **Leave:** other members see the member list and *Leave space*. An admin cannot just leave: first *Make admin* on another member, or delete the space. If the admin device has not connected to the relay for 30 days, any member can choose *Take over as admin* (with a confirmation).
-- **Removal and deletion:** a member who leaves or is removed disappears from everyone's lists at once and can no longer send to the space; deliveries the relay already accepted still complete. Deleting a space drops it from everyone's lists (`{space} was deleted.`).
-- **Sending:** the Send tab and the phone's *Throw to* group devices under `My devices` and then one heading per space; the card you click decides which space the send goes through. Notifications and the Received lists read `From {name} · {space}` for space deliveries; deliveries between paired devices are labelled as before.
+- **Removal and deletion:** a member who leaves or is removed disappears from everyone's lists at once and can no longer send to the space; deliveries the relay already accepted still complete. Deleting a space drops it from everyone's lists: PCs show `{space} was deleted.`, and phones show `You're no longer in {space}.` the next time they open Devices, Spaces or Throw.
+- **Sending:** the Send tab and the phone's *Throw to* group devices under `My devices` and then one heading per space; the card you click decides which space the send goes through. For space deliveries the notification reads `Caught … from {name} · {space}`, desktop Received rows read `{name} · {space} · 2m`, and phone rows read `from {name} · {space} · 2m`; deliveries between paired devices are labelled as before.
 
-The relay limits are `MJOLNIR_MAX_SPACES` and `MJOLNIR_MAX_MEMBERS` (see the table above).
+The relay limits are `MJOLNIR_MAX_SPACES` and `MJOLNIR_MAX_MEMBERS` (see the table above). The apps' limit messages (`You're in the most spaces allowed (50).`, `This space is full (50 devices).`) always say 50, even if you change these settings.
 
 ## Run the relay locally
 

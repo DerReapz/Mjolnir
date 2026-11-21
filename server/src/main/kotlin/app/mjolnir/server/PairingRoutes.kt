@@ -156,6 +156,7 @@ fun Route.pairingRoutes(deps: RelayDeps) {
             val heartbeat = launch {
                 while (true) {
                     delay(deps.heartbeatMs)
+                    store.touchLastSeen(me.deviceId, deps.clock.nowMs()) // an always-on device counts as active (throttled)
                     send(Frame.Text(HEARTBEAT_FRAME))
                 }
             }

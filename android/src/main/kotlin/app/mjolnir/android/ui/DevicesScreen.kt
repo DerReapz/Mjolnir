@@ -41,6 +41,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.mjolnir.android.session.PhoneSession
 import app.mjolnir.client.Messages
+import app.mjolnir.client.isPaired
 import app.mjolnir.client.Nicknames
 import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayErrorKind
@@ -59,14 +60,14 @@ class DevicesViewModel(private val api: RelayApi, private val session: PhoneSess
     val state: StateFlow<DevicesUi> = _state.asStateFlow()
 
     /** Paired devices only: a device that is just in one of your spaces is managed under Spaces. */
-    fun refresh() = run("Couldn't load devices") { _state.value = _state.value.copy(peers = api.peers().filter { it.space == null }, notice = null) }
+    fun refresh() = run("Couldn't load devices") { _state.value = _state.value.copy(peers = api.peers().filter { it.isPaired }, notice = null) }
 
     fun unpair(deviceId: String) = run("Couldn't unpair") {
         api.unpair(deviceId)
         val all = api.peers()
         // A nickname goes with the pairing, unless a shared space still links you to the device.
         if (all.none { it.deviceId == deviceId }) nicknames.remove(deviceId)
-        _state.value = _state.value.copy(peers = all.filter { it.space == null }, nicknames = nicknames.changes.value, notice = null)
+        _state.value = _state.value.copy(peers = all.filter { it.isPaired }, nicknames = nicknames.changes.value, notice = null)
     }
 
     /** Sets the private nickname for [deviceId]; empty clears it. */

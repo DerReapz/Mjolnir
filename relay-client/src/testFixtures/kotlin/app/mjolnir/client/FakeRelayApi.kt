@@ -106,8 +106,6 @@ class FakeRelayApi : RelayApi {
     }
     /** In-memory spaces, each with [me] as a member unless removed; the fake enforces the relay's rules for them. */
     val spaceList = mutableListOf<Space>()
-    /** The clock the fake judges an admin's silence by. */
-    var nowMs: Long = 1_700_000_000_000L
     private var nextSpace = 0
 
     /** Puts [peer] into space [spaceId] (test setup, as if they had joined). */
@@ -115,7 +113,7 @@ class FakeRelayApi : RelayApi {
 
     /** Test setup: a space [id] administered by [admin], where [me] is a plain member. */
     fun asMemberOf(id: String, admin: Peer, adminSilent: Boolean = false, name: String = "Space $id") {
-        spaceList += Space(id, name, admin.deviceId, listOf(admin, me), if (adminSilent) 0L else nowMs)
+        spaceList += Space(id, name, admin.deviceId, listOf(admin, me), adminSilent)
     }
 
     private fun err(kind: RelayErrorKind, code: String) = RelayException(kind, code)
@@ -140,7 +138,7 @@ class FakeRelayApi : RelayApi {
     override suspend fun createSpace(name: String): Space {
         check()
         val valid = validName(name)
-        return Space("space-${++nextSpace}", valid, me.deviceId, listOf(me), nowMs).also { spaceList += it }
+        return Space("space-${++nextSpace}", valid, me.deviceId, listOf(me), false).also { spaceList += it }
     }
 
     override suspend fun spaces(): List<Space> { check(); return spaceList.filter { s -> s.members.any { it.deviceId == me.deviceId } } }
@@ -167,15 +165,15 @@ class FakeRelayApi : RelayApi {
     override suspend fun transferAdmin(spaceId: String, deviceId: String): Space {
         check(); val space = adminSpace(spaceId)
         if (space.members.none { it.deviceId == deviceId }) throw err(RelayErrorKind.NOT_FOUND, "not_found")
-        return updateSpace(spaceId) { it.copy(adminId = deviceId, adminLastSeenEpochMs = if (deviceId == me.deviceId) nowMs else it.adminLastSeenEpochMs) }
+        return updateSpace(spaceId) { it.copy(adminId = deviceId, adminSilent = if (deviceId == me.deviceId) false else it.adminSilent) }
     }
 
     override suspend fun takeOverAdmin(spaceId: String): Space {
         check(); val space = memberSpace(spaceId)
-        if (space.adminId == me.deviceId || nowMs - space.adminLastSeenEpochMs <= Limits.ADMIN_SILENT_TAKEOVER_MS) {
+        if (space.adminId == me.deviceId || !space.adminSilent) {
             throw err(RelayErrorKind.ALREADY_SENT, "admin_active")
         }
-        return updateSpace(spaceId) { it.copy(adminId = me.deviceId, adminLastSeenEpochMs = nowMs) }
+        return updateSpace(spaceId) { it.copy(adminId = me.deviceId, adminSilent = false) }
     }
 
     override suspend fun inbox(): List<Delivery> { check(); return inbox.toList() }

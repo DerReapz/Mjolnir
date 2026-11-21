@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import app.mjolnir.client.ClaimOutcome
 import app.mjolnir.client.DestinationGroup
 import app.mjolnir.client.Messages
+import app.mjolnir.client.isPaired
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.groupDestinations
@@ -99,7 +100,7 @@ fun DevicesTab(c: AppController, openPairing: Boolean = false, onPairingOpened: 
     Box(Modifier.fillMaxSize()) {
         DevicesTabContent(
             // Space members are not paired: they are listed in their space's card, not here (Unpair would not apply).
-            groups = groupDestinations(peers.filter { it.space == null }, config.lastPhoneId) { nicknames.nicknameOr(it.deviceId, it.name) }, nicknames = nicknames,
+            groups = groupDestinations(peers.filter { it.isPaired }, config.lastPhoneId) { nicknames.nicknameOr(it.deviceId, it.name) }, nicknames = nicknames,
             onRename = { renaming = it }, onUnpair = { c.startUnpair(it) }, onPair = { pairing = true },
             pairPanel = if (pairing) ({ PairPanel(c, onClose = { pairing = false }) }) else null,
             spacesSection = {

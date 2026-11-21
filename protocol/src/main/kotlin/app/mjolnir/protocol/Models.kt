@@ -53,7 +53,8 @@ import kotlinx.serialization.json.Json
     val name: String,
     val adminId: String,
     val members: List<Peer>,
-    val adminLastSeenEpochMs: Long,
+    /** True when the admin has not connected for over 30 days and is not connected now (the exact time is not shared). */
+    val adminSilent: Boolean = false,
 )
 @Serializable data class CreateSpaceRequest(val name: String)
 @Serializable data class RenameSpaceRequest(val name: String)

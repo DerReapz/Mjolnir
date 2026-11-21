@@ -127,7 +127,7 @@ private fun SpaceBlock(space: Space, state: SpacesUi, vm: SpacesViewModel, onRen
                 SpaceButton("Rename space", onClick = onRename)
                 SpaceButton("Delete space") { vm.askDelete(space) }
             } else {
-                if (canTakeOver(space, System.currentTimeMillis())) SpaceButton("Take over as admin") { vm.askTakeOver(space) }
+                if (canTakeOver(space)) SpaceButton("Take over as admin") { vm.askTakeOver(space) }
                 SpaceButton("Leave space") { vm.askLeave(space) }
             }
         }

@@ -17,6 +17,13 @@ class SpacesModelsTest {
         val p = MjolnirJson.decodeFromString<Peer>("""{"deviceId":"d","name":"n","kind":"PC"}""")
         assertEquals(null, p.space)
     }
+    @Test fun spaceJsonWithoutOrWithOldAdminFieldsDecodes() {
+        val bare = MjolnirJson.decodeFromString<Space>("""{"id":"s","name":"S","adminId":"a","members":[]}""")
+        assertFalse(bare.adminSilent)
+        val old = MjolnirJson.decodeFromString<Space>("""{"id":"s","name":"S","adminId":"a","members":[],"adminLastSeenEpochMs":5}""")
+        assertFalse(old.adminSilent)
+        assertTrue(MjolnirJson.decodeFromString<Space>("""{"id":"s","name":"S","adminId":"a","members":[],"adminSilent":true}""").adminSilent)
+    }
     @Test fun oldClaimAndSendJsonStillDecode() {
         assertEquals(CodeKind.PAIRING, MjolnirJson.decodeFromString<ClaimRequest>("""{"code":"x"}""").expect)
         assertEquals(null, MjolnirJson.decodeFromString<SendRequest>("""{"to":"d"}""").spaceId)

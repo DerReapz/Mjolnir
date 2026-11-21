@@ -5,6 +5,7 @@ import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.claimAndAwait
+import app.mjolnir.client.spaceErrorCopy
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.Limits
@@ -177,7 +178,7 @@ class SpacesController(
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
-            _notice.value = if (e.kind == RelayErrorKind.NETWORK) NO_CONNECTION else GENERIC
+            _notice.value = spaceErrorCopy(e) ?: if (e.kind == RelayErrorKind.NETWORK) NO_CONNECTION else GENERIC
             if (e.kind == RelayErrorKind.UNAUTHORIZED) onUnauthorized()
             return false
         }

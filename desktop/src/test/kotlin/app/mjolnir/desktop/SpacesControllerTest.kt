@@ -17,7 +17,7 @@ class SpacesControllerTest {
     private val admin = Peer("adm", "Fred's PC", DeviceKind.PC)
     private val now = 1_700_000_000_000L
 
-    private fun TestScope.controller(api: FakeRelayApi, onChanged: () -> Unit = {}): Pair<SpacesController, CoroutineScope> {
+    private fun TestScope.controller(api: RelayApi, onChanged: () -> Unit = {}): Pair<SpacesController, CoroutineScope> {
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         return SpacesController({ api }, scope, { now }, onChanged) to scope
     }
@@ -146,6 +146,17 @@ class SpacesControllerTest {
         api.failAllWith = null
         api.createSpace("Work"); c.refresh(); advanceUntilIdle() // retried on the next event
         assertEquals(listOf("Friends", "Work"), c.spaces.value.map { it.name })
+        scope.cancel()
+    }
+
+    @Test fun createAtTheSpaceLimitSaysSo() = runTest {
+        val fake = FakeRelayApi()
+        val api = object : RelayApi by fake {
+            override suspend fun createSpace(name: String): Space = throw RelayException(RelayErrorKind.ALREADY_SENT, "space_limit")
+        }
+        val (c, scope) = controller(api)
+        c.create("Friends"); advanceUntilIdle()
+        assertEquals("You're in the most spaces allowed (50).", c.notice.value)
         scope.cancel()
     }
 }

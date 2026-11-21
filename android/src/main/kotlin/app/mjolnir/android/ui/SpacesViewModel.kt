@@ -10,6 +10,7 @@ import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.claimAndAwait
+import app.mjolnir.client.spaceErrorCopy
 import app.mjolnir.protocol.ClaimResponse
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.Limits
@@ -105,6 +106,9 @@ class SpacesViewModel(
     /** Spaces this phone deleted itself: their deleted event needs no "was deleted" notice. */
     private val deletedHere = HashSet<String>()
 
+    /** Spaces this phone left itself: their disappearing from the list needs no "no longer in" notice. */
+    private val leftHere = HashSet<String>()
+
     init {
         viewModelScope.launch { nicknames.changes.collect { shown -> _state.update { it.copy(nicknames = shown) } } }
         restoreInvite()
@@ -116,7 +120,10 @@ class SpacesViewModel(
     fun create(name: String) = act { api.createSpace(name) }
     fun rename(spaceId: String, name: String) = act { api.renameSpace(spaceId, name) }
     fun remove(spaceId: String, deviceId: String) = act { api.removeMember(spaceId, deviceId) }
-    fun leave(spaceId: String) = act { api.leaveSpace(spaceId) }
+    fun leave(spaceId: String) = act {
+        leftHere += spaceId
+        try { api.leaveSpace(spaceId) } catch (e: Exception) { leftHere -= spaceId; throw e }
+    }
     fun makeAdmin(spaceId: String, deviceId: String) = act { api.transferAdmin(spaceId, deviceId) }
     fun takeOver(spaceId: String) = act { api.takeOverAdmin(spaceId) }
     fun delete(spaceId: String) = act {
@@ -263,8 +270,12 @@ class SpacesViewModel(
     }
 
     private suspend fun fetch() {
+        val before = _state.value.spaces
         val list = api.spaces()
+        // A space that vanished without this phone deleting or leaving it: its admin deleted it, or removed this phone.
+        val gone = before.filter { b -> list.none { it.id == b.id } && b.id !in deletedHere && b.id !in leftHere }
         _state.update { it.copy(spaces = list) }
+        if (gone.isNotEmpty()) notify(gone.joinToString(" ") { "You're no longer in ${it.name}." })
         if (_state.value.invite?.let { inv -> list.none { it.id == inv.spaceId } } == true) setInvite(null)
         if (_state.value.selfId == null) {
             val me = api.me().deviceId
@@ -352,7 +363,7 @@ class SpacesViewModel(
 
     private fun notify(text: String) = _state.update { it.copy(notice = text) }
 
-    private fun failure(e: RelayException) = when (e.kind) {
+    private fun failure(e: RelayException) = spaceErrorCopy(e) ?: when (e.kind) {
         RelayErrorKind.NETWORK -> NO_CONNECTION
         RelayErrorKind.UNAUTHORIZED -> Messages.RESET
         else -> GENERIC

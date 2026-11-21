@@ -50,11 +50,11 @@ Real-desktop checks that automated tests could not cover (Windows PC with a pair
 ## Spaces
 Needs three devices (any mix of PCs and phones, call them A, B and C) on one relay, plus A's own phone that is paired with A but not in the space.
 - **Create and invite:** on A, Devices → *Spaces* → *New space…* "Friends". Choose *Invite…* and enter the code on B with *Join a space*; A shows `{B} wants to join Friends`; *Accept* gives `Joined Friends` on B. Repeat for C. All three member lists show A with `· admin`.
-- **Send within the space:** B sends a tab and a file to C from the card under the Friends heading. C's notification and Received list read `From {B} · Friends`.
+- **Send within the space:** B sends a tab and a file to C from the card under the Friends heading. C's notification reads `Caught … from B · Friends`; the PC's Received row reads `B · Friends · 2m` and the phone's reads `from B · Friends · 2m`.
 - **Privacy:** A's phone is not in the space, so it never appears for B or C, and B and C never appear under it unless it joins.
 - **Paired and in a space:** pair A and B privately; B shows once, under *My devices* on A, and a send from there carries no space label.
 - **Mismatched codes:** entering a space invite under *Pair a device* shows `That's a space invite. Use Join a space.`; a pairing code under *Join a space* shows `That's a pairing code. Use Pair a device.`
 - **Remove during a send:** start a large file from B to C, then on A *Remove* C. The send already accepted by the relay completes; a new send from B to C is refused and C disappears from B's list (and B from C's).
 - **Leave:** C rejoins, then uses *Leave space*; C disappears from everyone's lists. A cannot leave while admin until it uses *Make admin* on B or deletes the space.
-- **Delete the space:** on A choose *Delete space*; B and C see `Friends was deleted.` and the group heading disappears from Send and *Throw to*.
+- **Delete the space:** on A choose *Delete space*; PCs show `Friends was deleted.`; phones show `You're no longer in Friends.` when they next open Devices, Spaces or Throw. The group heading disappears from Send and *Throw to*.
 - **Take over:** unit-tested only. The 30-day silence threshold is on the relay clock, which cannot be shortened with an environment variable, so it is not checked on devices.

@@ -169,4 +169,13 @@ class PairingTest {
             claimAndAwait(failing(RelayErrorKind.ALREADY_SENT, "space_limit"), "ABC234", {}, expect = CodeKind.SPACE_INVITE),
         )
     }
+
+    @Test fun spaceErrorCopyCoversTheLimitsOnAnyCall() {
+        fun e(kind: RelayErrorKind, code: String) = RelayException(kind, code)
+        assertEquals("This space is full (50 devices).", spaceErrorCopy(e(RelayErrorKind.ALREADY_SENT, "member_limit")))
+        assertEquals("You're in the most spaces allowed (50).", spaceErrorCopy(e(RelayErrorKind.ALREADY_SENT, "space_limit")))
+        assertEquals("You're in the most spaces allowed (50).", spaceErrorCopy(e(RelayErrorKind.INVALID, "space_limit")))
+        assertEquals(null, spaceErrorCopy(e(RelayErrorKind.ALREADY_SENT, "admin_active")))
+        assertEquals(null, spaceErrorCopy(e(RelayErrorKind.NETWORK, "timeout")))
+    }
 }

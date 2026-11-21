@@ -410,6 +410,7 @@ internal fun outgoingTarget(state: ThrowUiState, item: OutgoingFiles): String {
     val peer = state.targets.find { it.deviceId == item.to && it.space?.id == item.spaceId }
         ?: state.targets.find { it.deviceId == item.to }
     val name = peer?.let(state::nameOf) ?: state.nicknames[item.to] ?: item.toName
-    val space = item.spaceId?.let { id -> state.targets.firstNotNullOfOrNull { it.space?.takeIf { s -> s.id == id } } }
-    return if (space == null) name else "$name · ${space.name}"
+    // The live name wins (a renamed space); the throw's own record keeps the label once the space has left the list.
+    val spaceName = item.spaceId?.let { id -> state.targets.firstNotNullOfOrNull { it.space?.takeIf { s -> s.id == id } }?.name ?: item.spaceName }
+    return if (spaceName == null) name else "$name · $spaceName"
 }

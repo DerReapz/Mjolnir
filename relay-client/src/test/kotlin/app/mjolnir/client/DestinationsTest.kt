@@ -5,6 +5,8 @@ import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.SpaceRef
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class DestinationsTest {
     private fun p(id: String, name: String) = Peer(id, name, DeviceKind.PHONE)
@@ -57,5 +59,12 @@ class DestinationsTest {
     @Test fun emptyGroupsAreDropped() {
         assertEquals(emptyList(), groupDestinations(emptyList(), null))
         assertEquals(listOf("mine"), groupDestinations(listOf(p("1", "A")), null).map { it.key })
+    }
+
+    @Test fun isPairedMeansNoSpace() {
+        assertTrue(p("1", "A").isPaired)
+        assertFalse(sp("2", "B", "s1", "Friends").isPaired)
+        assertTrue(DestinationKey("1", null).isPaired)
+        assertFalse(DestinationKey("2", "s1").isPaired)
     }
 }

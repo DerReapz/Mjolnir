@@ -621,4 +621,78 @@ class AppControllerTest {
         assertEquals(listOf("Other was deleted."), notes)
         scope.cancel()
     }
+
+    @Test fun acceptAtTheMemberLimitSaysTheSpaceIsFull() = runTest {
+        val fake = FakeRelayApi()
+        val api = object : RelayApi by fake {
+            override suspend fun acceptPairing(pairingId: String) = throw RelayException(RelayErrorKind.ALREADY_SENT, "member_limit")
+        }
+        val (c, scope) = controller(api)
+        val notes = notes(c)
+        val req = RelayEvent.PairRequested("pair-1", phone, SpaceRef("s1", "Friends"))
+        c.onPairRequested(req)
+        c.answerPairRequest(req, accept = true); runCurrent()
+        assertEquals(listOf("This space is full (50 devices)."), notes)
+        scope.cancel()
+    }
+
+    @Test fun acceptAtTheSpaceLimitSaysSo() = runTest {
+        val fake = FakeRelayApi()
+        val api = object : RelayApi by fake {
+            override suspend fun acceptPairing(pairingId: String) = throw RelayException(RelayErrorKind.ALREADY_SENT, "space_limit")
+        }
+        val (c, scope) = controller(api)
+        val notes = notes(c)
+        val req = RelayEvent.PairRequested("pair-1", phone, SpaceRef("s1", "Friends"))
+        c.onPairRequested(req)
+        c.answerPairRequest(req, accept = true); runCurrent()
+        assertEquals(listOf("You're in the most spaces allowed (50)."), notes)
+        scope.cancel()
+    }
+
+    @Test fun failedPeerRefreshKeepsEveryNickname() = runTest {
+        val relay = DedupingRelay(paired = false, spaceIds = setOf("s1"))
+        var down = false
+        val api = object : RelayApi by relay {
+            override suspend fun peers(): List<Peer> = if (down) throw RelayException(RelayErrorKind.NETWORK, "offline") else relay.peers()
+        }
+        val (c, scope) = controller(api)
+        c.refreshPeers()
+        c.nicknames.set("ph", "Dad's phone")
+        down = true
+        assertFalse(c.refreshPeers())
+        c.refreshAfterSpaceChange()
+        assertEquals("Dad's phone", c.nicknames.get("ph"))
+        scope.cancel()
+    }
+
+    @Test fun emptyPeerListFromAFailedFirstRefreshDoesNotPrune() = runTest {
+        val fake = FakeRelayApi()
+        val api = object : RelayApi by fake {
+            override suspend fun peers(): List<Peer> = throw RelayException(RelayErrorKind.NETWORK, "offline")
+        }
+        val (c, scope) = controller(api)
+        c.nicknames.set("ph", "Dad's phone") // nothing loaded yet: _peers is still empty
+        c.refreshAfterSpaceChange()
+        assertEquals("Dad's phone", c.nicknames.get("ph"))
+        scope.cancel()
+    }
+
+    @Test fun sendRemembersTheSpaceOfTheCardAndHandOffAimsAtIt() = runTest {
+        val fake = FakeRelayApi().apply {
+            peers += listOf(Peer("f", "Fred", DeviceKind.PC), Peer("f", "Fred", DeviceKind.PC, SpaceRef("s2", "Work")))
+        }
+        val (c, scope) = controller(fake)
+        c.refreshPeers()
+        c.updateSend { it.selectTarget(DestinationKey("f", "s2")).withText("https://a.com") }
+        c.sendSelected().join()
+        assertEquals("s2", c.config.value.lastSpaceId)
+        c.updateSend { it.selectTarget(DestinationKey("f", null)) }
+        c.handOff(emptyList()).join()
+        assertEquals(DestinationKey("f", "s2"), c.send.value.targetKey)
+        c.updateSend { it.selectTarget(DestinationKey("f", null)).withText("https://b.com") }
+        c.sendSelected().join()
+        assertNull(c.config.value.lastSpaceId) // a paired card clears it
+        scope.cancel()
+    }
 }

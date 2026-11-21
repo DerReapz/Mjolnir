@@ -24,8 +24,7 @@ class SpacesSectionTest {
     private val me = Peer("me", "This PC", DeviceKind.PC)
     private val fred = Peer("fred", "Fred's phone", DeviceKind.PHONE)
     private val now = 1_700_000_000_000L
-    private val day = 24L * 60 * 60 * 1000
-    private fun space(adminId: String, seen: Long = now) = Space("s1", "Friends", adminId, listOf(me, fred), seen)
+    private fun space(adminId: String, silent: Boolean = false) = Space("s1", "Friends", adminId, listOf(me, fred), silent)
 
     private fun androidx.compose.ui.test.ComposeUiTest.show(
         space: Space, invite: InviteUi? = null, actions: SpacesActions = SpacesActions(), dialog: ((SpaceDialog) -> Unit)? = null,
@@ -59,7 +58,7 @@ class SpacesSectionTest {
 
     @Test fun silentAdminCanBeTakenOverAfterConfirming() = runComposeUiTest {
         var tookOver: Space? = null
-        show(space("fred", seen = now - 31 * day), actions = SpacesActions(onTakeOver = { tookOver = it }))
+        show(space("fred", silent = true), actions = SpacesActions(onTakeOver = { tookOver = it }))
         onNodeWithText("Take over as admin").performClick()
         assertEquals(null, tookOver) // asks first
         onNodeWithText("Take over Friends?").assertExists()

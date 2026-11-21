@@ -13,6 +13,6 @@ suspend fun ensureRegistered(store: JsonFileStore<DesktopConfig>, api: RelayApi)
 
 /** Forgets this device's identity and pairing, then registers anew. */
 suspend fun reRegister(store: JsonFileStore<DesktopConfig>, api: RelayApi): DesktopConfig {
-    store.update { it.copy(token = null, deviceId = null, lastPhoneId = null) }
+    store.update { it.copy(token = null, deviceId = null, lastPhoneId = null, lastSpaceId = null) }
     return ensureRegistered(store, api)
 }

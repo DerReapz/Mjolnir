@@ -235,4 +235,24 @@ class SameNameFoldersTest {
         assertNull(s.withoutLinks(setOf("https://a.com")).selectedRow)
         assertEquals("https://a.com", s.withoutLinks(setOf("https://b.com")).selectedRow)
     }
+
+    @Test fun restartSelectsTheSameCardAsLastTime() {
+        val paired = Peer("f", "Fred", DeviceKind.PC)
+        val inWork = Peer("f", "Fred", DeviceKind.PC, SpaceRef("s2", "Work"))
+        val s = SendState().withTargets(listOf(paired, inWork), "f", "s2")
+        assertEquals(DestinationKey("f", "s2"), s.targetKey)
+        assertEquals(DestinationKey("f", null), SendState().withTargets(listOf(paired, inWork), "f", null).targetKey)
+        // the remembered space is gone: fall back to the device's paired card
+        assertEquals(DestinationKey("f", null), SendState().withTargets(listOf(paired, inWork), "f", "gone").targetKey)
+    }
+
+    @Test fun lastTargetPeerPrefersTheRememberedCard() {
+        val paired = Peer("f", "Fred", DeviceKind.PC)
+        val inWork = Peer("f", "Fred", DeviceKind.PC, SpaceRef("s2", "Work"))
+        assertEquals(inWork, lastTargetPeer(listOf(paired, inWork), "f", "s2"))
+        assertEquals(paired, lastTargetPeer(listOf(inWork, paired), "f", null))
+        assertEquals(paired, lastTargetPeer(listOf(inWork, paired), "f", "gone"))
+        assertEquals(inWork, lastTargetPeer(listOf(inWork), "f", null)) // only a space card exists
+        assertNull(lastTargetPeer(emptyList(), "f", null))
+    }
 }
