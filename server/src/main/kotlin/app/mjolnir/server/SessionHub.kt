@@ -3,7 +3,9 @@ package app.mjolnir.server
 import app.mjolnir.protocol.MjolnirJson
 import app.mjolnir.protocol.RelayEvent
 import io.ktor.server.websocket.WebSocketServerSession
+import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
+import io.ktor.websocket.close
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,12 +40,16 @@ interface EventSink {
 
     /** Drops the connection without waiting for the peer (it is stuck or gone). */
     fun abort()
+
+    /** Closes the connection on purpose (e.g. its guest room ended); by default the same as [abort]. */
+    suspend fun close(reason: String) = abort()
 }
 
 /** An [EventSink] over a relay WebSocket session. */
 class WebSocketSink(private val session: WebSocketServerSession) : EventSink {
     override suspend fun sendText(text: String) = session.send(Frame.Text(text))
     override fun abort() = session.cancel("event push timed out")
+    override suspend fun close(reason: String) = session.close(CloseReason(CloseReason.Codes.NORMAL, reason))
 }
 
 /**
@@ -64,6 +70,23 @@ class SessionHub(
     fun remove(deviceId: String, sink: EventSink) = registry.remove(deviceId, sink)
 
     fun isConnected(deviceId: String): Boolean = registry.has(deviceId)
+
+    /** Closes every open stream of [deviceId] and returns at once; a stream that does not close in time is aborted. */
+    fun disconnect(deviceId: String, reason: String) {
+        for (s in registry.all(deviceId)) {
+            remove(deviceId, s)
+            scope.launch {
+                val closed = try {
+                    withTimeoutOrNull(sendTimeoutMs) { s.close(reason); true } ?: false
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    false
+                }
+                if (!closed) runCatching { s.abort() }
+            }
+        }
+    }
 
     /** Queues [event] for every open stream of [deviceId] and returns at once. */
     fun emit(deviceId: String, event: RelayEvent) {

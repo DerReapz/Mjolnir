@@ -122,7 +122,7 @@ fun DevicesScreen(vm: DevicesViewModel, pairing: PairingViewModel, spaces: Space
                             val nickname = state.nicknames[peer.deviceId]
                             Text(nickname ?: peer.name, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (nickname != null) Text(peer.name, style = MaterialTheme.typography.bodySmall, color = Forge.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(if (peer.kind == DeviceKind.PC) "PC" else "Phone", style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
+                            Text(when (peer.kind) { DeviceKind.PC -> "PC"; DeviceKind.PHONE -> "Phone"; DeviceKind.GUEST -> "Guest" }, style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
                         }
                         TextButton(onClick = { renaming = peer }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Rename") }
                         TextButton(onClick = { confirm = peer }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Unpair") }

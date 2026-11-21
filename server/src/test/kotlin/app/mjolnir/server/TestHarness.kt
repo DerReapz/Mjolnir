@@ -18,6 +18,11 @@ import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
+import io.ktor.client.request.delete
+import io.ktor.server.application.Application
+import app.mjolnir.protocol.GuestJoinRequest
+import app.mjolnir.protocol.GuestJoinResponse
+import app.mjolnir.protocol.RoomResponse
 import app.mjolnir.protocol.Delivery
 import app.mjolnir.protocol.SendRequest
 import app.mjolnir.protocol.SendResponse
@@ -61,6 +66,7 @@ class RelayTestScope(
     val client: HttpClient,
     val deps: RelayDeps,
     val clock: FakeClock,
+    val application: Application,
 ) {
     val store: Store get() = deps.store
 
@@ -158,6 +164,33 @@ class RelayTestScope(
             bearerAuth(device.token); contentType(ContentType.Application.Json); setBody(PushTokenRequest(token))
         }.status
 
+    suspend fun openRoomResponse(owner: RegisterResponse): HttpResponse =
+        client.post("/v1/rooms") { bearerAuth(owner.token) }
+
+    suspend fun openRoom(owner: RegisterResponse): RoomResponse {
+        val r = openRoomResponse(owner)
+        check(r.status == HttpStatusCode.Created) { "open room failed: ${r.status}" }
+        return r.body()
+    }
+
+    suspend fun joinResponse(secret: String): HttpResponse =
+        client.post("/v1/guest/join") { contentType(ContentType.Application.Json); setBody(GuestJoinRequest(secret)) }
+
+    suspend fun join(secret: String): GuestJoinResponse {
+        val r = joinResponse(secret)
+        check(r.status == HttpStatusCode.Created) { "join failed: ${r.status}" }
+        return r.body()
+    }
+
+    /** Opens a room for [owner] and joins it; returns the room and the guest as a device. */
+    suspend fun guestOf(owner: RegisterResponse): Pair<RoomResponse, RegisterResponse> {
+        val room = openRoom(owner)
+        return room to join(room.secret).asDevice()
+    }
+
+    suspend fun endRoom(owner: RegisterResponse, roomId: String): HttpStatusCode =
+        client.delete("/v1/rooms/$roomId") { bearerAuth(owner.token) }.status
+
     suspend fun <T> withEvents(device: RegisterResponse, block: suspend EventReader.() -> T): T =
         run {
             var result: Result<T>? = null
@@ -169,19 +202,27 @@ class RelayTestScope(
         }
 }
 
+fun GuestJoinResponse.asDevice() = RegisterResponse(deviceId, token)
+
 fun relayTest(
     clock: FakeClock = FakeClock(),
     limits: RelayLimits = RelayLimits(),
     files: FileStorage = FileStorage(createTempDirectory("mjolnir-files").toFile()),
     push: PushSender = NoopPushSender,
     heartbeatMs: Long = 30_000,
+    roomSweepMs: Long = 15_000,
     block: suspend RelayTestScope.() -> Unit,
 ) = testApplication {
-    val deps = RelayDeps(store = Store("jdbc:sqlite::memory:"), clock = clock, limits = limits, files = files, push = push, heartbeatMs = heartbeatMs)
-    application { relayModule(deps) }
+    val deps = RelayDeps(
+        store = Store("jdbc:sqlite::memory:"), clock = clock, limits = limits, files = files, push = push,
+        heartbeatMs = heartbeatMs, roomSweepMs = roomSweepMs,
+    )
+    var app: Application? = null
+    application { relayModule(deps); app = this }
+    startApplication()
     val client = createClient {
         install(ContentNegotiation) { json(MjolnirJson) }
         install(WebSockets)
     }
-    RelayTestScope(client, deps, clock).block()
+    RelayTestScope(client, deps, clock, app!!).block()
 }

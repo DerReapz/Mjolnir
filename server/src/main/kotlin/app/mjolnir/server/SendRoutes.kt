@@ -1,6 +1,8 @@
 package app.mjolnir.server
 
 import app.mjolnir.protocol.Delivery
+import app.mjolnir.protocol.DeviceKind
+import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.ErrorResponse
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.RelayEvent
@@ -49,6 +51,10 @@ fun Route.sendRoutes(deps: RelayDeps) {
             post("/v1/send") {
                 val me = call.principal<DevicePrincipal>()!!
                 val req = call.receive<SendRequest>()
+                // A guest sends only to its room's owner, directly (never in a space).
+                if (me.kind == DeviceKind.GUEST && (req.spaceId != null || req.to != store.roomOfGuest(me.deviceId)?.ownerId)) {
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("guest"))
+                }
                 // Allowed when paired, or when the card the user clicked names a space both devices are in.
                 // A given spaceId must always hold, since it is stored as the delivery's label.
                 val space = req.spaceId?.let { id ->
@@ -70,6 +76,12 @@ fun Route.sendRoutes(deps: RelayDeps) {
                 if (req.fileIds.isNotEmpty()) {
                     if (req.fileIds.size > Limits.MAX_FILES_PER_SEND) {
                         return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_files"))
+                    }
+                    // Files sent to a guest count toward its room's storage cap.
+                    if (store.device(req.to)?.kind == DeviceKind.GUEST &&
+                        store.roomBytes(req.to) + store.unsentBytes(me.deviceId, req.fileIds) > deps.roomCapBytes()
+                    ) {
+                        return@post call.respond(HttpStatusCode.InsufficientStorage, ErrorResponse("relay_full"))
                     }
                     val (result, row) = store.createFileDelivery(me.deviceId, req.to, req.fileIds, now, ref?.id, ref?.name)
                     return@post when (result) {
@@ -96,8 +108,10 @@ fun Route.sendRoutes(deps: RelayDeps) {
 
         get("/v1/inbox") {
             val me = call.principal<DevicePrincipal>()!!
-            val out = store.inbox(me.deviceId, deps.clock.nowMs()).mapNotNull { row ->
-                store.device(row.fromId)?.let { Delivery(row.id, it.toPeer(), row.tabs, row.sentAtMs, row.files, row.spaceId?.let { id -> SpaceRef(id, row.spaceName ?: "") }) }
+            val out = store.inbox(me.deviceId, deps.clock.nowMs()).map { row ->
+                // Devices are only ever deleted when their guest room ends; what the guest sent stays, still from "Guest".
+                val from = store.device(row.fromId)?.toPeer() ?: Peer(row.fromId, "Guest", DeviceKind.GUEST)
+                Delivery(row.id, from, row.tabs, row.sentAtMs, row.files, row.spaceId?.let { id -> SpaceRef(id, row.spaceName ?: "") })
             }
             call.respond(out)
         }

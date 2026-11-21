@@ -1,6 +1,9 @@
 package app.mjolnir.server
 
+import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
+import io.ktor.websocket.close
+import app.mjolnir.protocol.DeviceKind
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import app.mjolnir.protocol.ClaimRequest
@@ -49,6 +52,7 @@ fun Route.pairingRoutes(deps: RelayDeps) {
         rateLimit(ClaimLimit) {
             post("/v1/pairings/claim") {
                 val me = call.me()
+                if (me.kind == DeviceKind.GUEST) return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("guest"))
                 val req = call.receive<ClaimRequest>()
                 val code = PairingCode.normalize(req.code) ?: return@post call.notFound()
                 val now = deps.clock.nowMs()
@@ -63,7 +67,6 @@ fun Route.pairingRoutes(deps: RelayDeps) {
                 var space: SpaceRef? = null
                 if (open.kind == CodeKind.SPACE_INVITE) {
                     // The inviter must still administer the space: a transferred or deleted space voids its old invites.
-                    // guest check added by guest-room plan
                     val s = open.spaceId?.let { store.space(it) }
                     if (s == null || s.adminId != open.ownerId) return@post call.notFound()
                     space = s.toRef()
@@ -104,6 +107,7 @@ fun Route.pairingRoutes(deps: RelayDeps) {
                 Store.Resolved.FULL -> call.respond(HttpStatusCode.Conflict, ErrorResponse("member_limit"))
                 Store.Resolved.SPACE_LIMIT -> call.respond(HttpStatusCode.Conflict, ErrorResponse("space_limit"))
                 Store.Resolved.FORBIDDEN -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("forbidden"))
+                Store.Resolved.GUEST -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("guest"))
                 Store.Resolved.ALREADY_ACCEPTED -> call.respond(HttpStatusCode.NoContent)
                 Store.Resolved.WON -> {
                     val row = store.pairing(id)!!
@@ -123,7 +127,8 @@ fun Route.pairingRoutes(deps: RelayDeps) {
         post("/v1/pairings/{id}/reject") {
             val me = call.me()
             when (store.resolvePairing(call.parameters["id"]!!, me.deviceId, accept = false, nowMs = deps.clock.nowMs())) {
-                Store.Resolved.NOT_FOUND, Store.Resolved.ALREADY_ACCEPTED, Store.Resolved.FULL, Store.Resolved.SPACE_LIMIT -> call.notFound()
+                Store.Resolved.NOT_FOUND, Store.Resolved.ALREADY_ACCEPTED, Store.Resolved.FULL, Store.Resolved.SPACE_LIMIT,
+                Store.Resolved.GUEST -> call.notFound()
                 Store.Resolved.FORBIDDEN -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("forbidden"))
                 Store.Resolved.WON -> call.respond(HttpStatusCode.NoContent)
             }
@@ -131,7 +136,8 @@ fun Route.pairingRoutes(deps: RelayDeps) {
 
         get("/v1/peers") {
             val me = call.me().deviceId
-            val paired = store.peersOf(me)
+            // A guest is listed only to its own room's owner.
+            val paired = store.peersOf(me).filter { it.kind != DeviceKind.GUEST || store.roomOfGuest(it.id)?.ownerId == me }
             val pairedIds = paired.map { it.id }.toSet()
             // A device that is paired shows once, under paired; otherwise once per shared space.
             val viaSpaces = store.spacesOf(me).flatMap { s ->
@@ -156,6 +162,10 @@ fun Route.pairingRoutes(deps: RelayDeps) {
             val heartbeat = launch {
                 while (true) {
                     delay(deps.heartbeatMs)
+                    if (me.kind == DeviceKind.GUEST && store.device(me.deviceId)?.let { deps.deviceActive(it) } != true) {
+                        close(CloseReason(CloseReason.Codes.NORMAL, "room_ended")) // the room ended or expired meanwhile
+                        break
+                    }
                     store.touchLastSeen(me.deviceId, deps.clock.nowMs()) // an always-on device counts as active (throttled)
                     send(Frame.Text(HEARTBEAT_FRAME))
                 }

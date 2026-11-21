@@ -35,3 +35,34 @@ class SpacesModelsTest {
         assertEquals(del, MjolnirJson.decodeFromString(RelayEvent.serializer(), MjolnirJson.encodeToString(RelayEvent.serializer(), del)))
     }
 }
+
+class GuestRoomModelsTest {
+    private fun roundTrip(e: RelayEvent) =
+        assertEquals(e, MjolnirJson.decodeFromString(RelayEvent.serializer(), MjolnirJson.encodeToString(RelayEvent.serializer(), e)))
+
+    @Test fun guestKindAndRoomEventsUseTheirSerialNames() {
+        assertEquals("\"GUEST\"", MjolnirJson.encodeToString(DeviceKind.serializer(), DeviceKind.GUEST))
+        val guest = Peer("g", "Guest", DeviceKind.GUEST)
+        assertEquals(
+            """{"type":"guest_joined","roomId":"r","guest":{"deviceId":"g","name":"Guest","kind":"GUEST","space":null}}""",
+            MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.GuestJoined("r", guest)),
+        )
+        assertEquals("""{"type":"room_ended","roomId":"r"}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.RoomEnded("r")))
+        assertEquals(
+            """{"type":"downloaded","deliveryId":"d","fileIds":["f1","f2"]}""",
+            MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.Downloaded("d", listOf("f1", "f2"))),
+        )
+        roundTrip(RelayEvent.GuestJoined("r", guest)); roundTrip(RelayEvent.RoomEnded("r")); roundTrip(RelayEvent.Downloaded("d", listOf("f")))
+    }
+
+    @Test fun roomAndTicketModelsRoundTrip() {
+        val join = GuestJoinResponse("g", "t", "r", Peer("o", "PC", DeviceKind.PC), 5L, 100)
+        assertEquals(join, MjolnirJson.decodeFromString<GuestJoinResponse>(MjolnirJson.encodeToString(GuestJoinResponse.serializer(), join)))
+        assertEquals(TicketRequest(fileId = "f"), MjolnirJson.decodeFromString<TicketRequest>("""{"fileId":"f"}"""))
+        assertEquals(TicketRequest(deliveryId = "d", folder = "Photos"), MjolnirJson.decodeFromString<TicketRequest>("""{"deliveryId":"d","folder":"Photos"}"""))
+        assertEquals(RoomStatus("r", 2L, 1L, null), MjolnirJson.decodeFromString<RoomStatus>("""{"roomId":"r","expiresAtEpochMs":2,"serverNowEpochMs":1,"guest":null}"""))
+        assertEquals(RoomResponse("r", "s", 3L), MjolnirJson.decodeFromString<RoomResponse>("""{"roomId":"r","secret":"s","expiresAtEpochMs":3}"""))
+        assertEquals(GuestJoinRequest("s"), MjolnirJson.decodeFromString<GuestJoinRequest>("""{"secret":"s"}"""))
+        assertEquals(TicketResponse("x"), MjolnirJson.decodeFromString<TicketResponse>("""{"ticket":"x"}"""))
+    }
+}

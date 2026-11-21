@@ -55,6 +55,10 @@ data class RelayLimits(
     val sendsPerMinute: Int = 60,
     val maxSpacesPerDevice: Int = 50,
     val maxMembersPerSpace: Int = 50,
+    /** Per-room storage cap from `MJOLNIR_GUEST_MAX_MB`; null: the global cap (it can only lower that). */
+    val guestMaxBytes: Long? = null,
+    val guestJoinsPerMinutePerIp: Int = 10,
+    val roomsPerHourPerDevice: Int = 30,
 )
 
 data class RelayDeps(
@@ -68,6 +72,9 @@ data class RelayDeps(
     val push: PushSender = NoopPushSender,
     /** Interval of the `{"type":"heartbeat"}` text frame sent on every open WebSocket (clients use it to detect dead links). */
     val heartbeatMs: Long = 30_000,
+    /** How often expired guest rooms are ended (their guest removed and its sockets closed). */
+    val roomSweepMs: Long = 15_000,
+    val tickets: DownloadTickets = DownloadTickets(),
 )
 
 /** The registration rate-limit key: Fly's own `Fly-Client-IP` when present, else the last proxy hop. */
@@ -82,6 +89,7 @@ val SendLimit = RateLimitName("send")
 
 fun Application.relayModule(deps: RelayDeps) {
     install(ContentNegotiation) { json(MjolnirJson) }
+    install(GuestGuard) { this.deps = deps }
     // Only the last X-Forwarded-For hop is added by our own proxy; earlier entries are whatever the client sent.
     install(XForwardedHeaders) { useLastProxy() }
     install(RequestBodyLimit) {
@@ -111,6 +119,7 @@ fun Application.relayModule(deps: RelayDeps) {
         bearer("device") {
             authenticate { cred ->
                 deps.store.deviceByTokenHash(sha256Hex(cred.token))
+                    ?.takeIf { deps.deviceActive(it) } // a guest token dies with its room
                     ?.also { deps.store.touchLastSeen(it.id, deps.clock.nowMs()) }
                     ?.let { DevicePrincipal(it.id, it.name, it.kind) }
             }
@@ -123,6 +132,14 @@ fun Application.relayModule(deps: RelayDeps) {
         }
         register(ClaimLimit) {
             rateLimiter(limit = deps.limits.claimsPerMinute, refillPeriod = 1.minutes)
+            requestKey { call -> call.principal<DevicePrincipal>()?.deviceId ?: call.request.origin.remoteHost }
+        }
+        register(GuestJoinLimit) {
+            rateLimiter(limit = deps.limits.guestJoinsPerMinutePerIp, refillPeriod = 1.minutes)
+            requestKey { call -> clientIp(call) }
+        }
+        register(RoomLimit) {
+            rateLimiter(limit = deps.limits.roomsPerHourPerDevice, refillPeriod = 1.hours)
             requestKey { call -> call.principal<DevicePrincipal>()?.deviceId ?: call.request.origin.remoteHost }
         }
         register(SendLimit) {
@@ -143,6 +160,18 @@ fun Application.relayModule(deps: RelayDeps) {
             }
         }
     }
+    purgeScope.launch {
+        while (true) {
+            delay(deps.roomSweepMs)
+            try {
+                endExpiredRooms(deps)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log.warn("room sweep failed", e)
+            }
+        }
+    }
     monitor.subscribe(ApplicationStopping) { purgeScope.cancel(); deps.asyncScope.cancel() }
     routing {
         get("/health") { call.respondText("ok") }
@@ -151,5 +180,6 @@ fun Application.relayModule(deps: RelayDeps) {
         spaceRoutes(deps)
         sendRoutes(deps)
         fileRoutes(deps)
+        roomRoutes(deps)
     }
 }

@@ -1,6 +1,7 @@
 package app.mjolnir.server
 
 import app.mjolnir.protocol.CreateSpaceRequest
+import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.ErrorResponse
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.PairingCode
@@ -71,8 +72,9 @@ fun Route.spaceRoutes(deps: RelayDeps) {
 
     authenticate("device") {
         post("/v1/spaces") {
-            // guest check added by guest-room plan
-            val me = call.principal<DevicePrincipal>()!!.deviceId
+            val principal = call.principal<DevicePrincipal>()!!
+            if (principal.kind == DeviceKind.GUEST) return@post call.error(HttpStatusCode.Forbidden, "guest")
+            val me = principal.deviceId
             val name = validSpaceName(call.receive<CreateSpaceRequest>().name)
                 ?: return@post call.error(HttpStatusCode.BadRequest, "invalid_name")
             if (store.spacesOf(me).size >= deps.limits.maxSpacesPerDevice) {

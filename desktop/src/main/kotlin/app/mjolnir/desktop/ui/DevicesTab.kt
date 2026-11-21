@@ -158,7 +158,7 @@ fun DevicesTabContent(
                         Column(Modifier.weight(1f)) {
                             Text(nicknames.nicknameOr(peer.deviceId, peer.name), style = TextStyle(fontFamily = ForgeFonts.inter600, fontSize = 14.sp, color = Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             if (nickname != null) Text(peer.name, style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(if (peer.kind == DeviceKind.PHONE) "Phone" else "PC", style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted))
+                            Text(when (peer.kind) { DeviceKind.PHONE -> "Phone"; DeviceKind.PC -> "PC"; DeviceKind.GUEST -> "Guest" }, style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted))
                         }
                         ForgeSecondaryButton("Rename…", onClick = { onRename(peer) })
                         ForgeSecondaryButton("Unpair", onClick = { onUnpair(peer) })

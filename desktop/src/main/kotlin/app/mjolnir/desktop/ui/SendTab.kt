@@ -122,7 +122,7 @@ fun SendTabContent(
                 group.title?.let { ForgeSectionLabel(it) }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     group.peers.forEach { peer ->
-                        val kind = if (peer.kind == DeviceKind.PHONE) "Phone" else "PC"
+                        val kind = when (peer.kind) { DeviceKind.PHONE -> "Phone"; DeviceKind.PC -> "PC"; DeviceKind.GUEST -> "Guest" }
                         // A device in two spaces has a card under each heading; the card clicked decides the space sent.
                         Column(
                             Modifier.widthIn(min = 170.dp, max = 260.dp).heightIn(min = 52.dp).clip(Forge.inputShape)

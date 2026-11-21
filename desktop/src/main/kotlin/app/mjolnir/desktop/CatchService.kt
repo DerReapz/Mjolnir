@@ -41,6 +41,9 @@ class CatchService(
                 is RelayEvent.Unpaired -> { onUnpaired(event.deviceId); onPeersChanged() }
                 is RelayEvent.SpaceChanged -> { onSpaceChanged(event.spaceId); onPeersChanged() }
                 is RelayEvent.SpaceDeleted -> { onSpaceDeleted(event); onPeersChanged() }
+                // The guest room UI arrives later; for now a guest joining or leaving just refreshes the peer list.
+                is RelayEvent.GuestJoined, is RelayEvent.RoomEnded -> onPeersChanged()
+                is RelayEvent.Downloaded -> Unit
             }
         }
     }

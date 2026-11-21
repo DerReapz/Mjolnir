@@ -1,5 +1,6 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
 
 data class DestinationGroup(val key: String, val title: String?, val peers: List<Peer>)
@@ -7,8 +8,8 @@ data class DestinationGroup(val key: String, val title: String?, val peers: List
 /** What a destination card selects: a device in the context of one space (null: a paired device). A device in two spaces has two cards. */
 data class DestinationKey(val deviceId: String, val spaceId: String?)
 
-/** A paired device (reached directly, not through a space). */
-val Peer.isPaired: Boolean get() = space == null
+/** A paired device (reached directly, not through a space). A guest has no space either, but is not a pairing. */
+val Peer.isPaired: Boolean get() = space == null && kind != DeviceKind.GUEST
 
 val DestinationKey.isPaired: Boolean get() = spaceId == null
 
@@ -24,7 +25,7 @@ fun groupDestinations(peers: List<Peer>, lastUsedId: String?, nameOf: (Peer) -> 
     fun sorted(list: List<Peer>) = list.sortedWith(
         compareBy<Peer> { it.deviceId != lastUsedId }.thenBy(String.CASE_INSENSITIVE_ORDER) { nameOf(it) },
     )
-    val bySpace = peers.filter { !it.isPaired }.groupBy { it.space!!.id } // keeps first-appearance order
+    val bySpace = peers.filter { it.space != null }.groupBy { it.space!!.id } // keeps first-appearance order
     val spaceGroups = bySpace.map { (id, members) -> DestinationGroup("space:$id", members.first().space!!.name, sorted(members)) }
     val mine = DestinationGroup("mine", null, sorted(peers.filter { it.isPaired }))
     val groups = (listOf(mine) + spaceGroups).filter { it.peers.isNotEmpty() }

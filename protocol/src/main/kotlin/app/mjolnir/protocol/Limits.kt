@@ -17,5 +17,7 @@ object Limits {
     const val UPLOAD_CHUNK_BYTES = 8_388_608L
     const val INCOMPLETE_UPLOAD_TTL_MS = 86_400_000L
     const val MAX_PATH_DEPTH = 16
+    const val GUEST_ROOM_TTL_MS = 3_600_000L
+    const val DOWNLOAD_TICKET_TTL_MS = 60_000L
     const val MAX_RELATIVE_PATH_LENGTH = 1024
 }

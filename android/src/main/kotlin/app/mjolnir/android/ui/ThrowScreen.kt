@@ -280,7 +280,11 @@ internal fun OutgoingCard(title: String, status: OutgoingStatus, onSendNow: () -
     }
 }
 
-private fun kindLabel(peer: app.mjolnir.protocol.Peer) = if (peer.kind == app.mjolnir.protocol.DeviceKind.PC) "PC" else "Phone"
+private fun kindLabel(peer: app.mjolnir.protocol.Peer) = when (peer.kind) {
+    app.mjolnir.protocol.DeviceKind.PC -> "PC"
+    app.mjolnir.protocol.DeviceKind.PHONE -> "Phone"
+    app.mjolnir.protocol.DeviceKind.GUEST -> "Guest"
+}
 
 @Composable
 private fun TargetPicker(state: ThrowUiState, vm: ThrowViewModel, onPairDevice: () -> Unit) {

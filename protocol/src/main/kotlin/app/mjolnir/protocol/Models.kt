@@ -4,7 +4,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-@Serializable enum class DeviceKind { PHONE, PC }
+/** GUEST: a browser in a guest room, linked only to the room's owner and gone when the room ends. */
+@Serializable enum class DeviceKind { PHONE, PC, GUEST }
 @Serializable data class Tab(val url: String, val title: String? = null)
 @Serializable data class SpaceRef(val id: String, val name: String)
 @Serializable data class Peer(val deviceId: String, val name: String, val kind: DeviceKind, val space: SpaceRef? = null)
@@ -59,6 +60,20 @@ import kotlinx.serialization.json.Json
 @Serializable data class CreateSpaceRequest(val name: String)
 @Serializable data class RenameSpaceRequest(val name: String)
 @Serializable data class TransferAdminRequest(val deviceId: String)
+@Serializable data class RoomResponse(val roomId: String, val secret: String, val expiresAtEpochMs: Long)
+@Serializable data class RoomStatus(val roomId: String, val expiresAtEpochMs: Long, val serverNowEpochMs: Long, val guest: Peer?)
+/** Either [fileId], or [deliveryId] with the top [folder] to download as one zip. */
+@Serializable data class TicketRequest(val fileId: String? = null, val deliveryId: String? = null, val folder: String? = null)
+@Serializable data class TicketResponse(val ticket: String)
+@Serializable data class GuestJoinRequest(val secret: String)
+@Serializable data class GuestJoinResponse(
+    val deviceId: String,
+    val token: String,
+    val roomId: String,
+    val owner: Peer,
+    val expiresAtEpochMs: Long,
+    val maxFileMb: Int,
+)
 @Serializable data class ErrorResponse(val error: String, val detail: String? = null)
 
 @Serializable
@@ -70,6 +85,13 @@ sealed interface RelayEvent {
 
     @Serializable @SerialName("space_changed") data class SpaceChanged(val spaceId: String) : RelayEvent
     @Serializable @SerialName("space_deleted") data class SpaceDeleted(val space: SpaceRef) : RelayEvent
+
+    /** Sent to a room's owner when the guest redeems the invite. */
+    @Serializable @SerialName("guest_joined") data class GuestJoined(val roomId: String, val guest: Peer) : RelayEvent
+    /** Sent to a room's owner when the room ends (End room or expiry). */
+    @Serializable @SerialName("room_ended") data class RoomEnded(val roomId: String) : RelayEvent
+    /** Sent to the sender when the guest has been served the last byte of these files of [deliveryId]. */
+    @Serializable @SerialName("downloaded") data class Downloaded(val deliveryId: String, val fileIds: List<String>) : RelayEvent
 
     /** Emitted by RelayClient after every (re)connect; the server never sends it. */
     @Serializable @SerialName("connected") data object Connected : RelayEvent

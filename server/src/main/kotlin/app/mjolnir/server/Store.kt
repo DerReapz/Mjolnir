@@ -51,6 +51,12 @@ data class UploadRow(
 
 enum class AttachResult { OK, ALREADY_SENT, INVALID }
 
+/** A guest room: open until [expiresAtMs] (or until ended, which deletes the row); [guestId] once redeemed. */
+data class RoomRow(val id: String, val ownerId: String, val guestId: String?, val createdAtMs: Long, val expiresAtMs: Long)
+
+/** What ending a room removed: the blobs in [fileIdsToDelete] are for the caller to delete from storage. */
+data class EndedRoom(val ownerId: String, val guestId: String?, val fileIdsToDelete: List<String>)
+
 fun DeviceRow.toPeer(): Peer = Peer(id, name, kind)
 
 /** Unaccepted pairing and invite rows are kept this long past their expiry, then purged. */
@@ -133,12 +139,24 @@ class Store(jdbcUrl: String) {
                     PRIMARY KEY(space_id, device_id))"""
             )
             it.executeUpdate("CREATE INDEX IF NOT EXISTS space_members_device ON space_members(device_id)")
+            it.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS rooms(
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    secret_hash TEXT NOT NULL UNIQUE,
+                    guest_id TEXT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL)"""
+            )
+            it.executeUpdate("CREATE INDEX IF NOT EXISTS rooms_owner ON rooms(owner_id)")
+            it.executeUpdate("CREATE INDEX IF NOT EXISTS rooms_guest ON rooms(guest_id)")
         }
         addColumnIfMissing("devices", "last_seen", "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("pairings", "kind", "TEXT NOT NULL DEFAULT 'PAIRING'")
         addColumnIfMissing("pairings", "space_id", "TEXT NULL")
         addColumnIfMissing("deliveries", "space_id", "TEXT NULL")
         addColumnIfMissing("deliveries", "space_name", "TEXT NULL")
+        addColumnIfMissing("files", "downloaded_at", "INTEGER NULL")
         // Databases created before tombstones existed lack acked_at.
         val hasAckedAt = conn.createStatement().use { st ->
             st.executeQuery("PRAGMA table_info(files)").use { rs ->
@@ -174,8 +192,7 @@ class Store(jdbcUrl: String) {
         DeviceRow(getString("id"), getString("name"), DeviceKind.valueOf(getString("kind")), getString("push_token"))
 
     @Synchronized
-    fun createDevice(name: String, kind: DeviceKind, tokenHash: String, nowMs: Long): DeviceRow {
-        val id = newId()
+    fun createDevice(name: String, kind: DeviceKind, tokenHash: String, nowMs: Long, id: String = newId()): DeviceRow {
         conn.prepareStatement("INSERT INTO devices(id,name,kind,token_hash,created_at) VALUES(?,?,?,?,?)").use {
             it.setString(1, id); it.setString(2, name); it.setString(3, kind.name)
             it.setString(4, tokenHash); it.setLong(5, nowMs)
@@ -303,7 +320,7 @@ class Store(jdbcUrl: String) {
         }
     }
 
-    enum class Resolved { NOT_FOUND, FORBIDDEN, WON, ALREADY_ACCEPTED, FULL, SPACE_LIMIT }
+    enum class Resolved { NOT_FOUND, FORBIDDEN, WON, ALREADY_ACCEPTED, FULL, SPACE_LIMIT, GUEST }
 
     /**
      * One atomic CLAIMED -> ACCEPTED/REJECTED transition by the owner. Accepting a PAIRING links the two devices;
@@ -325,13 +342,14 @@ class Store(jdbcUrl: String) {
             return@transaction Resolved.ALREADY_ACCEPTED
         }
         if (row.state != PairingState.CLAIMED || nowMs > row.expiresAtMs || claimerId == null) return@transaction Resolved.NOT_FOUND
+        // A guest is linked only to its room's owner, at join: it never pairs or joins a space.
+        if (accept && device(claimerId)?.kind == DeviceKind.GUEST) return@transaction Resolved.GUEST
         if (invite) {
             val space = row.spaceId?.let { space(it) }
             if (space == null || space.adminId != row.ownerId) return@transaction Resolved.NOT_FOUND
             // A vanished device can neither be added nor approve anything.
             if (device(claimerId) == null || device(row.ownerId) == null) return@transaction Resolved.NOT_FOUND
             if (accept) {
-                // guest check added by guest-room plan
                 if (spacesOf(claimerId).size >= maxSpaces) return@transaction Resolved.SPACE_LIMIT
                 if (members(space.id).size >= maxMembers) return@transaction Resolved.FULL
                 addMember(space.id, claimerId, nowMs)
@@ -686,10 +704,175 @@ class Store(jdbcUrl: String) {
         out
     }
 
+    private fun ResultSet.toRoom() =
+        RoomRow(getString("id"), getString("owner_id"), getString("guest_id"), getLong("created_at"), getLong("expires_at"))
+
+    private fun roomWhere(clause: String, vararg args: Any): RoomRow? =
+        conn.prepareStatement("SELECT * FROM rooms WHERE $clause").use {
+            args.forEachIndexed { i, a -> it.setObject(i + 1, a) }
+            it.executeQuery().use { rs -> if (rs.next()) rs.toRoom() else null }
+        }
+
+    /**
+     * Opens a room for [ownerId], or returns null when it already has an open one (checked under the same lock, so
+     * two racing requests never open two). [secretHash] is the SHA-256 of the invite secret, which is never stored.
+     */
+    @Synchronized
+    fun createRoom(ownerId: String, secretHash: String, nowMs: Long, ttlMs: Long): RoomRow? {
+        if (openRoomOf(ownerId, nowMs) != null) return null
+        val row = RoomRow(newId(), ownerId, null, nowMs, nowMs + ttlMs)
+        conn.prepareStatement("INSERT INTO rooms(id,owner_id,secret_hash,guest_id,created_at,expires_at) VALUES(?,?,?,NULL,?,?)").use {
+            it.setString(1, row.id); it.setString(2, ownerId); it.setString(3, secretHash)
+            it.setLong(4, nowMs); it.setLong(5, row.expiresAtMs)
+            it.executeUpdate()
+        }
+        return row
+    }
+
+    /** The owner's unexpired room, if any. */
+    @Synchronized
+    fun openRoomOf(ownerId: String, nowMs: Long): RoomRow? = roomWhere("owner_id=? AND expires_at>?", ownerId, nowMs)
+
+    /** The room whose invite secret hashes to [hash], expired or not. */
+    @Synchronized
+    fun roomBySecretHash(hash: String): RoomRow? = roomWhere("secret_hash=?", hash)
+
+    @Synchronized
+    fun room(id: String): RoomRow? = roomWhere("id=?", id)
+
+    /** The room [guestId] joined, expired or not; null for a device that is not a guest of a live room row. */
+    @Synchronized
+    fun roomOfGuest(guestId: String): RoomRow? = roomWhere("guest_id=?", guestId)
+
+    /** Binds [guestId] to the room; false when the room is gone or already redeemed. */
+    @Synchronized
+    fun redeemRoom(roomId: String, guestId: String): Boolean =
+        conn.prepareStatement("UPDATE rooms SET guest_id=? WHERE id=? AND guest_id IS NULL").use {
+            it.setString(1, guestId); it.setString(2, roomId); it.executeUpdate() > 0
+        }
+
+    /**
+     * Redeems room [roomId] for a new guest device holding [tokenHash] and links it to the owner, all at once;
+     * null when the room is gone or already redeemed.
+     */
+    @Synchronized
+    fun joinRoom(roomId: String, tokenHash: String, nowMs: Long): DeviceRow? = transaction {
+        val guestId = newId()
+        val room = room(roomId) ?: return@transaction null
+        if (!redeemRoom(roomId, guestId)) return@transaction null
+        val guest = createDevice("Guest", DeviceKind.GUEST, tokenHash, nowMs, guestId)
+        link(room.ownerId, guestId)
+        guest
+    }
+
+    /** Ids of rooms past their expiry that are not yet ended. */
+    @Synchronized
+    fun expiredRooms(nowMs: Long): List<String> =
+        conn.prepareStatement("SELECT id FROM rooms WHERE expires_at<=? ORDER BY expires_at").use {
+            it.setLong(1, nowMs)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+        }
+
+    /**
+     * Ends the room: deletes the room, the guest device, its links, the deliveries and files addressed to the guest,
+     * the guest's open uploads and its unsent files. Deliveries the guest sent to the owner are kept. Null when the
+     * room was already ended.
+     */
+    @Synchronized
+    fun endRoom(roomId: String): EndedRoom? = transaction {
+        val room = room(roomId) ?: return@transaction null
+        val guest = room.guestId
+        val blobs = ArrayList<String>()
+        if (guest != null) {
+            fun ids(sql: String): List<String> = conn.prepareStatement(sql).use {
+                it.setString(1, guest)
+                it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.getString(1)) } }
+            }
+            fun exec(sql: String) = conn.prepareStatement(sql).use { it.setString(1, guest); it.executeUpdate() }
+            blobs += ids("SELECT id FROM uploads WHERE owner_id=?")
+            blobs += ids("SELECT id FROM files WHERE sent_to=? AND acked_at IS NULL")
+            blobs += ids("SELECT id FROM files WHERE owner_id=? AND delivery_id IS NULL AND acked_at IS NULL")
+            exec("DELETE FROM uploads WHERE owner_id=?")
+            exec("DELETE FROM files WHERE sent_to=?")
+            exec("DELETE FROM files WHERE owner_id=? AND delivery_id IS NULL")
+            exec("DELETE FROM deliveries WHERE to_id=?")
+            exec("DELETE FROM links WHERE a=?1 OR b=?1")
+            exec("DELETE FROM pairings WHERE owner_id=?1 OR claimer_id=?1")
+            exec("DELETE FROM devices WHERE id=?")
+        }
+        conn.prepareStatement("DELETE FROM rooms WHERE id=?").use { it.setString(1, roomId); it.executeUpdate() }
+        EndedRoom(room.ownerId, guest, blobs)
+    }
+
+    /**
+     * Bytes a guest room holds: the guest's open uploads and live files, plus live files addressed to the guest.
+     */
+    @Synchronized
+    fun roomBytes(guestId: String): Long =
+        conn.prepareStatement(
+            """SELECT (SELECT COALESCE(SUM(size),0) FROM uploads WHERE owner_id=?)
+                    + (SELECT COALESCE(SUM(size),0) FROM files WHERE acked_at IS NULL AND (owner_id=? OR sent_to=?))"""
+        ).use {
+            it.setString(1, guestId); it.setString(2, guestId); it.setString(3, guestId)
+            it.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+        }
+
+    /** Total size of those of [ids] that [ownerId] uploaded and has not sent yet. */
+    @Synchronized
+    fun unsentBytes(ownerId: String, ids: List<String>): Long {
+        if (ids.isEmpty()) return 0
+        val marks = ids.joinToString(",") { "?" }
+        return conn.prepareStatement(
+            "SELECT COALESCE(SUM(size),0) FROM files WHERE owner_id=? AND delivery_id IS NULL AND acked_at IS NULL AND id IN ($marks)"
+        ).use {
+            it.setString(1, ownerId)
+            ids.forEachIndexed { i, id -> it.setString(i + 2, id) }
+            it.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+        }
+    }
+
+    /** Records that file [fileId] was served to its recipient in full; true the first time. */
+    @Synchronized
+    fun markDownloaded(fileId: String, nowMs: Long): Boolean =
+        conn.prepareStatement("UPDATE files SET downloaded_at=? WHERE id=? AND downloaded_at IS NULL").use {
+            it.setLong(1, nowMs); it.setString(2, fileId); it.executeUpdate() > 0
+        }
+
+    @Synchronized
+    fun downloadedAt(fileId: String): Long? =
+        conn.prepareStatement("SELECT downloaded_at FROM files WHERE id=?").use {
+            it.setString(1, fileId)
+            it.executeQuery().use { rs -> if (rs.next()) rs.getLong(1).takeIf { !rs.wasNull() } else null }
+        }
+
+    /** The live delivery holding file [fileId], if it is addressed to [toId]. */
+    @Synchronized
+    fun deliveryOfFileFor(fileId: String, toId: String): DeliveryRow? =
+        conn.prepareStatement(
+            "SELECT d.* FROM files f JOIN deliveries d ON d.id=f.delivery_id WHERE f.id=? AND d.to_id=? AND f.acked_at IS NULL"
+        ).use {
+            it.setString(1, fileId); it.setString(2, toId)
+            it.executeQuery().use { rs -> if (rs.next()) rs.toDeliveryRow() else null }
+        }
+
+    /** Delivery [id] with its files, if it is addressed to [toId]. */
+    @Synchronized
+    fun deliveryFor(id: String, toId: String): DeliveryRow? =
+        conn.prepareStatement("SELECT * FROM deliveries WHERE id=? AND to_id=?").use {
+            it.setString(1, id); it.setString(2, toId)
+            it.executeQuery().use { rs -> if (rs.next()) rs.toDeliveryRow() else null }
+        }?.let { it.copy(files = filesOfDelivery(it.id)) }
+
+    private fun ResultSet.toDeliveryRow() = DeliveryRow(
+        getString("id"), getString("from_id"), getString("to_id"),
+        MjolnirJson.decodeFromString(tabsSerializer, getString("tabs_json")), getLong("sent_at"),
+        spaceId = getString("space_id"), spaceName = getString("space_name"),
+    )
+
     /** Row count of one of the relay's tables; for tests and diagnostics. */
     @Synchronized
     fun rowCount(table: String): Int {
-        require(table in setOf("devices", "pairings", "links", "deliveries", "uploads", "files", "spaces", "space_members")) { "unknown table" }
+        require(table in setOf("devices", "pairings", "links", "deliveries", "uploads", "files", "spaces", "space_members", "rooms")) { "unknown table" }
         return conn.createStatement().use { st -> st.executeQuery("SELECT COUNT(*) FROM $table").use { rs -> rs.next(); rs.getInt(1) } }
     }
 

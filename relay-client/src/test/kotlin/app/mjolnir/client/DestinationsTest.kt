@@ -64,7 +64,14 @@ class DestinationsTest {
     @Test fun isPairedMeansNoSpace() {
         assertTrue(p("1", "A").isPaired)
         assertFalse(sp("2", "B", "s1", "Friends").isPaired)
+        // A guest has no space, but it is not a pairing either.
+        assertFalse(Peer("g", "Guest", DeviceKind.GUEST).isPaired)
         assertTrue(DestinationKey("1", null).isPaired)
         assertFalse(DestinationKey("2", "s1").isPaired)
+    }
+
+    @Test fun aGuestIsNeitherMineNorInASpace() {
+        val groups = groupDestinations(listOf(p("1", "A"), Peer("g", "Guest", DeviceKind.GUEST)), null)
+        assertEquals(listOf(listOf("1")), groups.map { g -> g.peers.map { it.deviceId } })
     }
 }
