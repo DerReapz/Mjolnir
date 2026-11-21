@@ -144,7 +144,7 @@ class ChatControllerTest {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.newMessages.collect { seen += it } }
         api.incoming(chat, sam, "while closed")
         c.sync(chat)
-        assertEquals(listOf(IncomingMessage(chat, "General", "Sam", "while closed")), seen)
+        assertEquals(listOf(IncomingMessage(chat, "General", "sam", "Sam", "while closed")), seen)
         c.openChat.value = chat
         api.incoming(chat, sam, "while open")
         c.sync(chat)
@@ -292,7 +292,7 @@ class ChatControllerTest {
         api.incoming(plans, sam, "old 1"); api.incoming(plans, sam, "old 2")
         val first = api.incoming(plans, sam, "news")
         c.onEvent(RelayEvent.ChatChanged(plans, first.rev))
-        assertEquals(listOf(IncomingMessage(plans, "Plans", "Sam", "news")), seen) // below the event's rev is history
+        assertEquals(listOf(IncomingMessage(plans, "Plans", "sam", "Sam", "news")), seen) // below the event's rev is history
         assertEquals(3, c.messages(plans).value.size)
     }
 
@@ -345,7 +345,7 @@ class ChatControllerTest {
         val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
         api.incoming(chat, sam, "c")
         c.sync(chat) // no refresh yet: the name comes from the cache
-        assertEquals(listOf(IncomingMessage(chat, "General", "Sam", "c")), seen)
+        assertEquals(listOf(IncomingMessage(chat, "General", "sam", "Sam", "c")), seen)
     }
 
     @Test fun aBurstOfMessagesIsNotLost() = runTest {

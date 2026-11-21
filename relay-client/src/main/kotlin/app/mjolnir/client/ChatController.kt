@@ -21,7 +21,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /** A message by someone else in a chat that isn't open: what the apps turn into a notification (see [Messages.chatNotification]). */
-data class IncomingMessage(val chatId: String, val chatName: String, val authorName: String, val text: String)
+data class IncomingMessage(val chatId: String, val chatName: String, val authorId: String, val authorName: String, val text: String)
 
 /**
  * The chat side of the client, shared by desktop and Android: the chat list across all of the device's spaces, the
@@ -201,7 +201,7 @@ class ChatController(
         for (m in messages.sortedBy { it.rev }) {
             val text = m.text ?: continue
             if (m.event != null || m.deleted || m.author.deviceId == mine || m.rev <= readRev) continue
-            _newMessages.emit(IncomingMessage(chatId, name, m.author.name, text))
+            _newMessages.emit(IncomingMessage(chatId, name, m.author.deviceId, m.author.name, text))
         }
     }
 
