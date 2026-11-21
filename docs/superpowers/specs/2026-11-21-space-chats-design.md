@@ -173,3 +173,20 @@ This is too large for one plan, so it comes after Step 0 as three plans, execute
 
 ## Status
 Approved 2026-11-21. Mockups approved (design board artboards DesktopChats, DesktopChatInvite, PhoneChatList, PhoneChat, PhoneVideo); they include Share… in the phone long-press sheet and Copy link in the PC ⋯ menu.
+
+## Addition (approved 2026-11-21): @mentions and seen/read indicators
+- **@mentions:**
+  - In the composer, typing `@` opens a picker of the chat's members, filtered as you type. Picking one inserts `@{shown name}` and records the device id in the message's `mentions`.
+  - Only chat members can be mentioned, and there is no `@everyone`.
+  - Mention chips render in amber. A message mentioning you gets an amber left edge.
+  - The mentioned device gets a separate, higher-priority notification: `{name} mentioned you in {chat}: {text}`. It arrives even if that chat is open on another of your devices, but not if it is open on the device itself.
+  - The Chats list shows an `@` marker for chats with unread mentions.
+- **Seen and read:**
+  - **Seen** means the message reached that member's device: the relay records it when the device syncs, including in the background on the phone.
+  - **Read** means the chat was on screen with the message visible.
+  - The relay keeps `seen_rev` and `read_rev` per member per chat.
+  - Under your latest message, a line shows `Read by {names} · Seen by {names}`, or `Read by everyone` once all members have read it.
+  - Long-press (phone) or ⋯ → `Info` (PC) on your own message lists the members under Read and Seen, with times.
+  - A space admin reading a chat as a non-member is never counted or shown.
+  - There is no switch to turn read indicators off.
+- **Profile recovery is out of scope.** The owner's answer: a user joins on the new device, the admin removes the old one, and the user renames the new one.
