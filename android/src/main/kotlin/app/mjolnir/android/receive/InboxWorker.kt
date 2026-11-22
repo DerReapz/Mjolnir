@@ -130,6 +130,7 @@ class InboxWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         try {
             c.chatController.refresh()
             c.chatController.refreshInvites()
+            c.chatController.resumeSends().join() // sends with files left by a process that died go on (they resume where they stopped)
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {

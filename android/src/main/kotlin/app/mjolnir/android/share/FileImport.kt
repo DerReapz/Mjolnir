@@ -20,29 +20,36 @@ private const val DEFAULT_MIME = "application/octet-stream"
 
 /**
  * Copies one shared file into [outboxDir] (shares only grant temporary read access), so it can wait in the tray.
- * Blocking: call it off the main thread.
+ * The copy is named by its id, or with [keepName] by its safe name in a folder of its own (`<id>/<name>`), for a chat
+ * send that takes its name and type from the file. Blocking: call it off the main thread.
  */
-fun importFile(name: String?, sizeBytes: Long?, mimeType: String?, open: () -> InputStream?, outboxDir: File): ImportResult {
+fun importFile(name: String?, sizeBytes: Long?, mimeType: String?, open: () -> InputStream?, outboxDir: File, keepName: Boolean = false): ImportResult {
     val safeName = safeFileName(name ?: "file")
     if (sizeBytes != null && sizeBytes > Limits.MAX_FILE_BYTES) return ImportResult.Rejected(Messages.tooBig(safeName))
     val id = UUID.randomUUID().toString()
-    val target = File(outboxDir, id)
+    val target = if (keepName) File(File(outboxDir, id), safeName) else File(outboxDir, id)
     val copied = try {
         val input = open() ?: return ImportResult.Rejected(Messages.unreadable(safeName))
-        outboxDir.mkdirs()
+        target.parentFile?.mkdirs()
         input.use { copyAtMost(it, target, Limits.MAX_FILE_BYTES) }
     } catch (e: IOException) {
-        target.delete()
+        discard(target, keepName)
         return ImportResult.Rejected(Messages.unreadable(safeName))
     } catch (e: SecurityException) { // the sharing app's permission was revoked
-        target.delete()
+        discard(target, keepName)
         return ImportResult.Rejected(Messages.unreadable(safeName))
     }
     if (copied == null) {
-        target.delete()
+        discard(target, keepName)
         return ImportResult.Rejected(Messages.tooBig(safeName))
     }
     return ImportResult.Ok(TrayItem.LocalFile(id, target.path, safeName, copied, mimeType ?: DEFAULT_MIME))
+}
+
+/** Deletes a failed copy (and, for a [keepName] copy, its own folder). */
+private fun discard(target: File, keepName: Boolean) {
+    target.delete()
+    if (keepName) target.parentFile?.delete()
 }
 
 /** Copies [input] to [target]; returns the byte count, or null as soon as it would exceed [max]. */

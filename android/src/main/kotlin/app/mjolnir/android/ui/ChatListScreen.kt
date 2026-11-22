@@ -269,3 +269,25 @@ internal fun listTime(ms: Long, now: Long, zone: ZoneId = ZoneId.systemDefault()
 
 internal fun clockTime(ms: Long, zone: ZoneId = ZoneId.systemDefault()): String =
     DateTimeFormatter.ofPattern("HH:mm").format(Instant.ofEpochMilli(ms).atZone(zone))
+
+/** Another app shared something: "Send to a chat" lists the chats this phone can write in; *Throw instead* keeps the old way. */
+@Composable
+fun ShareToChatDialog(offer: ShareOffer, onPick: (chatId: String) -> Unit, onThrow: () -> Unit, onCancel: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel, containerColor = Forge.Surface,
+        title = { Text("Send to a chat") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 360.dp).semantics { contentDescription = "Chats to send to" }) {
+                items(offer.chats.size) { i ->
+                    val chat = offer.chats[i]
+                    Column(Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(role = Role.Button) { onPick(chat.id) }.padding(horizontal = 4.dp, vertical = 6.dp)) {
+                        Text(chat.name, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(chat.spaceName, color = Forge.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onThrow, modifier = Modifier.heightIn(min = 48.dp)) { Text("Throw instead") } },
+        dismissButton = { TextButton(onClick = onCancel, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") } },
+    )
+}

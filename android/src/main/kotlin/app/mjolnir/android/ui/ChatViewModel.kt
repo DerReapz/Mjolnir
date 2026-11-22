@@ -25,7 +25,23 @@ import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
+import app.mjolnir.android.chat.ChatImport
+import app.mjolnir.android.chat.ChatMediaSupport
+import app.mjolnir.client.PendingSend
+import app.mjolnir.client.ReceivedPath
+import app.mjolnir.client.uniqueName
+import app.mjolnir.protocol.Attachment
+import app.mjolnir.protocol.FileRef
+import app.mjolnir.protocol.safeFileName
+import app.mjolnir.protocol.safeRelativePath
+import app.mjolnir.protocol.topFolder
+import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -54,19 +70,40 @@ data class ChatListUi(
 )
 
 /** What the long-press sheet offers on a message. */
-enum class MessageAction { SHARE, INFO, EDIT, DELETE }
+enum class MessageAction { DOWNLOAD, SHARE, INFO, EDIT, DELETE }
 
-/** Own messages: Share…, Info, Edit, Delete. Others': Share…, plus Delete for the space admin. Deleted messages and system lines offer nothing. */
+/**
+ * Own messages: Share…, Info, Edit (when there is text), Delete. Others': Share…, plus Delete for the space admin. A message
+ * with attachments offers Download first. Deleted messages and system lines offer nothing.
+ */
 fun messageActions(m: ChatMessage, selfId: String?, isSpaceAdmin: Boolean): List<MessageAction> {
     if (m.deleted || m.event != null) return emptyList()
     val mine = m.author.deviceId == selfId
     return buildList {
+        if (m.attachments.isNotEmpty()) add(MessageAction.DOWNLOAD)
         add(MessageAction.SHARE)
         if (mine) add(MessageAction.INFO)
-        if (mine) add(MessageAction.EDIT)
+        if (mine && !m.text.isNullOrBlank()) add(MessageAction.EDIT)
         if (mine || isSpaceAdmin) add(MessageAction.DELETE)
     }
 }
+
+/** The long-press sheet's first line (before "· from …"): the text, else what is attached ("Video · 18 MB", "2 files · 3 MB"). */
+fun sheetSummary(m: ChatMessage): String {
+    m.text?.takeIf { it.isNotBlank() }?.let { return it.replace('\n', ' ') }
+    val single = m.attachments.singleOrNull()
+    return if (single != null) Messages.fileBubbleDetail(single.kind, single.sizeBytes)
+    else "${m.attachments.size} files · ${Messages.size(m.attachments.sumOf { it.sizeBytes })}"
+}
+
+/** Content another app shared, waiting for the user to pick a chat for it, or Throw ([throwInstead]). [uris] are `content://` strings. */
+class SharedContent(val text: String?, val uris: List<String>, val throwInstead: () -> Unit)
+
+/** The "Send to a chat" picker: [content] and the chats this phone can write in. */
+class ShareOffer(val content: SharedContent, val chats: List<ChatSummary>)
+
+/** Files ready for Share…: each with its media type, plus the message's text. */
+data class ShareRequest(val files: List<Pair<File, String>>, val text: String?)
 
 /** The text a bubble shows: the message, or why it is gone. */
 fun bodyText(m: ChatMessage): String = when {
@@ -74,6 +111,9 @@ fun bodyText(m: ChatMessage): String = when {
     else -> m.text.orEmpty()
 }
 
+/** Where the phone's chat downloads go, as the user knows it. */
+private const val DOWNLOADS = "Downloads"
+private const val SHARE_KEEP_MS = 60 * 60 * 1000L
 private const val KEY_CHAT = "chat"
 private const val KEY_EDITING = "editing"
 private fun draftKey(chatId: String) = "draft/$chatId"
@@ -99,6 +139,9 @@ class ChatViewModel(
     private val savedState: SavedStateHandle = SavedStateHandle(),
     /** Called when [chatId] is read on screen (the app drops its notification). */
     private val onRead: (chatId: String) -> Unit = {},
+    /** Attachments: the media cache, sends with files, Download and Share…; without it the bubbles show placeholders. */
+    private val media: ChatMediaSupport? = null,
+    private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
     private val _spaces = MutableStateFlow<List<Space>>(emptyList())
     /** The spaces this phone is in: who administers them, who could be invited, where a new chat can go. */
@@ -114,6 +157,11 @@ class ChatViewModel(
     /** The last failed chat action, as a sentence; null once dismissed. */
     val notice: StateFlow<String?> = _notice.asStateFlow()
     fun dismissNotice() { _notice.value = null }
+
+    private val _info = MutableStateFlow<String?>(null)
+    /** The last finished action worth saying ("Saved to Downloads"); null once shown. */
+    val info: StateFlow<String?> = _info.asStateFlow()
+    fun dismissInfo() { _info.value = null }
 
     val selectedId: StateFlow<String?> = savedState.getStateFlow<String?>(KEY_CHAT, null)
 
@@ -147,6 +195,20 @@ class ChatViewModel(
 
     val members: StateFlow<List<Peer>> = selectedId.flatMapLatest { id -> id?.let(controller::members) ?: flowOf(emptyList()) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** The open chat's sends with files that are not posted yet (greyed, with progress), or failed until dismissed. */
+    val pending: StateFlow<List<PendingSend>> = combine(selectedId, controller.pendingSends) { id, list -> list.filter { it.chatId == id } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Where the bubbles get thumbnails and files; null without [media]. */
+    val mediaSource: ChatMediaSource? = media?.let { m ->
+        object : ChatMediaSource {
+            override suspend fun thumbnail(att: Attachment): File? = m.cache.thumbnail(att, api)
+            override suspend fun file(att: Attachment): File = m.cache.get(att, api)
+            override fun pin(fileId: String) = m.cache.pin(fileId)
+            override fun unpin(fileId: String) = m.cache.unpin(fileId)
+        }
+    }
 
     /** Who has seen and read how much of the open chat. */
     val receipts: StateFlow<List<Receipt>> = selectedId.flatMapLatest { id -> id?.let(controller::receipts) ?: flowOf(emptyList()) }
@@ -285,6 +347,155 @@ class ChatViewModel(
     }
 
     fun delete(m: ChatMessage) = run { controller.delete(m.chatId, m.id) }
+
+    // ---- Attachments ----
+
+    /** Sends the picked files ([uris], `content://` strings) to the open chat at once; they upload in the background. */
+    fun attach(uris: List<String>) {
+        val chatId = selectedId.value ?: return
+        if (uris.isNotEmpty()) sendFiles(chatId, null, uris)
+    }
+
+    /** Copies [uris] into the app (a picked file's grant is temporary) and queues the send with [text]. */
+    private fun sendFiles(chatId: String, text: String?, uris: List<String>) {
+        val m = media ?: return
+        viewModelScope.launch {
+            val dir = m.sendFiles.newDir()
+            var queued = false
+            try {
+                val imported = withContext(io) {
+                    try {
+                        m.importer.import(uris, dir)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) { // e.g. a SecurityException when the grant was revoked
+                        ChatImport(emptyList(), listOf(Messages.unreadable("what you shared")))
+                    }
+                }
+                imported.notices.firstOrNull()?.let { _notice.value = it }
+                if (imported.files.isEmpty() && text.isNullOrBlank()) return@launch
+                queued = call { controller.send(chatId, text, imported.files, m.thumbnailer) } != null && imported.files.isNotEmpty()
+            } finally {
+                m.sendFiles.done(dir, queued)
+            }
+        }
+    }
+
+    fun dismissSend(id: String) = controller.dismissSend(id)
+
+    /**
+     * Saves [atts] of [m] to `Download/Mjolnir` through the publisher, each from the media cache (downloaded into it first);
+     * a sent folder keeps its folders under a free top-folder name. Says `Saved to Downloads`, or why not.
+     */
+    fun download(m: ChatMessage, atts: List<Attachment> = m.attachments) {
+        val s = media ?: return
+        if (atts.isEmpty()) return
+        viewModelScope.launch {
+            val stage = File(s.exportDir, "dl-${UUID.randomUUID()}")
+            try {
+                val paths = atts.map { safeRelativePath(it.relativePath ?: it.name) }
+                val folders = mutableMapOf<String, String>()
+                withContext(io) {
+                    stage.mkdirs()
+                    for (top in paths.mapNotNull(::topFolder).distinct()) {
+                        folders[top] = uniqueName(top) { c -> s.publisher.folderExists(c) || folders.values.any { it.equals(c, ignoreCase = true) } }
+                    }
+                }
+                atts.forEachIndexed { i, att ->
+                    val part = File(stage, i.toString())
+                    controller.download(m.chatId, att, part)
+                    val segments = paths[i].split('/')
+                    val folder = if (segments.size < 2) null
+                    else (listOf(folders.getValue(segments.first())) + segments.subList(1, segments.size - 1)).joinToString("/")
+                    withContext(io) {
+                        s.publisher.publish(part, ReceivedPath(folder, segments.last()), FileRef(att.fileId, segments.last(), att.sizeBytes, att.mime, "", paths[i]))
+                        part.delete()
+                    }
+                }
+                _info.value = Messages.savedTo(DOWNLOADS)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: RelayException) {
+                _notice.value = e.userMessage ?: Messages.chatError(e)
+            } catch (e: Exception) { // the disk or MediaStore refused
+                _notice.value = "Couldn't save ${atts.first().name}"
+            } finally {
+                withContext(NonCancellable + io) { stage.deleteRecursively() }
+            }
+        }
+    }
+
+    private val _shareRequest = MutableStateFlow<ShareRequest?>(null)
+    /** Files of a message ready to hand to the system's share sheet; the screen calls [shareHandled] once it did. */
+    val shareRequest: StateFlow<ShareRequest?> = _shareRequest.asStateFlow()
+    fun shareHandled() { _shareRequest.value = null }
+
+    /** Share… on a message with attachments: copies them under their own names into the export folder, then [shareRequest]. */
+    fun share(m: ChatMessage) {
+        val s = media ?: return
+        viewModelScope.launch {
+            val dir = File(s.exportDir, "share-${UUID.randomUUID()}")
+            try {
+                withContext(io) {
+                    // Another app may still be reading an earlier share; an hour is plenty.
+                    s.exportDir.listFiles().orEmpty()
+                        .filter { it.name.startsWith("share-") && it.lastModified() < System.currentTimeMillis() - SHARE_KEEP_MS }
+                        .forEach { it.deleteRecursively() }
+                    dir.mkdirs()
+                }
+                val files = m.attachments.map { att ->
+                    val target = File(dir, uniqueName(safeFileName(att.name)) { File(dir, it).exists() })
+                    controller.download(m.chatId, att, target)
+                    target to att.mime
+                }
+                _shareRequest.value = ShareRequest(files, m.text?.takeIf { it.isNotBlank() })
+            } catch (e: CancellationException) {
+                withContext(NonCancellable + io) { dir.deleteRecursively() }
+                throw e
+            } catch (e: RelayException) {
+                withContext(io) { dir.deleteRecursively() }
+                _notice.value = e.userMessage ?: Messages.chatError(e)
+            } catch (e: Exception) {
+                withContext(io) { dir.deleteRecursively() }
+                _notice.value = "Couldn't share ${m.attachments.firstOrNull()?.name ?: "that"}"
+            }
+        }
+    }
+
+    // ---- Sharing into a chat ----
+
+    private val _shareOffer = MutableStateFlow<ShareOffer?>(null)
+    /** Something another app shared, while the "Send to a chat" picker is up. */
+    val shareOffer: StateFlow<ShareOffer?> = _shareOffer.asStateFlow()
+
+    /** Another app shared [content]: offers the chats this phone can write in, or goes straight to Throw when there are none. */
+    fun offerShare(content: SharedContent) {
+        viewModelScope.launch {
+            fun writable() = controller.chats.value.filter { it.member }
+            if (writable().isEmpty()) quietly { controller.refresh() } // e.g. a cold start from the share sheet
+            val chats = writable().sortedWith(compareBy<ChatSummary>({ it.spaceName.lowercase() }, { it.name.lowercase() }))
+            if (chats.isEmpty() || media == null) content.throwInstead() else _shareOffer.value = ShareOffer(content, chats)
+        }
+    }
+
+    /** Sends what was shared to [chatId] and opens it there. */
+    fun sendShare(chatId: String) {
+        val content = _shareOffer.value?.content ?: return
+        _shareOffer.value = null
+        open(chatId)
+        val text = content.text?.trim()?.takeIf { it.isNotEmpty() }?.let { capCodePoints(it, Limits.MAX_CHAT_TEXT_LENGTH) }
+        if (content.uris.isNotEmpty()) sendFiles(chatId, text, content.uris)
+        else if (text != null) run { controller.send(chatId, text) }
+    }
+
+    /** The picker's Throw: the share goes to the Throw tray as it did before chats. */
+    fun throwShare() {
+        val content = _shareOffer.value?.content ?: return
+        _shareOffer.value = null
+        content.throwInstead()
+    }
+
+    fun cancelShare() { _shareOffer.value = null }
 
     // ---- Invites ----
 

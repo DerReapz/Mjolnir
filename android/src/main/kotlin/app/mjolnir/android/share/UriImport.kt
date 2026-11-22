@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
+import app.mjolnir.android.chat.ChatImport
 import app.mjolnir.android.data.TrayItem
 import app.mjolnir.protocol.Limits
 import java.io.File
@@ -16,7 +17,15 @@ data class Imported(val items: List<TrayItem>, val notices: List<String>)
 class UriImporter(private val context: Context, private val outboxDir: File) {
     private val resolver: ContentResolver get() = context.contentResolver
 
-    fun importUris(uris: List<Uri>): Imported {
+    fun importUris(uris: List<Uri>): Imported = importUris(uris, outboxDir, keepName = false)
+
+    /** Copies [uris] into [dir] for a chat send, each keeping its (safe) name: the send takes name and type from the file. */
+    fun importForChat(uris: List<Uri>, dir: File): ChatImport {
+        val imported = importUris(uris, dir, keepName = true)
+        return ChatImport(imported.items.filterIsInstance<TrayItem.LocalFile>().map { File(it.path) }, imported.notices)
+    }
+
+    private fun importUris(uris: List<Uri>, dir: File, keepName: Boolean): Imported {
         val items = mutableListOf<TrayItem>()
         val notices = mutableListOf<String>()
         for (uri in uris) {
@@ -32,7 +41,7 @@ class UriImporter(private val context: Context, private val outboxDir: File) {
             } catch (_: Exception) {
                 // Name and size are best effort; the copy below decides.
             }
-            val result = importFile(name, size, resolver.getType(uri), { resolver.openInputStream(uri) }, outboxDir)
+            val result = importFile(name, size, resolver.getType(uri), { resolver.openInputStream(uri) }, dir, keepName)
             when (result) {
                 is ImportResult.Ok -> { items += result.item; result.notice?.let(notices::add) }
                 is ImportResult.Rejected -> notices += result.notice

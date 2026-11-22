@@ -42,7 +42,12 @@ import app.mjolnir.android.receive.syncPushToken
 import app.mjolnir.android.receive.EXTRA_CHAT
 import app.mjolnir.android.receive.SCREEN_CHATS
 import app.mjolnir.android.ui.CaughtScreen
+import app.mjolnir.android.chat.AndroidThumbnailer
+import app.mjolnir.android.chat.ChatMediaSupport
+import app.mjolnir.android.receive.MediaStoreFilePublisher
 import app.mjolnir.android.ui.ChatViewModel
+import app.mjolnir.android.ui.ShareToChatDialog
+import app.mjolnir.android.ui.SharedContent
 import app.mjolnir.android.ui.ChatsScreen
 import app.mjolnir.android.ui.CaughtViewModel
 import app.mjolnir.android.ui.DevicesScreen
@@ -68,11 +73,17 @@ class MainActivity : ComponentActivity() {
         override fun <T : ViewModel> create(modelClass: Class<T>, extras: CreationExtras): T {
             if (modelClass == ChatViewModel::class.java) {
                 val c = container
+                val appContext = applicationContext
+                val chatImporter = UriImporter(appContext, c.outboxDir) // never captures the Activity
+                val media = ChatMediaSupport(
+                    c.chatMediaCache, AndroidThumbnailer, MediaStoreFilePublisher(appContext), c.chatSendFiles,
+                    importer = { uris, dir -> chatImporter.importForChat(uris.map(Uri::parse), dir) }, exportDir = c.chatExportDir,
+                )
                 @Suppress("UNCHECKED_CAST")
                 return ChatViewModel(
                     c.chatController, c.api, c.nicknames, { try { c.config.read().deviceId } catch (e: java.io.IOException) { null } },
                     c.appForeground, c.chatsVisible, extras.createSavedStateHandle(),
-                    onRead = { chatId -> cancelChatNotification(applicationContext, chatId) },
+                    onRead = { chatId -> cancelChatNotification(appContext, chatId) }, media = media,
                 ) as T
             }
             if (modelClass != SpacesViewModel::class.java) return create(modelClass)
@@ -137,6 +148,13 @@ class MainActivity : ComponentActivity() {
                 }
                 val chatUnread by container.chatController.unread.collectAsState()
                 val chatOpen by chatVm.selectedId.collectAsState()
+                val shareOffer by chatVm.shareOffer.collectAsState()
+                shareOffer?.let { offer ->
+                    ShareToChatDialog(
+                        offer, onPick = { chatId -> chatVm.sendShare(chatId); screen = Screen.CHATS },
+                        onThrow = { chatVm.throwShare(); screen = Screen.THROW }, onCancel = chatVm::cancelShare,
+                    )
+                }
                 DisposableEffect(screen) {
                     container.chatsVisible.value = screen == Screen.CHATS
                     onDispose { container.chatsVisible.value = false }
@@ -184,6 +202,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         container.appForeground.value = true
+        container.chatController.resumeSends() // ruling CM-R2: sends with files go on when the app comes back
         lifecycleScope.launch {
             try {
                 container.session.ensureRegistered()
@@ -227,8 +246,14 @@ class MainActivity : ComponentActivity() {
 
         // The view model owns the import, so rotating mid-copy neither loses the share nor orphans the copies.
         val importer = importer
-        throwVm.importShared(tabsFromShare(texts, subject), if (uris.isEmpty()) null else ({ importer.importUris(uris) }))
+        val throwing = throwVm // held by the chat view model's offer: never the Activity
+        val tabs = tabsFromShare(texts, subject)
+        val throwIt = { throwing.importShared(tabs, if (uris.isEmpty()) null else ({ importer.importUris(uris) })) }
+        val text = texts.joinToString("\n").takeIf { it.isNotBlank() }
         requestedScreen = Screen.THROW
+        // With a chat to write in, "Send to a chat" is offered first (the files are copied once a chat is picked).
+        if (uris.isEmpty() && text == null) throwIt()
+        else chatVm.offerShare(SharedContent(text, uris.map { it.toString() }, throwInstead = throwIt))
     }
 
     @Suppress("DEPRECATION")

@@ -16,7 +16,13 @@ import app.mjolnir.android.send.createSendingChannels
 import app.mjolnir.android.send.scheduleOutgoing
 import app.mjolnir.android.session.PhoneSession
 import app.mjolnir.android.session.SwitchingRelayApi
+import android.net.ConnectivityManager
+import android.net.Network
+import app.mjolnir.android.chat.ChatSendFiles
 import app.mjolnir.client.ChatController
+import app.mjolnir.client.ChatMediaCache
+import app.mjolnir.client.ChatOutbox
+import kotlinx.coroutines.launch
 import app.mjolnir.client.ChatStore
 import app.mjolnir.client.FileSeenDeliveries
 import app.mjolnir.client.GuestRoomController
@@ -58,6 +64,7 @@ class MjolnirApp : Application() {
         createChatChannel(this)
         schedulePeriodicInboxDrain(this)
         syncPushToken(this)
+        resumeChatSendsOnNetwork()
         // Throws still in the outbox (e.g. after a force-stop or reboot) get their work back; KEEP leaves running
         // or waiting work alone.
         Thread {
@@ -67,6 +74,17 @@ class MjolnirApp : Application() {
                 // The outbox couldn't be read; the next start tries again.
             }
         }.start()
+    }
+}
+
+/** Ruling CM-R2: sends with files that stopped for want of a network go on as soon as one is back (and once at start). */
+private fun MjolnirApp.resumeChatSendsOnNetwork() {
+    try {
+        getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { container.chatController.resumeSends() }
+        })
+    } catch (e: RuntimeException) {
+        // Too many callbacks or no permission: sends still resume in the foreground and on every reconnect.
     }
 }
 
@@ -101,12 +119,30 @@ class AppContainer(context: Context) {
     /** Talks to the relay at the current `relayUrl`; the client is rebuilt when the URL changes and reads the token live. */
     val api: RelayApi = SwitchingRelayApi(::currentClient)
 
-    /** Everything about the chats: lists, messages (cached in `chats/`), unread counts. App-wide, so background work can sync and notify. */
+    /** Downloaded chat photos and files (an LRU cache of 512 MB in the app's cache folder); bubbles pin what they show. */
+    val chatMediaCache = ChatMediaCache(File(appContext.cacheDir, "chat-media"))
+
+    /** The app's copies of files being sent to a chat (a picked file's grant is temporary; the send outlives the process). */
+    val chatSendFiles = ChatSendFiles(File(filesDir, "chat-send"))
+
+    /** Chat files staged for Download and Share…, offered through the FileProvider. */
+    val chatExportDir = File(appContext.cacheDir, "chat-export")
+
+    /**
+     * Everything about the chats: lists, messages (cached in `chats/`), unread counts, and sends with files (kept in
+     * `chat-outbox/` so they resume after the process dies). App-wide, so background work can sync, send and notify.
+     */
     val chatController = ChatController(
         api = { api }, store = ChatStore(File(filesDir, "chats").also { it.mkdirs() }),
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        outbox = ChatOutbox(File(filesDir, "chat-outbox")), media = chatMediaCache,
         me = { try { config.read().deviceId } catch (e: IOException) { null } },
     )
+
+    init {
+        // A send's copies go once no pending send needs them (posted, dismissed, or everything reset); also at start.
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { chatController.pendingSends.collect { chatSendFiles.prune(it) } }
+    }
 
     /** Always on, and started before any refresh: with no collector a new message would be dropped, not notified. */
     val chatNotifier = ChatNotifier(
@@ -127,7 +163,7 @@ class AppContainer(context: Context) {
     )
 
     /** The one registration guard for the whole app. */
-    val session = PhoneSession(api, config, onReset = { nicknames.clear(); chatController.clear() })
+    val session = PhoneSession(api, config, onReset = { nicknames.clear(); chatController.clear(); chatExportDir.deleteRecursively() })
 
     /** Call after the relay URL was written to [config]; the next call builds a client for the new address. */
     fun invalidateRelayClient() = synchronized(clientLock) { cachedUrl = null }
