@@ -29,6 +29,16 @@ class RelayClientTest {
         assertKind(RelayErrorKind.NOT_FOUND) { phone.api.claimPairingCode("ZZZZZZ") }
     }
 
+    @Test fun chatFileRequestPointsAtTheRelayWithTheBearer() {
+        var token: String? = "tok-9"
+        val client = RelayClient.create("https://relay.example/") { token }
+        client.use {
+            assertEquals(FileRequest("https://relay.example/v1/files/f1", mapOf("Authorization" to "Bearer tok-9")), it.chatFileRequest("f1"))
+            token = null // read live: no token, no header
+            assertEquals(FileRequest("https://relay.example/v1/files/f1", emptyMap()), it.chatFileRequest("f1"))
+        }
+    }
+
     @Test fun unreachableRelayIsNetworkError() = runTest {
         assertKind(RelayErrorKind.NETWORK) { RelayClient.create("http://127.0.0.1:1") { null }.register("x", DeviceKind.PC) }
     }

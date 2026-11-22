@@ -37,6 +37,9 @@ class RelayException(
     val detail: String? = null,
 ) : Exception(message, cause)
 
+/** How to fetch a file straight from the relay (e.g. for a streaming player): its [url] and the [headers] to send. */
+data class FileRequest(val url: String, val headers: Map<String, String>)
+
 interface RelayApi {
     suspend fun register(name: String, kind: DeviceKind): RegisterResponse
     suspend fun me(): Peer
@@ -129,6 +132,12 @@ interface RelayApi {
      * NOT_FOUND once its message is deleted. On any failure [target] is deleted.
      */
     suspend fun downloadChatFile(fileId: String, target: File, onProgress: (Long) -> Unit = {})
+    /**
+     * The request for chat file [fileId] on the relay (`GET /v1/files/{id}`, ranged requests allowed), with this device's
+     * bearer token when it has one, for a player that streams it. Reads the current token, which may touch the disk:
+     * call it off the main thread. The relay answers 401 for a rejected token and 404 once the message is deleted.
+     */
+    fun chatFileRequest(fileId: String): FileRequest
 
     /** Cold flow of live events; reconnects with backoff, throws RelayException(UNAUTHORIZED) and stops if the token is rejected. */
     fun events(): Flow<RelayEvent>

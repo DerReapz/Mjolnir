@@ -62,5 +62,6 @@ class SwitchingRelayApi(private val current: () -> RelayApi) : RelayApi {
         current().downloadFile(ref, target, onProgress)
     override suspend fun downloadChatFile(fileId: String, target: File, onProgress: (Long) -> Unit) =
         current().downloadChatFile(fileId, target, onProgress)
+    override fun chatFileRequest(fileId: String) = current().chatFileRequest(fileId)
     override fun events() = current().events()
 }

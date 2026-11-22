@@ -471,6 +471,9 @@ class RelayClient(
         }
     }
 
+    override fun chatFileRequest(fileId: String): FileRequest =
+        FileRequest("$base/v1/files/$fileId", token()?.let { mapOf(HttpHeaders.Authorization to "Bearer $it") }.orEmpty())
+
     override fun events(): Flow<RelayEvent> = channelFlow {
         val inner = launch { connectLoop().collect { send(it) } }
         val watcher = launch { closed.join(); inner.cancel() }

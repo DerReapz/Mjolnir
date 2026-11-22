@@ -328,6 +328,15 @@ class FakeRelayApi : RelayApi {
         target.writeBytes(bytes)
         onProgress(bytes.size.toLong())
     }
+
+    /** What [chatFileRequest] points at: the fake relay's address and token. */
+    var fileRequestBase = "http://relay.test"
+    var fileRequestToken: String? = "tok-1"
+
+    override fun chatFileRequest(fileId: String): FileRequest {
+        check()
+        return FileRequest("$fileRequestBase/v1/files/$fileId", fileRequestToken?.let { mapOf("Authorization" to "Bearer $it") }.orEmpty())
+    }
 }
 
 fun delivery(

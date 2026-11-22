@@ -1,6 +1,7 @@
 package app.mjolnir.android.session
 
 import app.mjolnir.client.FakeRelayApi
+import app.mjolnir.client.FileRequest
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
 import app.mjolnir.protocol.DeviceKind
@@ -31,5 +32,15 @@ class SwitchingRelayApiTest {
         assertEquals("a", api.peers().single().deviceId)
         use = b
         assertEquals("b", api.peers().single().deviceId)
+    }
+
+    @Test fun chatFileRequestComesFromTheCurrentDelegate() {
+        val a = FakeRelayApi().apply { fileRequestBase = "http://a"; fileRequestToken = "ta" }
+        val b = FakeRelayApi().apply { fileRequestBase = "http://b"; fileRequestToken = "tb" }
+        var use: FakeRelayApi = a
+        val api = SwitchingRelayApi { use }
+        assertEquals(FileRequest("http://a/v1/files/f1", mapOf("Authorization" to "Bearer ta")), api.chatFileRequest("f1"))
+        use = b
+        assertEquals(FileRequest("http://b/v1/files/f1", mapOf("Authorization" to "Bearer tb")), api.chatFileRequest("f1"))
     }
 }
