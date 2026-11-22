@@ -73,6 +73,21 @@ Needs two PCs (A, B) and a phone (C) in one space, with A as the space admin (so
 - **Phone notifications, app closed:** with the app swiped away, a message and a mention both notify the phone.
 - **Offline catch-up:** turn the phone's network off, send several messages from a PC, restore the network; the chat catches up in order.
 
+## Chat media
+Needs two PCs (A, B) and a phone (C) in one chat, on the updated relay. Videos are sent as file bubbles labelled `Video` for now.
+- **Send each kind from every app:** a photo, a GIF, a file and a folder from A, B and C. Photos and GIFs show as thumbnails; a file shows its name and `File · {size}`; a folder shows one `Folder · {n} files · {size}` bubble. Sends start immediately (no caption step).
+- **GIF animates:** on A, B and C the GIF moves in the bubble and in the full-screen view.
+- **Phone image view:** tap a photo on C; pinch-zoom works and double tap resets.
+- **Download:** PC: ⋯ → *Download* saves to the save folder and says `Saved to {folder}`; the file opens. Phone: long-press → *Download* says `Saved to Downloads` and the file is in Downloads.
+- **Share…:** on C long-press → *Share…* opens the system share sheet and the target app receives the file. Share a photo from another app into Mjolnir and choose *Send to a chat*.
+- **Attach:** on C, *Attach* opens the system picker and several files can be chosen; on A, *Attach* accepts files and folders.
+- **Drag and drop (PC):** drop files onto an open chat; they send to that chat, not to the Send tab. Copy files in the file manager, press Ctrl+V on the Chats tab with a chat open; they send to that chat.
+- **More than 20 files:** send a folder with over 20 files; it arrives as several messages (any text on the first).
+- **Deleted message:** delete a message with a file on A; its bubble shows `Message deleted` everywhere and the file can no longer be downloaded or opened. Deleting a chat does the same for all its files.
+- **Offline catch-up:** turn C's network off, send a photo and a file from A; restore the network; C shows both without reopening the chat.
+- **Interrupted send:** on C start sending a large file, swipe the app away, and turn airplane mode on, then off; the send finishes and the message arrives.
+- **Non-member:** a member of the space who is not in the chat cannot open its files.
+
 ## Guest room
 Needs the PC app, a phone with Mjolnir, and a second phone or computer with a browser and no Mjolnir (the guest). The relay must be reachable over HTTPS from the guest.
 - **Open and scan:** on the PC, *Guest room* tab → *Open a guest room*; scan the QR code with the guest's phone. The guest page opens with nothing to install and the PC shows the guest as connected.
