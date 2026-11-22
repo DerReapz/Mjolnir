@@ -23,7 +23,10 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.performMouseInput
 import androidx.compose.ui.test.runComposeUiTest
+import androidx.compose.ui.test.runDesktopComposeUiTest
 import androidx.compose.ui.unit.dp
 import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.AttachmentKind
@@ -46,7 +49,9 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /** A [VideoEngine] that plays nothing and records what the bubble asked (ruling CV-P3: no JavaFX in tests). */
-internal class FakeEngine(private val failLoad: Throwable? = null, private val length: Long = 42_000) : VideoEngine {
+internal class FakeEngine(
+    private val failLoad: Throwable? = null, private val length: Long = 42_000, private val failRelease: Throwable? = null,
+) : VideoEngine {
     override val positionMs = MutableStateFlow(0L)
     override val durationMs = MutableStateFlow<Long?>(null)
     override val error = MutableStateFlow<String?>(null)
@@ -60,7 +65,10 @@ internal class FakeEngine(private val failLoad: Throwable? = null, private val l
     override fun play() { check(!released) { "played after release" }; playing.value = true }
     override fun pause() { playing.value = false }
     override fun seek(ms: Long) { positionMs.value = ms }
-    override fun release() { released = true; playing.value = false }
+    override fun release() {
+        released = true; playing.value = false
+        failRelease?.let { throw it }
+    }
 }
 
 /** Hands out [FakeEngine]s from [make] and draws a stand-in picture. */
@@ -102,18 +110,21 @@ class VideoBubbleTest {
     private fun video(id: String = "v1", w: Int? = 1920, h: Int? = 1080, durationMs: Long? = 42_000, thumb: String? = "t1", name: String = "clip.mp4") =
         Attachment(id, AttachmentKind.VIDEO, name, 100, "video/mp4", w, h, durationMs, thumb)
 
-    private fun msg(id: String, vararg atts: Attachment, deleted: Boolean = false) =
-        ChatMessage(id, "c1", fred, 1, at, deleted = deleted, attachments = if (deleted) emptyList() else atts.toList())
+    private fun msg(id: String, vararg atts: Attachment, deleted: Boolean = false, author: Peer = fred, text: String? = null) =
+        ChatMessage(id, "c1", author, 1, at, deleted = deleted, text = text, attachments = if (deleted) emptyList() else atts.toList())
 
     private fun media(vararg ids: String = arrayOf("v1")) = VideoMedia(mapOf("t1" to thumbFile), ids.associateWith { clipFile })
 
-    private fun ui(messages: List<ChatMessage>, media: ChatMediaSource, video: VideoSupport, selected: String? = "c1", showing: Boolean = true) = ChatsUi(
+    private fun ui(
+        messages: List<ChatMessage>, media: ChatMediaSource, video: VideoSupport, selected: String? = "c1", showing: Boolean = true,
+        overlayOpen: Boolean = false,
+    ) = ChatsUi(
         listOf(
             ChatSummary("c1", "s1", "Friends", "Holiday planning", "me", rev = 5, readRev = 0, member = true, lastMessage = null),
             ChatSummary("c2", "s1", "Friends", "Game night", "me", rev = 5, readRev = 0, member = true, lastMessage = null),
         ),
         emptyList(), emptyMap(), "me", emptySet(), selected, if (selected == "c1") messages else emptyList(), listOf(me, fred), { it.name },
-        notice = null, media = media, video = video, animate = showing,
+        notice = null, media = media, video = video, animate = showing, overlayOpen = overlayOpen,
     )
 
     private fun ComposeUiTest.show(ui: ChatsUi) = setContent { MjolnirTheme { ChatsTabContent(ui, ChatsActions(), now = { at }) } }
@@ -255,5 +266,69 @@ class VideoBubbleTest {
         assertFalse(video.engines[1].playing.value)
         assertNull(first.error.value)
         assertSame(first, video.engines.first())
+    }
+
+    @Test fun noJavaFxShowsFallbackAndNeverThrows() = runComposeUiTest {
+        // JavaFX unavailable: load throws, and so does release (ruling on C1); neither may escape.
+        val video = FakeVideo { FakeEngine(failLoad = UnsupportedOperationException("JavaFX can't start here"), failRelease = IllegalStateException("not started")) }
+        val media = media()
+        var state by mutableStateOf(ui(listOf(msg("m1", video())), media, video))
+        setContent { MjolnirTheme { ChatsTabContent(state, ChatsActions(), now = { at }) } }
+        onNodeWithContentDescription("Video clip.mp4").performClick()
+        awaitText("Can't play this video here")
+        assertTrue(video.engines.single().released)
+        state = ui(listOf(msg("m1", video())), media, video, selected = "c2") // the bubble leaves composition
+        waitForIdle()
+        onNodeWithText("Can't play this video here").assertDoesNotExist()
+        assertTrue(media.pins().isEmpty(), media.pins().toString())
+    }
+
+    @Test fun overlaysPauseAndHideThePlayer() = runComposeUiTest {
+        val photo = Attachment("p1", AttachmentKind.IMAGE, "lake.jpg", 100, "image/jpeg", 320, 200, thumbFileId = "t1")
+        val media = media()
+        val video = FakeVideo()
+        var state by mutableStateOf(ui(listOf(msg("m0", photo), msg("m1", video(), author = me)), media, video))
+        setContent { MjolnirTheme { ChatsTabContent(state, ChatsActions(), now = { at }) } }
+        play()
+        val engine = video.engines.single()
+        // The image viewer over the conversation.
+        onNodeWithContentDescription("Photo lake.jpg").performClick()
+        awaitTag("video-cover")
+        assertFalse(engine.playing.value)
+        onNodeWithTag("video-picture").assertDoesNotExist()
+        onNodeWithText("Close").performClick()
+        awaitTag("video-picture") // shown again, still paused until Play
+        assertFalse(engine.playing.value)
+        // Message Info.
+        onNodeWithContentDescription("Play").performClick(); waitForIdle()
+        assertTrue(engine.playing.value)
+        onAllNodes(hasContentDescription("Message menu"))[1].performClick()
+        onNodeWithText("Info").performClick()
+        awaitTag("video-cover")
+        assertFalse(engine.playing.value)
+        onNodeWithTag("video-picture").assertDoesNotExist()
+        onNodeWithText("Close").performClick(); awaitTag("video-picture")
+        // A dialog of the tab (New chat, Invite, Settings).
+        engine.play()
+        state = ui(listOf(msg("m0", photo), msg("m1", video(), author = me)), media, video, overlayOpen = true)
+        awaitTag("video-cover")
+        assertFalse(engine.playing.value)
+        assertFalse(engine.released)
+    }
+
+    @Test fun partlyOutOfTheListPauses() = runDesktopComposeUiTest(1040, 760) {
+        val media = media()
+        val video = FakeVideo()
+        val texts = (1..6).map { msg("t$it", text = "line $it") }
+        show(ui(texts + msg("m1", video(w = 1080, h = 1920)), media, video))
+        play() // the newest message is scrolled to: wholly in view
+        val engine = video.engines.single()
+        assertTrue(engine.playing.value)
+        // Scrolled up a little: the bubble's bottom slides under the composer.
+        onAllNodes(hasScrollAction())[1].performMouseInput { scroll(-2f) }
+        awaitTag("video-cover")
+        assertFalse(engine.playing.value)
+        assertFalse(engine.released) // still on screen, so kept
+        onNodeWithTag("video-picture").assertDoesNotExist()
     }
 }

@@ -3,6 +3,8 @@ package app.mjolnir.desktop.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -30,10 +32,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
@@ -280,9 +284,12 @@ private class VideoHold(val media: ChatMediaSource, val fileId: String) {
     var engine: VideoEngine? = null
     private var pinned = false
     fun pin() { if (!pinned) { pinned = true; media.pin(fileId) } }
+    /** Never throws: it runs from catch blocks and from onDispose. */
     fun releaseEngine() {
-        engine?.let { it.release(); NowPlaying.stopped(it) }
+        val e = engine ?: return
         engine = null
+        NowPlaying.stopped(e)
+        runCatching { e.release() }
     }
     fun releaseAll() { releaseEngine(); if (pinned) { pinned = false; media.unpin(fileId) } }
 }
@@ -291,7 +298,9 @@ private class VideoHold(val media: ChatMediaSource, val fileId: String) {
  * A video: its thumbnail with a play button and a `0:42` badge (a plain tile when it has neither), 320 px wide with its
  * aspect kept. Play downloads it first (a ring on the button shows how far), then plays it inline; it stays pinned in
  * the cache while it plays. Leaving the screen (scrolled away, another chat, the message deleted) releases the player;
- * a hidden window pauses it. A video JavaFX can't decode offers the system player.
+ * a hidden window pauses it. While an overlay covers the conversation or the bubble is not wholly inside the list, it is
+ * paused and shows its still instead of the player, whose Swing panel would draw over everything (ruling CV-R2). A video
+ * JavaFX can't decode offers the system player.
  */
 @Composable
 private fun VideoBubble(att: Attachment, media: ChatMediaSource, video: VideoSupport, showing: Boolean) {
@@ -304,11 +313,19 @@ private fun VideoBubble(att: Attachment, media: ChatMediaSource, video: VideoSup
     LaunchedEffect(att.fileId, connects) {
         if (thumb == null) thumb = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
     }
+    val stage = LocalVideoStage.current
+    var bounds by remember { mutableStateOf<Rect?>(null) }
+    val inView = !stage.covered && stage.viewport.value.let { v -> v == null || bounds.let { b -> b == null || v.encloses(b) } }
     val current = phase
+    val requester = remember { BringIntoViewRequester() }
     if (current is VideoPhase.Playing) {
         val error by current.engine.error.collectAsState()
+        val playing by current.engine.playing.collectAsState()
         LaunchedEffect(error) { if (error != null) { hold.releaseEngine(); phase = VideoPhase.Unplayable(current.file) } }
-        LaunchedEffect(showing) { if (!showing) current.engine.pause() }
+        // Not while it is being scrolled into view (below): it starts there partly hidden by its own controls.
+        var settled by remember(current.engine) { mutableStateOf(false) }
+        LaunchedEffect(current.engine) { withFrameNanos {}; runCatching { requester.bringIntoView() }; settled = true }
+        LaunchedEffect(showing, inView, playing, settled) { if (playing && (!showing || (settled && !inView))) current.engine.pause() }
     }
     val scope = rememberCoroutineScope()
     val start: () -> Unit = {
@@ -340,13 +357,20 @@ private fun VideoBubble(att: Attachment, media: ChatMediaSource, video: VideoSup
     val size = att.validSize() ?: thumb?.let { it.width to it.height }
     val (w, h) = videoSize(size)
     if (current is VideoPhase.Playing) {
-        Box(Modifier.clip(mediaShape).border(1.dp, Forge.border, mediaShape)) { InlineVideoPlayer(current.engine, video, w, h, att.name) }
+        // The player is taller than the still (its controls): it is scrolled wholly into view (above) as it starts.
+        Box(Modifier.bringIntoViewRequester(requester).clip(mediaShape).border(1.dp, Forge.border, mediaShape).trackBounds { bounds = it }) {
+            InlineVideoPlayer(current.engine, video, w, h, att.name, showPicture = inView) {
+                Box(Modifier.fillMaxSize().background(VIDEO_FRAME).testTag("video-cover")) {
+                    thumb?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+                }
+            }
+        }
         return
     }
     val length = validDurationMs(att.durationMs)
     val clickable = current is VideoPhase.Still || current is VideoPhase.Unavailable
     Box(
-        Modifier.size(w, h).clip(mediaShape).background(VIDEO_FRAME, mediaShape).border(1.dp, Forge.border, mediaShape)
+        Modifier.trackBounds { bounds = it }.size(w, h).clip(mediaShape).background(VIDEO_FRAME, mediaShape).border(1.dp, Forge.border, mediaShape)
             .semantics { contentDescription = "Video ${att.name}" }
             .then(if (clickable) Modifier.clickable(role = Role.Button, onClick = start) else Modifier),
         contentAlignment = Alignment.Center,

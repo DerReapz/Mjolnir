@@ -20,16 +20,22 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.SwingPanel
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
@@ -40,6 +46,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.toSize
 import app.mjolnir.client.Messages
 import app.mjolnir.desktop.media.JavaFx
 import app.mjolnir.desktop.media.JavaFxEngine
@@ -123,9 +130,32 @@ internal val VIDEO_MAX_HEIGHT = 400.dp
 internal val VIDEO_FRAME = Color(0xFF0E0E0E)
 private val CONTROLS_FILL = Color(0xFF1A1A1A)
 
-/** The inline player, per the mockup: the picture, then play/pause, the scrub bar and `0:16 / 0:42`. */
+/**
+ * Where the conversation's list is in the window, and whether an overlay (a dialog, the viewer, Info) covers it: a video
+ * shows its player only wholly inside [viewport] and uncovered. No viewport known (a bubble outside a list): always shown.
+ */
+internal class VideoStage(val viewport: State<Rect?>, val covered: Boolean)
+
+internal val LocalVideoStage = compositionLocalOf { VideoStage(mutableStateOf(null), covered = false) }
+
+/** True when [inner] lies wholly inside this rectangle (to a pixel). */
+internal fun Rect.encloses(inner: Rect): Boolean =
+    inner.left >= left - 1 && inner.top >= top - 1 && inner.right <= right + 1 && inner.bottom <= bottom + 1
+
+/** Reports this element's unclipped bounds in the window (part of it may be scrolled out of view). */
+internal fun Modifier.trackBounds(onBounds: (Rect) -> Unit): Modifier = onGloballyPositioned {
+    onBounds(Rect(it.positionInWindow(), it.size.toSize()))
+}
+
+/**
+ * The inline player, per the mockup: the picture, then play/pause, the scrub bar and `0:16 / 0:42`. Without
+ * [showPicture], [cover] takes the picture's place (the Swing panel would draw over overlays and the list's edges).
+ */
 @Composable
-internal fun InlineVideoPlayer(engine: VideoEngine, video: VideoSupport, width: Dp, height: Dp, name: String) {
+internal fun InlineVideoPlayer(
+    engine: VideoEngine, video: VideoSupport, width: Dp, height: Dp, name: String, showPicture: Boolean = true,
+    cover: @Composable () -> Unit = {},
+) {
     val playing by engine.playing.collectAsState()
     val position by engine.positionMs.collectAsState()
     val duration by engine.durationMs.collectAsState()
@@ -133,8 +163,8 @@ internal fun InlineVideoPlayer(engine: VideoEngine, video: VideoSupport, width: 
         if (playing) engine.pause() else { NowPlaying.start(engine); engine.play() }
     }
     Column(Modifier.width(width).background(VIDEO_FRAME).semantics { contentDescription = "Video $name" }) {
-        Box(Modifier.width(width).height(height).testTag("video-picture")) {
-            video.Picture(engine, Modifier.fillMaxSize())
+        Box(Modifier.width(width).height(height).then(if (showPicture) Modifier.testTag("video-picture") else Modifier)) {
+            if (showPicture) video.Picture(engine, Modifier.fillMaxSize()) else cover()
         }
         Row(
             Modifier.fillMaxWidth().background(CONTROLS_FILL).padding(horizontal = 10.dp, vertical = 8.dp),

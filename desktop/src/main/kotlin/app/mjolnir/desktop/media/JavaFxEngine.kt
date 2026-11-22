@@ -1,5 +1,6 @@
 package app.mjolnir.desktop.media
 
+import app.mjolnir.client.videoRotation
 import app.mjolnir.desktop.ui.VideoEngine
 import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.safeFileName
@@ -21,6 +22,8 @@ import javafx.scene.media.MediaPlayer
 import javafx.scene.media.MediaView
 import javafx.scene.paint.Color
 import javafx.util.Duration
+import javax.swing.JComponent
+import javax.swing.JPanel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,7 +39,8 @@ internal object JavaFx {
 
     /**
      * Starts JavaFX unless it runs, waiting at most [timeoutMs]. Throws when it can't start here: no display (where it
-     * would hang), missing natives, or a start that doesn't finish in time (it is then not tried again).
+     * would hang), missing natives, or a start that doesn't finish in time (it is then not tried again). It blocks, so
+     * call it off the UI thread; the UI thread only uses [runIfStarted].
      */
     fun start(timeoutMs: Long = START_TIMEOUT_MS) {
         val future = synchronized(this) {
@@ -75,10 +79,18 @@ internal object JavaFx {
         return !linux || System.getenv("DISPLAY") != null || System.getenv("WAYLAND_DISPLAY") != null
     }
 
-    /** Runs [block] on the JavaFX thread, starting JavaFX first. */
-    fun run(block: () -> Unit) {
-        start()
-        if (Platform.isFxApplicationThread()) block() else Platform.runLater(block)
+    /** True once JavaFX has started (and not failed to). */
+    fun started(): Boolean = synchronized(this) { startup }?.let { it.isDone && !it.isCompletedExceptionally } == true
+
+    /**
+     * Runs [block] on the JavaFX thread once JavaFX has started: at once if it has, after the start if one is under way,
+     * never if it failed or was never started. Never blocks and never throws, so the UI thread may call it.
+     */
+    fun runIfStarted(block: () -> Unit) {
+        val future = synchronized(this) { startup } ?: return
+        future.thenRun {
+            runCatching { if (Platform.isFxApplicationThread()) block() else Platform.runLater(block) }
+        }
     }
 
     /**
@@ -115,10 +127,15 @@ class JavaFxEngine : VideoEngine {
     private var player: MediaPlayer? = null
     private var view: MediaView? = null
     @Volatile private var released = false
+    /** Degrees clockwise the picture is turned to show upright (a phone's portrait flag). */
+    @Volatile private var rotation = 0
 
+    /** Opens [file]. Blocks while JavaFX starts (up to 10 s), so call it off the UI thread; throws when JavaFX can't. */
     override fun load(file: File) {
-        JavaFx.run {
-            if (released) return@run
+        JavaFx.start()
+        rotation = videoRotation(file)
+        JavaFx.runIfStarted {
+            if (released) return@runIfStarted
             try {
                 val media = Media(file.toURI().toString())
                 media.setOnError { fail(media.error) }
@@ -145,41 +162,48 @@ class JavaFxEngine : VideoEngine {
         _error.value = e?.message ?: "can't play"
     }
 
+    // These run on the UI thread: they hand the work to JavaFX and never block or throw.
     override fun play() {
         _playing.value = true
-        JavaFx.run { player?.play() }
+        JavaFx.runIfStarted { player?.play() }
     }
 
     override fun pause() {
         _playing.value = false
-        JavaFx.run { player?.pause() }
+        JavaFx.runIfStarted { player?.pause() }
     }
 
     override fun seek(ms: Long) {
         _position.value = ms
-        JavaFx.run { player?.seek(Duration.millis(ms.toDouble())) }
+        JavaFx.runIfStarted { player?.seek(Duration.millis(ms.toDouble())) }
     }
 
     override fun release() {
         released = true
         _playing.value = false
-        JavaFx.run {
+        JavaFx.runIfStarted {
             view?.mediaPlayer = null
             player?.dispose()
             player = null
         }
     }
 
-    /** A Swing panel showing the video, scaled to fit with its aspect kept, on black. Call on the AWT thread. */
-    internal fun panel(): JFXPanel {
-        JavaFx.start() // before the JFXPanel, so JavaFX starts with implicit exit off
+    /**
+     * A Swing panel showing the video, scaled to fit with its aspect kept, on black, turned upright. Call on the AWT
+     * thread, after [load] succeeded (JavaFX is then running; otherwise the panel stays black).
+     */
+    internal fun panel(): JComponent {
+        if (!JavaFx.started()) return JPanel().apply { background = java.awt.Color.BLACK }
         val panel = JFXPanel()
-        JavaFx.run {
-            val v = MediaView(player).apply { isPreserveRatio = true; isSmooth = true }
+        val turn = rotation
+        JavaFx.runIfStarted {
+            view?.mediaPlayer = null // a panel shown before (the bubble was covered, then shown again)
+            val v = MediaView(player).apply { isPreserveRatio = true; isSmooth = true; rotate = turn.toDouble() }
             view = v
             val scene = Scene(StackPane(v), Color.BLACK)
-            v.fitWidthProperty().bind(scene.widthProperty())
-            v.fitHeightProperty().bind(scene.heightProperty())
+            val sideways = turn == 90 || turn == 270 // the fit box is the view's own, before turning
+            v.fitWidthProperty().bind(if (sideways) scene.heightProperty() else scene.widthProperty())
+            v.fitHeightProperty().bind(if (sideways) scene.widthProperty() else scene.heightProperty())
             panel.scene = scene
         }
         return panel

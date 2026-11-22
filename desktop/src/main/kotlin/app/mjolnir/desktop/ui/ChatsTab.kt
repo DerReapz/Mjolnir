@@ -26,6 +26,10 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -150,6 +154,8 @@ class ChatsUi(
     val info: String? = null,
     /** How videos play inline. */
     val video: VideoSupport = NoVideo,
+    /** A dialog of the tab (New chat, Invite, Settings) covers the conversation: videos pause and hide their player. */
+    val overlayOpen: Boolean = false,
 ) {
     val selected: ChatSummary? get() = chats.firstOrNull { it.id == selectedId }
 
@@ -396,43 +402,47 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
     }
     // Files dropped on a chat you're in are sent there (else they go to the Send tab, like anywhere in the window).
     val drop = if (chat.member) Modifier.dragAndDropTarget(shouldStartDragAndDrop = { it.dragData() is DragData.FilesList }, target = dropTarget) else Modifier
-    Column(Modifier.fillMaxSize().then(drop)) {
-        ConversationHeader(chat, ui, actions)
-        (ui.notice ?: ui.info)?.let {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(it, Modifier.weight(1f), style = body(13, color = if (ui.notice != null) Forge.error else Forge.muted))
-                ForgeTextButton("Close", muted = true, onClick = actions.onDismissNotice)
+    // Videos play only wholly inside the list and with nothing over the conversation (ruling CV-R2).
+    val listBounds = remember { mutableStateOf<Rect?>(null) }
+    CompositionLocalProvider(LocalVideoStage provides VideoStage(listBounds, covered = ui.overlayOpen || overlay)) {
+        Column(Modifier.fillMaxSize().then(drop)) {
+            ConversationHeader(chat, ui, actions)
+            (ui.notice ?: ui.info)?.let {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(it, Modifier.weight(1f), style = body(13, color = if (ui.notice != null) Forge.error else Forge.muted))
+                    ForgeTextButton("Close", muted = true, onClick = actions.onDismissNotice)
+                }
             }
-        }
-        val listState = rememberLazyListState()
-        val count = ui.messages.size + pending.size
-        LaunchedEffect(chat.id, count) { if (count > 0) listState.scrollToItem(count - 1) } // the newest message
-        LazyColumn(
-            Modifier.weight(1f).fillMaxWidth(), state = listState,
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            items(ui.messages, key = { it.id }) { m ->
-                val event = m.event
-                if (event != null) SystemLine(Messages.systemLine(event, nameOf))
-                else MessageRow(
-                    m, mine = m.author.deviceId == ui.selfId, byAdmin = isAdmin, ui, actions, onEdit = { editing = it }, onInfo = { info = it },
-                    receiptLine = if (m.id == latestOwn?.id) receiptLineOf(m, ui) else "",
-                    onOpen = { a -> viewing = m to a },
-                )
-            }
-            items(pending, key = { "pending-${it.id}" }) { p -> PendingSendBubbles(p, onDismiss = { actions.onDismissSend(p.id) }) }
-        }
-        if (chat.member) {
-            Composer(chat, editing, ui, actions, onDone = { editing = null })
-        } else if (isAdmin) {
-            Row(
-                Modifier.fillMaxWidth().background(Forge.strip).drawBehind { drawLine(Forge.border, Offset.Zero, Offset(size.width, 0f), 1.dp.toPx()) }
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            val listState = rememberLazyListState()
+            val count = ui.messages.size + pending.size
+            LaunchedEffect(chat.id, count) { if (count > 0) listState.scrollToItem(count - 1) } // the newest message
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth().onGloballyPositioned { listBounds.value = it.boundsInWindow() }, state = listState,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("You see this chat as the space admin. Join to write in it.", Modifier.weight(1f), style = body(13, color = Forge.muted))
-                ChatButton(Messages.JOIN, actions.onAdminJoin, primary = true, tall = true)
+                items(ui.messages, key = { it.id }) { m ->
+                    val event = m.event
+                    if (event != null) SystemLine(Messages.systemLine(event, nameOf))
+                    else MessageRow(
+                        m, mine = m.author.deviceId == ui.selfId, byAdmin = isAdmin, ui, actions, onEdit = { editing = it }, onInfo = { info = it },
+                        receiptLine = if (m.id == latestOwn?.id) receiptLineOf(m, ui) else "",
+                        onOpen = { a -> viewing = m to a },
+                    )
+                }
+                items(pending, key = { "pending-${it.id}" }) { p -> PendingSendBubbles(p, onDismiss = { actions.onDismissSend(p.id) }) }
+            }
+            if (chat.member) {
+                Composer(chat, editing, ui, actions, onDone = { editing = null })
+            } else if (isAdmin) {
+                Row(
+                    Modifier.fillMaxWidth().background(Forge.strip).drawBehind { drawLine(Forge.border, Offset.Zero, Offset(size.width, 0f), 1.dp.toPx()) }
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("You see this chat as the space admin. Join to write in it.", Modifier.weight(1f), style = body(13, color = Forge.muted))
+                    ChatButton(Messages.JOIN, actions.onAdminJoin, primary = true, tall = true)
+                }
             }
         }
     }
@@ -778,6 +788,7 @@ fun ChatsTab(c: AppController, parent: java.awt.Component? = null) {
             ChatsUi(
                 chats, invites, unread, config.deviceId, adminSpaceIds, selectedId, messages, members, nicknameOf, notice, receipts, unreadMentions,
                 pending = pending, media = c.chatMediaSource, animate = showing, info = info, video = JavaFxVideo,
+                overlayOpen = dialog != null,
             ),
             actions,
         )

@@ -3,7 +3,9 @@ package app.mjolnir.desktop.media
 import app.mjolnir.client.ImageIoThumbnailer
 import app.mjolnir.client.Thumb
 import app.mjolnir.client.Thumbnailer
+import app.mjolnir.client.videoRotation
 import app.mjolnir.protocol.AttachmentKind
+import java.awt.image.BufferedImage
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -17,9 +19,9 @@ import javafx.scene.media.MediaView
 
 /**
  * The desktop's [Thumbnailer]: pictures through [ImageIoThumbnailer]; a video through JavaFX, capturing its length, its
- * size and a frame at 1 s (or halfway through a shorter one). The JavaFX work runs on its own thread while the calling
- * (IO) thread waits at most [TIMEOUT_MS] in all, JavaFX's start included; on a timeout or any failure the video gets no
- * thumbnail and is sent as a plain video tile (ruling CV-P2).
+ * upright size and a frame at 1 s (or halfway through a shorter one), turned by its rotation flag ([videoRotation]). The
+ * JavaFX work runs on its own thread while the calling (IO) thread waits at most [TIMEOUT_MS] in all, JavaFX's start
+ * included; on a timeout or any failure the video gets no thumbnail and is sent as a plain video tile (ruling CV-P2).
  */
 object DesktopVideoThumbnailer : Thumbnailer {
     private const val TIMEOUT_MS = 10_000L
@@ -35,7 +37,8 @@ object DesktopVideoThumbnailer : Thumbnailer {
         val deadline = System.currentTimeMillis() + TIMEOUT_MS
         try {
             JavaFx.start(TIMEOUT_MS)
-            JavaFx.run {
+            val turn = videoRotation(file) // phones record portrait as landscape frames plus this flag
+            JavaFx.runIfStarted {
                 try {
                     val media = Media(file.toURI().toString())
                     val p = MediaPlayer(media).also { player = it }
@@ -52,10 +55,11 @@ object DesktopVideoThumbnailer : Thumbnailer {
                             captured = true
                             p.pause()
                             try {
-                                val frame = SwingFXUtils.fromFXImage(view.snapshot(null, null), null)
-                                if (media.width > 0 && media.height > 0) {
-                                    result.set(Thumb(ImageIoThumbnailer.jpegThumbnail(frame), media.width, media.height, length?.toLong()))
-                                }
+                                val frame = turned(SwingFXUtils.fromFXImage(view.snapshot(null, null), null), turn)
+                                val sideways = turn == 90 || turn == 270
+                                val w = if (sideways) media.height else media.width
+                                val h = if (sideways) media.width else media.height
+                                if (w > 0 && h > 0) result.set(Thumb(ImageIoThumbnailer.jpegThumbnail(frame), w, h, length?.toLong()))
                             } finally {
                                 done.countDown()
                             }
@@ -75,8 +79,24 @@ object DesktopVideoThumbnailer : Thumbnailer {
         } catch (e: LinkageError) {
             return null // its natives are missing
         } finally {
-            runCatching { JavaFx.run { player?.dispose() } } // the player of a capture that timed out too
+            JavaFx.runIfStarted { player?.dispose() } // the player of a capture that timed out too
         }
         return result.get()
+    }
+
+    /** [img] turned [degrees] clockwise (0, 90, 180 or 270). */
+    internal fun turned(img: BufferedImage, degrees: Int): BufferedImage {
+        if (degrees == 0) return img
+        val sideways = degrees == 90 || degrees == 270
+        val out = BufferedImage(if (sideways) img.height else img.width, if (sideways) img.width else img.height, BufferedImage.TYPE_INT_RGB)
+        val g = out.createGraphics()
+        try {
+            g.translate(out.width / 2.0, out.height / 2.0)
+            g.rotate(Math.toRadians(degrees.toDouble()))
+            g.drawImage(img, -img.width / 2, -img.height / 2, null)
+        } finally {
+            g.dispose()
+        }
+        return out
     }
 }
