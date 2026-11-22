@@ -31,6 +31,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -78,6 +79,8 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /** Where the bubbles get an attachment's files: the app's media cache, downloading on demand. */
 interface ChatMediaSource {
@@ -88,7 +91,11 @@ interface ChatMediaSource {
     /** Keeps [fileId] in the cache while a bubble shows it; matched by [unpin]. */
     fun pin(fileId: String)
     fun unpin(fileId: String)
+    /** Changes each time the relay connection comes up: media that failed to load (offline) tries again. */
+    val connects: StateFlow<Int> get() = NO_CONNECTS
 }
+
+private val NO_CONNECTS: StateFlow<Int> = MutableStateFlow(0)
 
 /** Inline photos and GIFs fit in this square (the mockup's 250 × 150 photo). */
 private val MEDIA_MAX = 250.dp
@@ -190,10 +197,11 @@ private fun ImageBubble(att: Attachment, media: ChatMediaSource?, onOpen: () -> 
     val maxPx = inlineMaxPx()
     var thumb by remember(att.fileId) { mutableStateOf<Bitmap?>(null) }
     var full by remember(att.fileId) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(att.fileId, media) {
+    val connects by (media?.connects ?: NO_CONNECTS).collectAsState()
+    LaunchedEffect(att.fileId, media, connects) { // what failed offline loads again once the relay is back
         if (media == null) return@LaunchedEffect
-        thumb = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { inlineBitmap(it, maxPx) } } }
-        if (att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
+        if (thumb == null) thumb = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { inlineBitmap(it, maxPx) } } }
+        if (full == null && att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
             full = orNull { media.file(att).let { withContext(Dispatchers.IO) { inlineBitmap(it, maxPx) } } }
         }
     }
@@ -216,10 +224,11 @@ private fun GifBubble(att: Attachment, media: ChatMediaSource?, onOpen: () -> Un
     val maxPx = inlineMaxPx()
     var still by remember(att.fileId) { mutableStateOf<Bitmap?>(null) }
     var gif by remember(att.fileId) { mutableStateOf<AnimatedImageDrawable?>(null) }
-    LaunchedEffect(att.fileId, media) {
+    val connects by (media?.connects ?: NO_CONNECTS).collectAsState()
+    LaunchedEffect(att.fileId, media, connects) { // what failed offline loads again once the relay is back
         if (media == null) return@LaunchedEffect
-        still = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { inlineBitmap(it, maxPx) } } }
-        if (att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
+        if (still == null) still = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { inlineBitmap(it, maxPx) } } }
+        if (gif == null && att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
             gif = orNull { media.file(att).let { withContext(Dispatchers.IO) { decodeAnimated(it, maxPx, INLINE_FULL_MAX_BYTES) } } }
         }
     }
@@ -299,7 +308,10 @@ internal fun sendProgress(done: Long, total: Long): String {
     return "${Messages.size(done)} of ${Messages.size(total)} · ${(fraction * 100).toInt()}%"
 }
 
-/** A send still uploading: its text and files greyed, with a progress bar. One that failed for good shows why, with *Dismiss*. */
+/** The button under a pending send: *Dismiss* once it failed for good, else *Cancel*. */
+internal fun pendingAction(send: PendingSend): String = if (send.failure != null) Messages.DISMISS else Messages.CANCEL
+
+/** A send still uploading: its files and text greyed, with a progress bar and *Cancel*. One that failed for good shows why, with *Dismiss*. */
 @Composable
 internal fun PendingSendBubbles(send: PendingSend, onDismiss: () -> Unit) {
     val failed = send.failure != null
@@ -325,7 +337,7 @@ internal fun PendingSendBubbles(send: PendingSend, onDismiss: () -> Unit) {
         if (failed) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(send.failure!!, Modifier.weight(1f, fill = false), color = FailureInk, fontSize = 12.sp)
-                TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text(Messages.DISMISS) }
+                TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text(pendingAction(send)) }
             }
         } else {
             val fraction = if (send.totalBytes > 0) send.sentBytes.coerceIn(0, send.totalBytes).toFloat() / send.totalBytes else 0f
@@ -333,7 +345,10 @@ internal fun PendingSendBubbles(send: PendingSend, onDismiss: () -> Unit) {
                 Modifier.width(160.dp).height(4.dp).background(Forge.Border, RoundedCornerShape(2.dp))
                     .semantics { progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f) },
             ) { Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).background(Forge.Accent, RoundedCornerShape(2.dp))) }
-            Text(sendProgress(send.sentBytes, send.totalBytes), color = Forge.Muted, fontSize = 11.sp)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(sendProgress(send.sentBytes, send.totalBytes), color = Forge.Muted, fontSize = 11.sp)
+                TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text(pendingAction(send)) }
+            }
         }
     }
 }

@@ -153,10 +153,11 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
                 if (files.isNotEmpty()) addFiles(files) else if (text != null) addText(text)
                 files.isNotEmpty() || text != null
             } else if (tab == MainTab.CHATS && e.type == KeyEventType.KeyDown && e.isCtrlPressed && e.key == Key.V) {
-                // Files pasted into a chat you're in are sent there; text pastes into the composer as usual.
-                val chat = c.chats.chats.value.firstOrNull { it.id == c.selectedChat.value && it.member }
+                // Files pasted into a chat you're in are sent there, unless a dialog or the viewer is open; text pastes into
+                // the composer as usual.
+                val chat = c.chatPasteTarget()
                 val files = if (chat != null) readClipboard().first else emptyList()
-                if (chat != null && files.isNotEmpty()) c.sendChatFiles(chat.id, files)
+                if (chat != null && files.isNotEmpty()) c.sendChatFiles(chat, files)
                 files.isNotEmpty()
             } else false
         },

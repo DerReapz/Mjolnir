@@ -207,6 +207,7 @@ class ChatViewModel(
             override suspend fun file(att: Attachment): File = m.cache.get(att, api)
             override fun pin(fileId: String) = m.cache.pin(fileId)
             override fun unpin(fileId: String) = m.cache.unpin(fileId)
+            override val connects: StateFlow<Int> get() = controller.connects
         }
     }
 
@@ -243,6 +244,8 @@ class ChatViewModel(
     val selfDeviceId: String? get() = selfId()
 
     init {
+        // Ruling CM-R7: a file the relay refused as too large is named; the rest of its send went on.
+        viewModelScope.launch { controller.sendNotices.collect { _notice.value = it } }
         viewModelScope.launch {
             var known = emptySet<String>()
             controller.chats.collect { chats -> known = forgetWhenGone(known, chats.mapTo(HashSet()) { it.id }) }

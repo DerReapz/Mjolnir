@@ -244,12 +244,57 @@ class ChatMediaTest {
         assertEquals(listOf("a.bin"), c.messages(chat).value.single { it.author.deviceId == me.deviceId }.attachments.map { it.name })
 
         // A send that fails for good shows why until dismissed.
-        fake.failUploadsWith = RelayException(RelayErrorKind.TOO_LARGE, "too_large")
+        fake.failUploadsWith = RelayException(RelayErrorKind.STORAGE_FULL, "relay_full")
         vm.attach(listOf(pick("content://picked/b", "b.bin", 10))); advanceUntilIdle()
         val failed = vm.pending.first { list -> list.any { it.failure != null } }.single()
-        assertEquals(Messages.mediaNotSent(RelayException(RelayErrorKind.TOO_LARGE, "too_large")), failed.failure)
+        assertEquals("Not sent: the relay is out of space.", failed.failure)
+        assertEquals(Messages.DISMISS, pendingAction(failed))
         vm.dismissSend(failed.id)
         assertTrue(vm.pending.first { it.isEmpty() }.isEmpty())
+    }
+
+    @Test fun aSendStillGoingCanBeCancelled() = runTest {
+        val chat = fake.addChat("s1", "Trip", owner = me, members = listOf(me, sam))
+        val c = controller(FlakyUploads(fake, failChunk = 2))
+        val vm = vm(c)
+        c.refresh(); advanceUntilIdle()
+        vm.open(chat)
+        vm.attach(listOf(pick("content://picked/a", "a.bin", 10))); advanceUntilIdle()
+        val going = vm.pending.first { it.isNotEmpty() }.single()
+        assertEquals(Messages.CANCEL, pendingAction(going))
+        vm.dismissSend(going.id)
+        assertTrue(vm.pending.first { it.isEmpty() }.isEmpty())
+        c.resumeSends().join()
+        assertEquals(0, fake.postCalls)
+        sendFiles.prune(c.pendingSends.value) // the app prunes on every change: its copy goes with it
+        assertTrue(File(tmp.root, "chat-send").listFiles().orEmpty().isEmpty())
+    }
+
+    @Test fun aFileTooBigForTheRelayIsDroppedWithANotice() = runTest {
+        val chat = fake.addChat("s1", "Trip", owner = me, members = listOf(me, sam))
+        val api = object : RelayApi by fake {
+            override suspend fun createUpload(relativePath: String, mimeType: String, sizeBytes: Long): UploadStatus {
+                if (relativePath == "clip.mp4") throw RelayException(RelayErrorKind.TOO_LARGE, "too_large")
+                return fake.createUpload(relativePath, mimeType, sizeBytes)
+            }
+        }
+        val c = controller(api)
+        val vm = vm(c)
+        c.refresh(); advanceUntilIdle()
+        vm.open(chat)
+        vm.attach(listOf(pick("content://picked/v", "clip.mp4", 10), pick("content://picked/p", "photo.bin", 5))); advanceUntilIdle()
+        assertEquals("clip.mp4 is too big for the relay", vm.notice.first { it != null })
+        val posted = c.messages(chat).first { list -> list.any { it.author.deviceId == me.deviceId } }.single { it.author.deviceId == me.deviceId }
+        assertEquals(listOf("photo.bin"), posted.attachments.map { it.name })
+    }
+
+    @Test fun mediaRetriesWhenTheRelayReconnects() = runTest {
+        val c = controller()
+        val vm = vm(c)
+        val source = assertNotNull(vm.mediaSource)
+        val before = source.connects.value
+        c.onEvent(app.mjolnir.protocol.RelayEvent.Connected); advanceUntilIdle()
+        assertEquals(before + 1, source.connects.value) // the bubbles key their reload on this
     }
 
     @Test fun sendCopiesStayWhilePreparingOrPending() {

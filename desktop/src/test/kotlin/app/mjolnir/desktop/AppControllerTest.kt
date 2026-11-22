@@ -958,4 +958,53 @@ class AppControllerTest {
         assertEquals(emptyList(), File(dir, "save").listFiles().orEmpty().map { it.name })
         scope.cancel()
     }
+
+    @Test fun aSuccessfulDownloadClearsAnEarlierFailure() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        val gone = fake.incoming(chat, fred, null, attachments = listOf(Attachment("gone", AttachmentKind.FILE, "old.pdf", 3, "application/pdf")))
+        c.saveChatFiles(gone, gone.attachments)
+        assertEquals("Message deleted", c.chatNotice.value)
+        fake.blobs["f1"] = "pdf".toByteArray()
+        val m = fake.incoming(chat, fred, null, attachments = listOf(Attachment("f1", AttachmentKind.FILE, "new.pdf", 3, "application/pdf")))
+
+        c.saveChatFiles(m, m.attachments)
+
+        assertNull(c.chatNotice.value) // the stale failure no longer hides "Saved to"
+        assertEquals("Saved to ${File(dir, "save").path}", c.chatInfo.value)
+        scope.cancel()
+    }
+
+    @Test fun pastedFilesGoToTheOpenChatOnlyWithNoDialogOpen() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        c.chats.refresh(); runCurrent()
+        assertNull(c.chatPasteTarget()) // no chat open
+        c.selectChat(chat)
+        assertEquals(chat, c.chatPasteTarget())
+        c.chatOverlayOpen = true // New chat, Invite, Settings, Info or the image viewer is up
+        assertNull(c.chatPasteTarget())
+        c.chatOverlayOpen = false
+        assertEquals(chat, c.chatPasteTarget())
+        scope.cancel()
+    }
+
+    @Test fun aFileTooBigForTheRelayIsNamedInTheChatNotice() = runTest {
+        val (fake, chat) = chatRelay()
+        val api = object : RelayApi by fake {
+            override suspend fun createUpload(relativePath: String, mimeType: String, sizeBytes: Long): UploadStatus {
+                if (relativePath == "clip.mov") throw RelayException(RelayErrorKind.TOO_LARGE, "too_large")
+                return fake.createUpload(relativePath, mimeType, sizeBytes)
+            }
+        }
+        val (c, scope) = controller(api, config = chatConfig)
+        c.chats.refresh(); runCurrent()
+        val clip = File(dir, "clip.mov").apply { writeText("movie") }
+        val notes = File(dir, "notes.txt").apply { writeText("notes") }
+        c.sendChatFiles(chat, listOf(clip, notes))
+        repeat(300) { runCurrent(); if (c.chatNotice.value == null || c.chats.pendingSends.value.isNotEmpty()) Thread.sleep(10) }
+        assertEquals("clip.mov is too big for the relay", c.chatNotice.value)
+        assertEquals(listOf(listOf("notes.txt")), fake.chatState.sync(chat, 0).messages.filter { it.author.deviceId == "dev-1" }.map { m -> m.attachments.map { it.name } })
+        scope.cancel()
+    }
 }

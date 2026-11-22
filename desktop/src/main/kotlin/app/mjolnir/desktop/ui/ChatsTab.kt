@@ -26,6 +26,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -182,8 +183,10 @@ class ChatsActions(
     val onAttach: () -> Unit = {},
     /** Files or folders dropped on the open chat: sent there. */
     val onDropFiles: (List<File>) -> Unit = {},
-    /** Drops a send that failed for good. */
+    /** *Cancel* on a send still going, *Dismiss* on one that failed for good: drops it. */
     val onDismissSend: (String) -> Unit = {},
+    /** The conversation's own overlays (message Info, the image viewer) opened or closed. */
+    val onOverlayChange: (Boolean) -> Unit = {},
 )
 
 private val timeFormat = DateTimeFormatter.ofPattern("HH:mm")
@@ -371,6 +374,9 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
     var editing by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     var info by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     var viewing by remember(chat.id) { mutableStateOf<Pair<ChatMessage, Attachment>?>(null) }
+    val overlay = info != null || viewing != null
+    SideEffect { actions.onOverlayChange(overlay) }
+    DisposableEffect(Unit) { onDispose { actions.onOverlayChange(false) } }
     val latestOwn = remember(ui.messages, ui.selfId) { latestOwnMessage(ui.messages, ui.selfId) }
     val names = remember(ui.members, ui.messages) {
         (ui.messages.map { it.author } + ui.members).associateBy { it.deviceId } + ui.members.associateBy { it.deviceId }
@@ -507,7 +513,7 @@ private fun MessageRow(
         if (!m.deleted) {
             if (m.attachments.isNotEmpty()) add(MenuItem(Messages.DOWNLOAD, false) { actions.onDownload(m, m.attachments) })
             firstLink?.let { add(MenuItem(Messages.COPY_LINK, false) { actions.onCopy(it) }) }
-            if (mine && m.text != null) add(MenuItem(Messages.INFO, false) { onInfo(m) })
+            if (mine) add(MenuItem(Messages.INFO, false) { onInfo(m) })
             if (mine && m.text != null) add(MenuItem(Messages.EDIT, false) { onEdit(m) })
             if (mine || byAdmin) add(MenuItem(Messages.DELETE, true) { actions.onDeleteMessage(m) })
         }
@@ -719,6 +725,10 @@ fun ChatsTab(c: AppController, parent: java.awt.Component? = null) {
     val members by remember(id) { id?.let(c.chats::members) ?: MutableStateFlow(emptyList()) }.collectAsState()
     val receipts by remember(id) { id?.let(c.chats::receipts) ?: MutableStateFlow(emptyList()) }.collectAsState()
     var dialog by remember { mutableStateOf<ChatDialog?>(null) }
+    var conversationOverlay by remember { mutableStateOf(false) }
+    // Ctrl+V sends files to the open chat only while no dialog or viewer covers it (MainWindow asks chatPasteTarget).
+    SideEffect { c.chatOverlayOpen = dialog != null || conversationOverlay }
+    DisposableEffect(c) { onDispose { c.chatOverlayOpen = false } }
     val nicknameOf = { p: Peer -> nicknames.nicknameOr(p.deviceId, p.name) }
     val adminSpaceIds = spaces.filter { it.adminId == config.deviceId }.mapTo(HashSet()) { it.id }
 
@@ -758,6 +768,7 @@ fun ChatsTab(c: AppController, parent: java.awt.Component? = null) {
         },
         onDropFiles = { files -> if (id != null) c.sendChatFiles(id, files) },
         onDismissSend = c.chats::dismissSend,
+        onOverlayChange = { conversationOverlay = it },
     )
 
     Box(Modifier.fillMaxSize()) {

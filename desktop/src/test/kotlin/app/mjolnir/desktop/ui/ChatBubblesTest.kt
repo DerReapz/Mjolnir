@@ -166,6 +166,41 @@ class ChatBubblesTest {
         onNodeWithText("Dismiss").performClick()
         assertEquals(listOf("p2"), dismissed)
         assertTrue(onAllNodes(hasTestTagOf("pending-p1")).fetchSemanticsNodes().isNotEmpty())
+        // A send still going can be stopped.
+        onNodeWithText("Cancel").performClick()
+        assertEquals(listOf("p2", "p1"), dismissed)
+        // Its text comes after its files, as in the posted message.
+        val textTop = onNodeWithText("look").fetchSemanticsNode().boundsInRoot.top
+        assertTrue(textTop > onNodeWithText("notes.txt").fetchSemanticsNode().boundsInRoot.top, "text below the files")
+    }
+
+    @Test fun ownMediaOnlyMessageHasInfoButNoEdit() = runComposeUiTest {
+        val overlay = mutableListOf<Boolean>()
+        show(ui(listOf(msg("m1", me, null, listOf(att("f1", AttachmentKind.FILE, "report.pdf", 1_000))))), ChatsActions(onOverlayChange = { overlay += it }))
+        onNodeWithContentDescription("Message menu").performClick()
+        onNodeWithText("Edit").assertDoesNotExist()
+        onNodeWithText("Info").performClick()
+        onNodeWithContentDescription("Message info").assertExists()
+        assertEquals(true, overlay.last()) // Ctrl+V sends nothing while it is open
+        onNodeWithText("Close").performClick()
+        waitForIdle()
+        assertEquals(false, overlay.last())
+    }
+
+    @Test fun mediaThatFailedOfflineLoadsOnReconnect() = runComposeUiTest {
+        val thumb = png("thumb2.png", 32, 20, Color.RED)
+        val media = object : ChatMediaSource {
+            @Volatile var offline = true
+            override val connects = kotlinx.coroutines.flow.MutableStateFlow(0)
+            override suspend fun thumbnail(att: Attachment): File? = if (offline) throw java.io.IOException("offline") else thumb
+            override suspend fun file(att: Attachment): File = throw java.io.IOException("not needed")
+        }
+        show(ui(listOf(msg("m1", fred, null, listOf(att("f1", AttachmentKind.IMAGE, "IMG.jpg", 20_000_000, thumb = "t1", w = 1600, h = 1000)))), media = media))
+        waitForIdle()
+        onNodeWithTag("image-thumb", useUnmergedTree = true).assertDoesNotExist()
+        media.offline = false
+        media.connects.value = 1 // the relay is back
+        waitUntil(timeoutMillis = 5_000) { onAllNodes(hasTestTagOf("image-thumb"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
     }
 
     @Test fun oversizedGifKeepsItsStill() = runComposeUiTest {

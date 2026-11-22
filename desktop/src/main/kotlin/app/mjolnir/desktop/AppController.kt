@@ -154,12 +154,20 @@ class AppController(
         override suspend fun file(att: Attachment): File = chatMedia.get(att, relay())
         override fun pin(fileId: String) = chatMedia.pin(fileId)
         override fun unpin(fileId: String) = chatMedia.unpin(fileId)
+        override val connects: StateFlow<Int> get() = chats.connects
     }
 
     private val _selectedChat = MutableStateFlow<String?>(null)
     /** The chat the Chats tab shows; it outlives the tab, so *New chat…* elsewhere can open the chat it made. */
     val selectedChat: StateFlow<String?> = _selectedChat.asStateFlow()
     fun selectChat(chatId: String?) { _selectedChat.value = chatId }
+
+    /** Set by the Chats tab while a dialog or the image viewer covers the conversation: Ctrl+V then sends nothing. */
+    @Volatile var chatOverlayOpen = false
+
+    /** Where Ctrl+V on the Chats tab sends files: the chat on screen if this device is in it and nothing covers it, else null. */
+    fun chatPasteTarget(): String? =
+        if (chatOverlayOpen) null else chats.chats.value.firstOrNull { it.id == _selectedChat.value && it.member }?.id
 
     private val _chatNotice = MutableStateFlow<String?>(null)
     /** The last failed chat action, as a sentence; null once dismissed. */
@@ -189,6 +197,7 @@ class AppController(
      */
     internal suspend fun saveChatFiles(m: ChatMessage, attachments: List<Attachment>) {
         _chatInfo.value = null
+        _chatNotice.value = null // an earlier failure would hide "Saved to"
         try {
             val root = withContext(Dispatchers.IO) { _config.value.saveDirFile() }
             val folders = HashMap<String, File>()
@@ -245,6 +254,8 @@ class AppController(
     init {
         // Always on, and started before the first refresh: with no collector a new message would be dropped, not notified.
         scope.launch(start = CoroutineStart.UNDISPATCHED) { chats.newMessages.collect(::onIncomingChatMessage) }
+        // Ruling CM-R7: a file the relay refused as too large is named; the rest of its send went on.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { chats.sendNotices.collect { _chatNotice.value = it } }
     }
 
     /** A message in a chat that isn't open: a tray notification, unless that chat is open in the visible Chats tab. */

@@ -21,17 +21,19 @@ private const val DEFAULT_MIME = "application/octet-stream"
 /**
  * Copies one shared file into [outboxDir] (shares only grant temporary read access), so it can wait in the tray.
  * The copy is named by its id, or with [keepName] by its safe name in a folder of its own (`<id>/<name>`), for a chat
- * send that takes its name and type from the file. Blocking: call it off the main thread.
+ * send that takes its name and type from the file. A chat send's copy has no size cap: the relay's own per-file limit
+ * (`MJOLNIR_MAX_CHAT_FILE_MB`) decides, and a file it refuses fails alone (ruling CM-R7). Blocking: call it off the main thread.
  */
 fun importFile(name: String?, sizeBytes: Long?, mimeType: String?, open: () -> InputStream?, outboxDir: File, keepName: Boolean = false): ImportResult {
     val safeName = safeFileName(name ?: "file")
-    if (sizeBytes != null && sizeBytes > Limits.MAX_FILE_BYTES) return ImportResult.Rejected(Messages.tooBig(safeName))
+    val max = if (keepName) Long.MAX_VALUE else Limits.MAX_FILE_BYTES
+    if (sizeBytes != null && sizeBytes > max) return ImportResult.Rejected(Messages.tooBig(safeName))
     val id = UUID.randomUUID().toString()
     val target = if (keepName) File(File(outboxDir, id), safeName) else File(outboxDir, id)
     val copied = try {
         val input = open() ?: return ImportResult.Rejected(Messages.unreadable(safeName))
         target.parentFile?.mkdirs()
-        input.use { copyAtMost(it, target, Limits.MAX_FILE_BYTES) }
+        input.use { copyAtMost(it, target, max) }
     } catch (e: IOException) {
         discard(target, keepName)
         return ImportResult.Rejected(Messages.unreadable(safeName))

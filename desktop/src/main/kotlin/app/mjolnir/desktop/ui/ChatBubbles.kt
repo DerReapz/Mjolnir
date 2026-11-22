@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +61,8 @@ import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /** Where the bubbles get an attachment's files: the app's media cache, downloading on demand. */
 interface ChatMediaSource {
@@ -70,7 +73,11 @@ interface ChatMediaSource {
     /** Keeps [fileId] in the cache while a bubble shows it; matched by [unpin]. */
     fun pin(fileId: String) {}
     fun unpin(fileId: String) {}
+    /** Changes each time the relay connection comes up: media that failed to load (offline) tries again. */
+    val connects: StateFlow<Int> get() = NO_CONNECTS
 }
+
+private val NO_CONNECTS: StateFlow<Int> = MutableStateFlow(0)
 
 /** No media at all: bubbles show their placeholders. */
 object NoChatMedia : ChatMediaSource {
@@ -195,9 +202,10 @@ private fun ImageBubble(att: Attachment, media: ChatMediaSource, onOpen: () -> U
     PinWhileShown(media, att.fileId, att.thumbFileId)
     var thumb by remember(att.fileId) { mutableStateOf<ImageBitmap?>(null) }
     var full by remember(att.fileId) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(att.fileId) {
-        thumb = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
-        if (att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
+    val connects by media.connects.collectAsState()
+    LaunchedEffect(att.fileId, connects) { // what failed offline loads again once the relay is back
+        if (thumb == null) thumb = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
+        if (full == null && att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
             full = orNull { media.file(att).let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX * 2) } } }
         }
     }
@@ -222,9 +230,10 @@ private fun GifBubble(att: Attachment, media: ChatMediaSource, playing: Boolean,
     PinWhileShown(media, att.fileId, att.thumbFileId)
     var still by remember(att.fileId) { mutableStateOf<ImageBitmap?>(null) }
     var gif by remember(att.fileId) { mutableStateOf<GifFrames?>(null) }
-    LaunchedEffect(att.fileId) {
-        still = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
-        if (att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
+    val connects by media.connects.collectAsState()
+    LaunchedEffect(att.fileId, connects) { // what failed offline loads again once the relay is back
+        if (still == null) still = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
+        if (gif == null && att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
             gif = orNull { media.file(att).let { f -> withContext(Dispatchers.IO) { readUpTo(f, INLINE_FULL_MAX_BYTES)?.let { GifFrames.decode(it) } } } }
         }
     }
@@ -289,8 +298,8 @@ internal fun sendProgress(done: Long, total: Long): String {
 }
 
 /**
- * A send still uploading: its text and files greyed, with a progress bar. One that failed for good shows why and
- * offers *Dismiss*.
+ * A send still uploading: its files and text greyed (text last, as the posted message shows it), with a progress bar and
+ * *Cancel*. One that failed for good shows why and offers *Dismiss*.
  */
 @Composable
 internal fun PendingSendBubbles(send: PendingSend, onDismiss: () -> Unit) {
@@ -302,16 +311,16 @@ internal fun PendingSendBubbles(send: PendingSend, onDismiss: () -> Unit) {
             Modifier.alpha(0.5f).semantics { contentDescription = if (failed) "Not sent" else "Sending" },
             horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            send.text?.takeIf { it.isNotBlank() }?.let { text ->
-                val shape = RoundedCornerShape(12.dp, 12.dp, 4.dp, 12.dp)
-                Text(text, style = body(14).copy(lineHeight = 20.sp), modifier = Modifier.widthIn(max = 480.dp)
-                    .background(MINE_FILL, shape).border(1.dp, MINE_BORDER, shape).padding(horizontal = 12.dp, vertical = 9.dp))
-            }
             for (group in remember(send.files) { groupPendingFiles(send.files) }) {
                 when (group) {
                     is AttachmentGroup.Folder -> FolderBubble(group.name, group.count, group.totalBytes, mine = true, onDownload = null)
                     is AttachmentGroup.Single -> PendingFileBubble(group.item)
                 }
+            }
+            send.text?.takeIf { it.isNotBlank() }?.let { text ->
+                val shape = RoundedCornerShape(12.dp, 12.dp, 4.dp, 12.dp)
+                Text(text, style = body(14).copy(lineHeight = 20.sp), modifier = Modifier.widthIn(max = 480.dp)
+                    .background(MINE_FILL, shape).border(1.dp, MINE_BORDER, shape).padding(horizontal = 12.dp, vertical = 9.dp))
             }
         }
         if (failed) {
@@ -325,7 +334,10 @@ internal fun PendingSendBubbles(send: PendingSend, onDismiss: () -> Unit) {
                 Modifier.width(160.dp).height(4.dp).background(Forge.border, RoundedCornerShape(2.dp))
                     .semantics { progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f) },
             ) { Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).background(Forge.accent, RoundedCornerShape(2.dp))) }
-            Text(sendProgress(send.sentBytes, send.totalBytes), style = body(11, color = Forge.muted))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(sendProgress(send.sentBytes, send.totalBytes), style = body(11, color = Forge.muted))
+                ForgeTextButton(Messages.CANCEL, onClick = onDismiss, muted = true)
+            }
         }
     }
 }

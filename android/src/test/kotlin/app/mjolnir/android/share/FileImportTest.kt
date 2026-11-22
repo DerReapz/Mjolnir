@@ -46,6 +46,13 @@ class FileImportTest {
         importFile("photo.jpg", Limits.MAX_FILE_BYTES + 1, null, { error("must not read") }, outbox),
     )
 
+    @Test fun chatImportHasNoSizeCapTheRelayDecides() {
+        // Ruling CM-R7 / MJOLNIR_MAX_CHAT_FILE_MB: a chat file over 100 MB is copied; the relay's 413 decides.
+        val bytes = byteArrayOf(1, 2, 3)
+        val result = assertIs<ImportResult.Ok>(importFile("clip.mp4", Limits.MAX_FILE_BYTES + 1, "video/mp4", { bytes.inputStream() }, outbox, keepName = true))
+        assertEquals("clip.mp4", assertIs<TrayItem.LocalFile>(result.item).name)
+    }
+
     @Test fun unknownSizeOverLimitIsRejectedAndCleanedUp() {
         assertEquals(
             ImportResult.Rejected("photo.jpg is too big (max 100 MB)"),
