@@ -83,8 +83,12 @@ internal val MEDIA_MAX = 320.dp
 private const val MEDIA_MAX_PX = 320
 /** Inline bubbles fetch the full photo or GIF only up to this size; bigger ones stay on their thumbnail until opened. */
 private const val INLINE_FULL_MAX_BYTES = 16L shl 20
-/** Skia decodes unscaled, so formats ImageIO can't read (WebP) are decoded only up to this many pixels. */
-private const val SKIA_MAX_PIXELS = 40_000_000L
+/** Skia decodes unscaled, so formats ImageIO can't read (WebP) are decoded only up to this many pixels (real size, from the header)… */
+internal const val SKIA_MAX_PIXELS = 25_000_000L
+/** …and only from files up to this size, as they are read whole. The viewer reads a GIF whole too, up to this. */
+private const val READ_WHOLE_MAX_BYTES = 32L shl 20
+/** The viewer decodes at most this long a side, and never more than the screen. */
+private const val VIEWER_MAX_PX = 4096
 
 private val PLACEHOLDER = Color(0xFF2A2418)
 private val TAG_FILL = Color(0xFF262626)
@@ -93,16 +97,46 @@ private val mediaShape = RoundedCornerShape(12.dp)
 private fun body(size: Int, weight: FontWeight? = null, color: Color = Forge.text, family: FontFamily = ForgeFonts.inter400) =
     TextStyle(fontFamily = family, fontSize = size.sp, color = color, fontWeight = weight)
 
-/** The picture in [file] scaled to fit [maxPx] (ImageIO, subsampled), else via Skia for formats ImageIO lacks; null if neither reads it. */
-internal fun decodeImage(file: File, maxPx: Int, pixels: Long? = null): ImageBitmap? =
-    loadThumbnail(file.path, maxPx) ?: try {
-        if (pixels != null && pixels > SKIA_MAX_PIXELS) null
-        else org.jetbrains.skia.Image.makeFromEncoded(file.readBytes()).toComposeImageBitmap()
-    } catch (_: Exception) {
-        null
-    } catch (_: OutOfMemoryError) {
-        null
+/**
+ * The picture in [file] scaled to fit [maxPx]: ImageIO, subsampled (kept in the thumbnail cache when [cached]), else
+ * Skia for formats ImageIO lacks (WebP). Null if neither reads it or it is too big to decode safely.
+ */
+internal fun decodeImage(file: File, maxPx: Int, cached: Boolean = true): ImageBitmap? =
+    (if (cached) loadThumbnail(file.path, maxPx) else decodeUncached(file, maxPx)) ?: decodeWithSkia(file, maxPx)
+
+/** [file] via Skia, scaled down to fit [maxPx]; null over [SKIA_MAX_PIXELS] (its header's real size) or [READ_WHOLE_MAX_BYTES]. */
+internal fun decodeWithSkia(file: File, maxPx: Int): ImageBitmap? = try {
+    if (file.length() > READ_WHOLE_MAX_BYTES) null else {
+        val bytes = file.readBytes()
+        val (w, h) = org.jetbrains.skia.Codec.makeFromData(org.jetbrains.skia.Data.makeFromBytes(bytes)).use { it.width to it.height } // the header only
+        if (w <= 0 || h <= 0 || w.toLong() * h > SKIA_MAX_PIXELS) null
+        else org.jetbrains.skia.Image.makeFromEncoded(bytes).use { image ->
+            val scale = minOf(1f, maxPx.toFloat() / maxOf(w, h))
+            if (scale >= 1f) image.toComposeImageBitmap()
+            else {
+                val tw = (w * scale).toInt().coerceAtLeast(1); val th = (h * scale).toInt().coerceAtLeast(1)
+                org.jetbrains.skia.Surface.makeRasterN32Premul(tw, th).use { surface ->
+                    surface.canvas.drawImageRect(image, org.jetbrains.skia.Rect.makeWH(tw.toFloat(), th.toFloat()))
+                    surface.makeImageSnapshot().toComposeImageBitmap()
+                }
+            }
+        }
     }
+} catch (_: Exception) {
+    null
+} catch (_: OutOfMemoryError) {
+    null
+}
+
+/** [file]'s bytes, or null when it is over [max] bytes (checked before reading). */
+private fun readUpTo(file: File, max: Long): ByteArray? = if (file.length() > max) null else file.readBytes()
+
+/** The viewer's decode size: the screen's long side, at most [VIEWER_MAX_PX]. */
+private fun viewerMaxPx(): Int = try {
+    java.awt.Toolkit.getDefaultToolkit().screenSize.let { maxOf(it.width, it.height) }.coerceIn(MEDIA_MAX_PX, VIEWER_MAX_PX)
+} catch (_: Exception) {
+    2560 // headless
+}
 
 /** Runs [block], turning a failure (not a cancellation) into null: a bubble that can't fetch its media keeps its placeholder. */
 private suspend fun <T> orNull(block: suspend () -> T): T? = try {
@@ -110,6 +144,8 @@ private suspend fun <T> orNull(block: suspend () -> T): T? = try {
 } catch (e: CancellationException) {
     throw e
 } catch (_: Exception) {
+    null
+} catch (_: OutOfMemoryError) {
     null
 }
 
@@ -162,7 +198,7 @@ private fun ImageBubble(att: Attachment, media: ChatMediaSource, onOpen: () -> U
     LaunchedEffect(att.fileId) {
         thumb = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
         if (att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
-            full = orNull { media.file(att).let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX * 2, att.pixels()) } } }
+            full = orNull { media.file(att).let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX * 2) } } }
         }
     }
     val shown = full ?: thumb
@@ -180,8 +216,6 @@ private fun ImageBubble(att: Attachment, media: ChatMediaSource, onOpen: () -> U
     }
 }
 
-private fun Attachment.pixels(): Long? = if (width != null && height != null) width!!.toLong() * height!! else null
-
 /** A GIF: its first frame (the thumbnail) at once, then animating once fetched; the `GIF` badge in its corner. */
 @Composable
 private fun GifBubble(att: Attachment, media: ChatMediaSource, playing: Boolean, onOpen: () -> Unit) {
@@ -190,7 +224,9 @@ private fun GifBubble(att: Attachment, media: ChatMediaSource, playing: Boolean,
     var gif by remember(att.fileId) { mutableStateOf<GifFrames?>(null) }
     LaunchedEffect(att.fileId) {
         still = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
-        if (att.sizeBytes <= INLINE_FULL_MAX_BYTES) gif = orNull { media.file(att).let { withContext(Dispatchers.IO) { GifFrames.decode(it.readBytes()) } } }
+        if (att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
+            gif = orNull { media.file(att).let { f -> withContext(Dispatchers.IO) { readUpTo(f, INLINE_FULL_MAX_BYTES)?.let { GifFrames.decode(it) } } } }
+        }
     }
     val (w, h) = inlineSize(att.width ?: gif?.width ?: still?.width, att.height ?: gif?.height ?: still?.height)
     Box(
@@ -198,8 +234,8 @@ private fun GifBubble(att: Attachment, media: ChatMediaSource, playing: Boolean,
             .semantics { contentDescription = "GIF ${att.name}" }.clickable(role = Role.Button, onClick = onOpen),
     ) {
         val frames = gif
-        if (frames != null) AnimatedGif(frames, null, Modifier.fillMaxSize(), playing)
-        else still?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+        if (frames != null) AnimatedGif(frames, null, Modifier.fillMaxSize().testTag("gif-animated"), playing)
+        else still?.let { Image(it, null, Modifier.fillMaxSize().testTag("gif-still"), contentScale = ContentScale.Crop) }
         GifBadge(Modifier.align(Alignment.BottomStart).padding(6.dp))
     }
 }
@@ -215,10 +251,10 @@ internal fun fileTag(kind: AttachmentKind, name: String): String =
     if (kind == AttachmentKind.VIDEO) "VIDEO"
     else name.substringAfterLast('.', "").takeIf { it.isNotEmpty() && it.length <= 4 && it != name }?.uppercase() ?: "FILE"
 
-/** A file (or a video, ruling CM-R3): its type tag, `File`/`Video` and `{name} · {size}`. Clicking downloads it. */
+/** A file (or a video, ruling CM-R3): its type tag, its name, and `File · 220 KB` / `Video · 18 MB` (ruling CM-R4). Clicking downloads it. */
 @Composable
 private fun FileBubble(kind: AttachmentKind, name: String, bytes: Long, mine: Boolean, onDownload: (() -> Unit)?) =
-    FileLikeBubble(fileTag(kind, name), Messages.mediaLabel(kind), Messages.attachmentDetail(name, bytes), name, mine, onDownload)
+    FileLikeBubble(fileTag(kind, name), name, Messages.fileBubbleDetail(kind, bytes), name, mine, onDownload)
 
 /** A sent folder as one bubble: its name and `Folder · {n} files · {size}`. Clicking downloads all of it. */
 @Composable
@@ -322,8 +358,9 @@ internal fun ImageViewer(att: Attachment, media: ChatMediaSource, playing: Boole
         still = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
         val file = orNull { media.file(att) }
         if (file == null) { failed = true; return@LaunchedEffect }
-        if (att.kind == AttachmentKind.GIF) gif = withContext(Dispatchers.IO) { GifFrames.decode(file.readBytes()) }
-        if (gif == null) still = withContext(Dispatchers.IO) { decodeImage(file, 4096, att.pixels()) } ?: still
+        if (att.kind == AttachmentKind.GIF) gif = orNull { withContext(Dispatchers.IO) { readUpTo(file, READ_WHOLE_MAX_BYTES)?.let { GifFrames.decode(it) } } }
+        // Decoded at screen size and not cached: one big picture, dropped when the viewer closes.
+        if (gif == null) still = orNull { withContext(Dispatchers.IO) { decodeImage(file, viewerMaxPx(), cached = false) } } ?: still
     }
     Box(
         Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.85f)).semantics { contentDescription = "Image viewer" }
@@ -334,7 +371,7 @@ internal fun ImageViewer(att: Attachment, media: ChatMediaSource, playing: Boole
                 val frames = gif
                 when {
                     frames != null -> AnimatedGif(frames, att.name, Modifier.fillMaxSize(), playing)
-                    still != null -> Image(still!!, att.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                    still != null -> Image(still!!, att.name, Modifier.fillMaxSize().testTag("viewer-image"), contentScale = ContentScale.Fit)
                     else -> Text(if (failed) "Couldn't load ${att.name}" else "Loading…", style = body(13, color = Forge.muted))
                 }
             }

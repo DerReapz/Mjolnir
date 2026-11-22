@@ -50,6 +50,11 @@ internal fun gifOf(colors: List<Color>, delaysCs: List<Int>, w: Int = 8, h: Int 
     return out.toByteArray()
 }
 
+/** A valid little GIF whose logical screen (the canvas Skia allocates per frame) claims 65535 × 65535. */
+internal fun hugeCanvasGif(): ByteArray = gifOf(listOf(Color.RED, Color.GREEN), listOf(10, 10)).also {
+    for (i in 6..9) it[i] = 0xFF.toByte() // logical screen width and height, little-endian
+}
+
 class AnimatedGifTest {
     @Test fun framesAdvanceByDuration() {
         // 50 ms, 200 ms, and 0 ms, which plays at the browsers' 100 ms
@@ -76,6 +81,23 @@ class AnimatedGifTest {
         val gif = assertNotNull(GifFrames.decode(gifOf(listOf(Color.RED, Color.GREEN), listOf(10, 10), loops = null)))
         assertEquals(1, gif.timeline.frameAt(10_000))
         assertNull(gif.timeline.untilNext(10_000)) // nothing more to show: the loop can stop
+    }
+
+    @Test fun aGifOverThePixelCapIsRefused() {
+        assertNull(GifFrames.decode(hugeCanvasGif())) // 65535 × 65535: refused from the header, nothing allocated
+        val small = gifOf(listOf(Color.RED, Color.GREEN), listOf(10, 10)) // 8 × 6
+        assertNull(GifFrames.decode(small, maxPixels = 47))
+        assertNotNull(GifFrames.decode(small, maxPixels = 48))
+    }
+
+    @Test fun framesBuildOnThePreviousOne() {
+        // Frames decoded in order reuse the canvas; asked out of order they still come out right.
+        val gif = assertNotNull(GifFrames.decode(gifOf(listOf(Color.RED, Color.GREEN, Color.BLUE), listOf(5, 5, 5))))
+        fun centre(i: Int) = gif.frame(i).toPixelMap().let { it[4, 3] }
+        assertEquals(androidx.compose.ui.graphics.Color.Blue, centre(2))
+        assertEquals(androidx.compose.ui.graphics.Color.Red, centre(0))
+        assertEquals(androidx.compose.ui.graphics.Color.Green, centre(1))
+        assertEquals(androidx.compose.ui.graphics.Color.Blue, centre(2))
     }
 
     @Test fun notAGifIsNull() {

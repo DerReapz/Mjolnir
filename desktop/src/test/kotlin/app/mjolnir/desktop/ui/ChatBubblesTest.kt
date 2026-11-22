@@ -26,6 +26,7 @@ import javax.imageio.ImageIO
 import kotlinx.coroutines.CompletableDeferred
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ChatBubblesTest {
@@ -95,10 +96,12 @@ class ChatBubblesTest {
         val pdf = att("f1", AttachmentKind.FILE, "itinerary.pdf", 225_280)
         val video = att("v1", AttachmentKind.VIDEO, "cabin.mp4", 3L shl 20)
         show(ui(listOf(msg("m1", fred, null, listOf(pdf, video)))), ChatsActions(onDownload = { _, a -> downloads += a.map { it.fileId } }))
-        onNodeWithText("itinerary.pdf · 220 KB").assertExists()
+        // Ruling CM-R4: the name, then "{label} · {size}".
+        onNodeWithText("itinerary.pdf").assertExists()
+        onNodeWithText("File · 220 KB").assertExists()
         onNodeWithText("PDF").assertExists() // the type tag
-        onNodeWithText("Video").assertExists() // ruling CM-R3: a video is a file labelled Video until the video plan
-        onNodeWithText("cabin.mp4 · 3 MB").assertExists()
+        onNodeWithText("cabin.mp4").assertExists()
+        onNodeWithText("Video · 3 MB").assertExists() // ruling CM-R3: a video is a file labelled Video until the video plan
         onNodeWithContentDescription("Download cabin.mp4").performClick()
         assertEquals(listOf(listOf("v1")), downloads)
     }
@@ -151,16 +154,42 @@ class ChatBubblesTest {
         val other = PendingSend("p3", "c2", "elsewhere", emptyList(), 0, 0)
         show(ui(pending = listOf(sending, failed, other)), ChatsActions(onDismissSend = { dismissed += it }))
         onNodeWithText("look").assertExists()
-        onNodeWithText("notes.txt · 400 B").assertExists()
+        onNodeWithText("notes.txt").assertExists()
+        onNodeWithText("File · 400 B").assertExists()
         onNodeWithText("400 B of 1000 B · 40%").assertExists()
         onNode(hasProgressBarRangeInfo(ProgressBarRangeInfo(0.4f, 0f..1f))).assertExists()
         onNodeWithContentDescription("Sending").assertExists() // the greyed group
         onNodeWithText("elsewhere").assertDoesNotExist() // another chat's send
         onNodeWithText("Not sent: a file is too big for the relay.").assertExists()
-        onNodeWithText("big.zip · 9 KB").assertExists()
+        onNodeWithText("big.zip").assertExists()
+        onNodeWithText("File · 9 KB").assertExists()
         onNodeWithText("Dismiss").performClick()
         assertEquals(listOf("p2"), dismissed)
         assertTrue(onAllNodes(hasTestTagOf("pending-p1")).fetchSemanticsNodes().isNotEmpty())
+    }
+
+    @Test fun oversizedGifKeepsItsStill() = runComposeUiTest {
+        // A valid GIF whose header claims a 65535 × 65535 canvas: never animated (no multi-GB frame), the still stays.
+        val huge = File(dir, "huge.gif").apply { writeBytes(hugeCanvasGif()) }
+        val media = object : ChatMediaSource {
+            @Volatile var fetched = false
+            override suspend fun thumbnail(att: Attachment): File? = png("still.png", 18, 12, Color.ORANGE)
+            override suspend fun file(att: Attachment): File = huge.also { fetched = true }
+        }
+        show(ui(listOf(msg("m1", fred, null, listOf(att("g1", AttachmentKind.GIF, "huge.gif", huge.length(), thumb = "t1", w = 180, h = 120)))), media = media))
+        waitUntil(timeoutMillis = 5_000) { media.fetched && onAllNodes(hasTestTagOf("gif-still"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        Thread.sleep(300); waitForIdle() // time for the decode it refuses
+        onNodeWithTag("gif-animated", useUnmergedTree = true).assertDoesNotExist()
+        onNodeWithTag("gif-still", useUnmergedTree = true).assertExists()
+    }
+
+    @Test fun viewerDecodeIsNotCached() = runComposeUiTest {
+        val full = png("viewer-full.png", 900, 600, Color.MAGENTA)
+        val media = FakeMedia(emptyMap(), CompletableDeferred(full))
+        setContent { MjolnirTheme { ImageViewer(att("f9", AttachmentKind.IMAGE, "big.png", full.length(), w = 900, h = 600), media, true, {}, {}) } }
+        waitUntil(timeoutMillis = 5_000) { onAllNodes(hasTestTagOf("viewer-image"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        assertFalse(thumbnailCached(full.path)) // one big picture is not kept in the shared thumbnail cache
+        assertEquals(setOf("f9"), synchronized(media.pinned) { media.pinned.toSet() })
     }
 
     private fun hasTestTagOf(tag: String) = SemanticsMatcher.expectValue(androidx.compose.ui.semantics.SemanticsProperties.TestTag, tag)

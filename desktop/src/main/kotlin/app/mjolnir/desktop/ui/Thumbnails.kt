@@ -23,6 +23,7 @@ internal class ThumbnailCache(private val capacity: Int = 64) {
     }
 
     fun has(key: String): Boolean = synchronized(map) { map.containsKey(key) }
+    fun keys(): Set<String> = synchronized(map) { map.keys.toSet() }
     fun get(key: String): ImageBitmap? = synchronized(map) { map[key] }
     fun put(key: String, value: ImageBitmap?) { synchronized(map) { map[key] = value } }
 }
@@ -38,6 +39,19 @@ internal fun loadThumbnail(path: String, maxPx: Int): ImageBitmap? {
     return bitmap
 }
 
+/** Whether [loadThumbnail] holds a picture of [path] at any size (tests). */
+internal fun thumbnailCached(path: String): Boolean = cache.keys().any { it.startsWith("$path@") }
+
+/**
+ * Like [loadThumbnail], but not kept in the thumbnail cache: for one big picture shown once (the chat image viewer),
+ * which would otherwise hold tens of megabytes per entry. Null when it isn't an image ImageIO reads, or too big to decode.
+ */
+internal fun decodeUncached(file: File, maxPx: Int): ImageBitmap? =
+    try { decode(file, maxPx) } catch (_: Exception) { null } catch (_: OutOfMemoryError) { null }
+
+/** The ImageIO subsampling step for a [w]×[h] picture shown within [maxPx]: decoded at maxPx to 2 × maxPx on its long side. */
+internal fun subsampleStep(w: Int, h: Int, maxPx: Int): Int = maxOf(1, maxOf(w, h) / maxPx)
+
 private fun decode(file: File, maxPx: Int): ImageBitmap? = ImageIO.createImageInputStream(file)?.use { input ->
     val readers = ImageIO.getImageReaders(input)
     if (!readers.hasNext()) return@use null
@@ -46,7 +60,7 @@ private fun decode(file: File, maxPx: Int): ImageBitmap? = ImageIO.createImageIn
         reader.input = input
         val w = reader.getWidth(0); val h = reader.getHeight(0)
         val param: ImageReadParam = reader.defaultReadParam
-        val step = maxOf(1, minOf(w, h) / (maxPx * 2)) // cheap decode-time subsampling for big photos
+        val step = subsampleStep(w, h, maxPx) // decode-time subsampling: a 48 MP photo never decodes at full size
         param.setSourceSubsampling(step, step, 0, 0)
         val src = reader.read(0, param)
         val scale = maxPx.toDouble() / maxOf(src.width, src.height)

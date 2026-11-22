@@ -99,6 +99,8 @@ object Messages {
     fun attachmentDetail(name: String, bytes: Long) = "$name · ${size(bytes)}"
     /** Where a PC download went: "Saved to {the save folder}". */
     fun savedTo(folder: String) = "Saved to $folder"
+    /** A file bubble's second line, under its name (ruling CM-R4): "File · 220 KB", "Video · 18 MB". */
+    fun fileBubbleDetail(kind: AttachmentKind, bytes: Long) = "${mediaLabel(kind)} · ${size(bytes)}"
     /** A folder bubble's detail line: "Folder · 12 files · 3 MB". */
     fun folderDetail(files: Int, bytes: Long) = "Folder · ${files(files)} · ${size(bytes)}"
 
