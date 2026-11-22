@@ -866,15 +866,15 @@ class Store(jdbcUrl: String) {
             return free
         }
         val stored = attachments.map { a ->
-            // A media's shape and length come from the sender: absent, or within sane bounds (ruling CV-P4).
-            if (a.durationMs?.let { it !in 1..Limits.MAX_MEDIA_DURATION_MS } == true ||
-                listOf(a.width, a.height).any { it != null && it !in 1..Limits.MAX_MEDIA_SIDE_PX }
-            ) throw AttachmentsRejected(false)
             val file = claim(a.fileId)
             a.thumbFileId?.let { claim(it) }
+            // A media's shape and length come from the sender: out-of-range values are dropped, never the message (ruling CV-R1).
+            val sized = a.width in 1..Limits.MAX_MEDIA_SIDE_PX && a.height in 1..Limits.MAX_MEDIA_SIDE_PX
             a.copy(
                 name = safeFileName(a.name), sizeBytes = file.sizeBytes, mime = file.mimeType,
                 relativePath = a.relativePath?.let(::safeRelativePath),
+                width = if (sized) a.width else null, height = if (sized) a.height else null,
+                durationMs = a.durationMs?.takeIf { it in 1..Limits.MAX_MEDIA_DURATION_MS },
             )
         }
         for (id in used) update("UPDATE files SET chat_message_id=? WHERE id=?", messageId, id)
