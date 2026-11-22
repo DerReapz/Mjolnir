@@ -66,7 +66,7 @@ Needs two PCs (A, B) and a phone (C) in one space, with A as the space admin (so
 - **Send:** each device sends text and a link; the link is clickable. Send an emoji-only message and a message near 4,000 characters; one over the limit shows `That message is too long (4,000 characters at most).`
 - **Mentions:** type `@`, pick a name; the receiver gets `{name} mentioned you in {chat}: …` and an `@` marker in the list. Type a name without picking: nobody is notified.
 - **Seen and read:** with C's screen off, B's latest message shows `Seen by C`; open the chat on C and it becomes `Read by C`, then `Read by everyone`. *Info* shows per-person times.
-- **Edit and delete:** edit a message (`(edited)` appears everywhere); delete one (`Message deleted`). PC: ⋯ menu; phone: long-press (*Share…*, *Edit*, *Delete*, *Info*).
+- **Edit and delete:** edit a message (`(edited)` appears everywhere); delete one (`Message deleted`). PC: ⋯ menu (*Download* too on a message with attachments); phone: long-press (*Download* on a message with attachments, *Share…*, *Edit*, *Delete*, *Info*).
 - **Admin view and moderation:** the space admin who is not a member sees the chat, can read it and sees `You see this chat as the space admin. Join to write in it.`; delete a message and remove a member as admin (`Removed by the space admin`), rename the chat and delete a chat; the admin cannot edit another person's message. Join directly (no approval) to post.
 - **Owner hand-over:** the owner cannot *Leave chat* (`Make someone else the owner to leave.`); *Make owner* on another member, then leave. The owner has no way to remove another member (only the admin does); the owner can *Delete chat* at any time.
 - **Removed from the space:** remove a member from the space; the chat disappears for them.
@@ -82,6 +82,8 @@ Needs two PCs (A, B) and a phone (C) in one chat, on the updated relay. Videos a
 - **Share…:** on C long-press → *Share…* opens the system share sheet and the target app receives the file. Share a photo from another app into Mjolnir and choose *Send to a chat*.
 - **Attach:** on C, *Attach* opens the system picker and several files can be chosen; on A, *Attach* accepts files and folders.
 - **Drag and drop (PC):** drop files onto an open chat; they send to that chat, not to the Send tab. Copy files in the file manager, press Ctrl+V on the Chats tab with a chat open; they send to that chat.
+- **Ctrl+V with a dialog open (PC):** with files on the clipboard, open *New chat…*, *Invite…*, chat settings, a message's *Info* or a photo full-screen, and press Ctrl+V; nothing is sent to the chat.
+- **Cancel a send:** on A and on C start sending a large file and choose *Cancel* under the sending bubble; the bubble goes away and the message never arrives on the others.
 - **More than 20 files:** send a folder with over 20 files; it arrives as several messages (any text on the first).
 - **Deleted message:** delete a message with a file on A; its bubble shows `Message deleted` everywhere and the file can no longer be downloaded or opened. Deleting a chat does the same for all its files.
 - **Offline catch-up:** turn C's network off, send a photo and a file from A; restore the network; C shows both without reopening the chat.
