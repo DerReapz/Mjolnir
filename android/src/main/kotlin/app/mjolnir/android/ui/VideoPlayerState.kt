@@ -188,12 +188,26 @@ class VideoPlayerState(private val newPlayer: () -> VideoPlayer) {
         }
     }
 
-    /** [key]'s bubble left the screen: when it holds the player, the player is freed (a deleted video's notice stays). */
+    /**
+     * [key]'s bubble left the composition: when it holds the player, the player is freed (a deleted video's notice stays).
+     * While the full screen shows it, the bubble going (the list scrolled under the full screen) changes nothing: closing
+     * the full screen hands it back, and the chat screen pauses it if its bubble isn't shown ([visibleMessages]).
+     */
     fun release(key: VideoKey) {
         val ui = _now.value ?: return
-        if (ui.key != key) return
+        if (ui.key != key || ui.fullScreen) return
         freePlayer()
         if (ui.status != VideoStatus.DELETED) _now.value = null
+    }
+
+    /**
+     * The messages whose rows the chat list shows now: a video playing inline whose bubble isn't among them (scrolled
+     * away, or not composed again after a rotation or after the full screen closed) pauses, so nothing plays unseen.
+     */
+    fun visibleMessages(messageIds: Set<String>) {
+        val ui = _now.value ?: return
+        if (ui.fullScreen || ui.key.messageId in messageIds) return
+        pause()
     }
 
     /** Frees the player whatever it holds (the chat closed). */

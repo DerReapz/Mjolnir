@@ -196,6 +196,35 @@ class VideoPlayerStateTest {
         assertFalse(state.now.value!!.fullScreen)
     }
 
+    @Test fun releaseWhileFullScreenKeepsThePlayer() {
+        state.play(a)
+        val p = players.single()
+        p.emit(VideoPhase.READY)
+        state.openFullScreen(a)
+        state.release(a) // new messages scrolled the list under the full screen and its bubble went
+        assertFalse(p.released); assertSame(p, state.player)
+        assertEquals(true, state.now.value?.fullScreen); assertTrue(p.playing)
+        state.visibleMessages(emptySet()) // while full screen, the list doesn't matter
+        assertTrue(p.playing)
+        state.closeFullScreen()
+        assertFalse(p.released) // handed back, not freed: the chat screen decides
+    }
+
+    @Test fun closingFullScreenWithTheBubbleNotShownPauses() {
+        state.play(a)
+        val p = players.single()
+        p.emit(VideoPhase.READY)
+        state.openFullScreen(a)
+        state.closeFullScreen() // e.g. after a rotation the landscape list shows other rows; the bubble isn't composed
+        state.visibleMessages(setOf("m1", "m2")) // its row is on screen: it plays on
+        assertTrue(p.playing)
+        state.visibleMessages(setOf("m7", "m8"))
+        assertFalse(p.playing); assertEquals(VideoStatus.PAUSED, state.now.value?.status)
+        assertFalse(p.released) // paused, position kept; leaving the chat frees it
+        state.releaseAll()
+        assertTrue(p.released); assertNull(state.now.value)
+    }
+
     @Test fun endedPlaysAgainFromTheStart() {
         state.play(a)
         val p = players.single()

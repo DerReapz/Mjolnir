@@ -89,7 +89,12 @@ import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
+import androidx.activity.compose.LocalActivity
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.StateFlow
 
 internal val MineFill = Color(0xFF3B2A0E)
@@ -193,6 +198,21 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
             val layout = listState.layoutInfo
             val nearBottom = layout.totalItemsCount == 0 || (layout.visibleItemsInfo.lastOrNull()?.index ?: 0) >= layout.totalItemsCount - 2
             if (nearBottom || ownLast) listState.scrollToItem(messages.size + pending.size - 1)
+        }
+        if (videos != null) {
+            // The screen, not the bubbles, owns the video's lifetime: a video whose bubble isn't among the rows shown pauses
+            // (re-checked whenever the video changes, e.g. the full screen closed), whether or not its bubble is composed.
+            LaunchedEffect(listState, videos) {
+                combine(
+                    snapshotFlow {
+                        listState.layoutInfo.takeIf { it.totalItemsCount > 0 }?.visibleItemsInfo?.mapNotNullTo(HashSet()) { it.key as? String }
+                    }.filterNotNull(),
+                    videos.now,
+                ) { shown, _ -> shown }.collect(videos::visibleMessages)
+            }
+            // Leaving the chat (back, another chat, another tab) frees the player; a rotation keeps it.
+            val activity = LocalActivity.current
+            DisposableEffect(current.id, videos) { onDispose { if (activity?.isChangingConfigurations != true) videos.releaseAll() } }
         }
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(), state = listState,
