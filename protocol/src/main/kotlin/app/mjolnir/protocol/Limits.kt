@@ -8,6 +8,10 @@ object Limits {
     const val MAX_SPACE_NAME_LENGTH = 40
     const val MAX_CHAT_TEXT_LENGTH = 4000
     const val MAX_ATTACHMENTS_PER_MESSAGE = 20
+    /** A chat attachment's durationMs, when given, is 1..this (24 h). */
+    const val MAX_MEDIA_DURATION_MS = 86_400_000L
+    /** A chat attachment's width and height, when given, are 1..this. */
+    const val MAX_MEDIA_SIDE_PX = 16_384
     const val CHAT_INVITE_TTL_MS = 7L * 24 * 60 * 60 * 1000
     const val ADMIN_SILENT_TAKEOVER_MS = 2_592_000_000L
     const val PAIRING_TTL_MS = 300_000L

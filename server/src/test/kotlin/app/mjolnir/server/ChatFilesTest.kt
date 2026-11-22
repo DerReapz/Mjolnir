@@ -233,6 +233,29 @@ class ChatFilesTest {
         assertEquals(HttpStatusCode.BadRequest, postWith(k.owner, k.chat.id, "x", *many.toTypedArray()).status)
     }
 
+    @Test fun videoMetadataValidated() = relayTest {
+        val k = cast()
+        suspend fun video(name: String): Attachment {
+            val f = upload(k.owner, name, ByteArray(50), "video/mp4")
+            return Attachment(f.id, AttachmentKind.VIDEO, name, 50, "video/mp4")
+        }
+        for (bad in listOf<(Attachment) -> Attachment>(
+            { it.copy(durationMs = 0) }, { it.copy(durationMs = -5) }, { it.copy(durationMs = Limits.MAX_MEDIA_DURATION_MS + 1) },
+            { it.copy(width = 0, height = 100) }, { it.copy(width = 100, height = -1) }, { it.copy(width = Limits.MAX_MEDIA_SIDE_PX + 1, height = 100) },
+        )) {
+            val r = postWith(k.owner, k.chat.id, null, bad(video("bad.mp4")))
+            assertEquals(HttpStatusCode.BadRequest, r.status)
+            assertEquals("invalid_files", r.body<ErrorResponse>().error)
+        }
+        assertTrue(sync(k.owner, k.chat.id).messages.none { it.attachments.isNotEmpty() })
+        // in bounds, or absent (a video whose capture failed), it posts as sent
+        val ok = postOk(k.owner, k.chat.id, null, video("a.mp4").copy(durationMs = 42_000, width = 1080, height = 1920)).attachments.single()
+        assertEquals(Triple(42_000L, 1080, 1920), Triple(ok.durationMs, ok.width, ok.height))
+        val plain = postOk(k.owner, k.chat.id, null, video("b.mp4")).attachments.single()
+        assertEquals(null, plain.durationMs)
+        assertEquals(Limits.MAX_MEDIA_DURATION_MS, postOk(k.owner, k.chat.id, null, video("c.mp4").copy(durationMs = Limits.MAX_MEDIA_DURATION_MS)).attachments.single().durationMs)
+    }
+
     @Test fun twentyAttachmentsAccepted() = relayTest {
         val k = cast()
         val atts = (1..Limits.MAX_ATTACHMENTS_PER_MESSAGE).map {

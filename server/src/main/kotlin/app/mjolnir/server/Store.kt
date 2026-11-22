@@ -866,6 +866,10 @@ class Store(jdbcUrl: String) {
             return free
         }
         val stored = attachments.map { a ->
+            // A media's shape and length come from the sender: absent, or within sane bounds (ruling CV-P4).
+            if (a.durationMs?.let { it !in 1..Limits.MAX_MEDIA_DURATION_MS } == true ||
+                listOf(a.width, a.height).any { it != null && it !in 1..Limits.MAX_MEDIA_SIDE_PX }
+            ) throw AttachmentsRejected(false)
             val file = claim(a.fileId)
             a.thumbFileId?.let { claim(it) }
             a.copy(
