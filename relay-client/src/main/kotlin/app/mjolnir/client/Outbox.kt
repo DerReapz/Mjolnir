@@ -157,10 +157,13 @@ data class OutgoingAttachment(
     val thumb: LocalUpload? = null,
     /** Path inside a sent folder, top folder first; null for a single file. */
     val relativePath: String? = null,
+    /** The relay refused the file as too large: the rest of the send goes on without it (ruling CM-R7). */
+    val dropped: Boolean = false,
 ) {
     val name: String get() = upload.relativePath.substringAfterLast('/')
-    internal val totalBytes: Long get() = upload.sizeBytes + (thumb?.sizeBytes ?: 0)
-    internal val uploadedBytes: Long get() = (if (upload.ref != null) upload.sizeBytes else 0) + (if (thumb?.ref != null) thumb.sizeBytes else 0)
+    internal val totalBytes: Long get() = if (dropped) 0 else upload.sizeBytes + (thumb?.sizeBytes ?: 0)
+    internal val uploadedBytes: Long get() =
+        if (dropped) 0 else (if (upload.ref != null) upload.sizeBytes else 0) + (if (thumb?.ref != null) thumb.sizeBytes else 0)
 
     internal fun toAttachment() = Attachment(
         fileId = upload.ref!!.id, kind = kind, name = name, sizeBytes = upload.sizeBytes, mime = upload.mimeType,
@@ -187,13 +190,19 @@ data class OutgoingMessage(
      * (thumbnails included) with its unposted attachments until the user dismisses it ([ChatOutbox.remove]); it is never retried.
      */
     val failure: String? = null,
+    /** Server errors in a row with no progress in between; at [ChatOutbox.MAX_SERVER_ERRORS] the send fails. */
+    val serverErrors: Int = 0,
 )
 
 sealed interface ChatOutboxResult {
     /** Everything is posted. [unconfirmed]: a post's response was lost, so the chat needs a sync to show it. */
     data class Done(val unconfirmed: Boolean) : ChatOutboxResult
-    /** NETWORK, SERVER, RATE_LIMITED: state kept for the next try. Also returned for an id no longer queued. */
+    /** NETWORK, or SERVER fewer than [ChatOutbox.MAX_SERVER_ERRORS] times in a row: state kept for the next try. */
     data object Retry : ChatOutboxResult
+    /** RATE_LIMITED: state kept; try again in a minute. */
+    data object RateLimited : ChatOutboxResult
+    /** The send was cancelled (removed from the outbox) before or while it went: nothing more of it is uploaded or posted. */
+    data object Cancelled : ChatOutboxResult
     /** Anything else, or a send that had already failed: it stays queued with [message] as its [OutgoingMessage.failure]. */
     data class Failed(val message: String) : ChatOutboxResult
 }
@@ -202,6 +211,8 @@ sealed interface ChatOutboxResult {
  * Persistent queue of chat sends with attachments in [dir], surviving restarts. Each message's files are uploaded (resuming
  * interrupted uploads) right before it is posted, and it is posted only once all of them are on the relay. The relay drops
  * unused uploads after an hour: a post refused with invalid_files uploads the expired files once more and posts again.
+ * A file the relay refuses as too large is left out and the rest goes on. Removing a send ([remove]) cancels it: its
+ * processing stops at the next chunk and never posts.
  */
 class ChatOutbox(
     private val dir: File,
@@ -225,7 +236,7 @@ class ChatOutbox(
         store.update { list -> list.filter { it.id != item.id } + item }
     }
 
-    /** Drops [id] and its thumbnails (a posted send, or a failed one the user dismissed). */
+    /** Drops [id] and its thumbnails: a posted send, a failed one the user dismissed, or one the user cancelled. */
     fun remove(id: String) {
         var removed: OutgoingMessage? = null
         store.update { list -> list.filter { (it.id != id).also { keep -> if (!keep) removed = it } } }
@@ -247,61 +258,80 @@ class ChatOutbox(
         api: RelayApi,
         onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
         onPosted: (ChatMessage) -> Unit = {},
+        onDropped: (name: String) -> Unit = {},
     ): ChatOutboxResult = lock.withLock {
-        var item = get(id) ?: return ChatOutboxResult.Retry
+        var item = get(id) ?: return ChatOutboxResult.Cancelled
         item.failure?.let { return ChatOutboxResult.Failed(it) }
-        val total = item.attachments.sumOf { it.totalBytes }
+        fun total() = item.attachments.sumOf { it.totalBytes }
         var unconfirmed = false
-        while (item.posted < item.attachments.size) {
-            val range = item.posted until minOf(item.posted + Limits.MAX_ATTACHMENTS_PER_MESSAGE, item.attachments.size)
-            var uploadedAgain = false
-            while (true) {
-                for (i in range) {
-                    item = try {
-                        upload(id, item, i, api) { done -> onProgress(done, total) }
-                    } catch (e: RelayException) {
-                        return failure(item, e)
-                    }
-                }
-                if (get(id) == null) return ChatOutboxResult.Retry // cleared meanwhile: never post
-                val first = item.posted == 0
-                try {
-                    val message = api.postMessage(
-                        item.chatId, if (first) item.text else null, if (first) item.mentions else emptyList(),
-                        range.map { item.attachments[it].toAttachment() },
-                    )
-                    onPosted(message)
-                } catch (e: RelayException) {
-                    if (e.kind != RelayErrorKind.INVALID || e.message != "invalid_files" || uploadedAgain) return failure(item, e)
-                    uploadedAgain = true
-                    var expired = false
-                    try {
-                        for (i in range) {
-                            val a = item.attachments[i]
-                            val upload = if (gone(api, a.upload)) a.upload.restarted() else a.upload
-                            val thumb = a.thumb?.let { if (gone(api, it)) it.restarted() else it }
-                            if (upload == a.upload && thumb == a.thumb) continue
-                            expired = true
-                            item = persist(id) { m -> m.withAttachment(i) { it.copy(upload = upload, thumb = thumb) } } ?: return ChatOutboxResult.Retry
+        try {
+            while (item.posted < item.attachments.size) {
+                val range = item.posted until minOf(item.posted + Limits.MAX_ATTACHMENTS_PER_MESSAGE, item.attachments.size)
+                var uploadedAgain = false
+                while (true) {
+                    for (i in range) {
+                        if (item.attachments[i].dropped) continue
+                        if (get(id) == null) return ChatOutboxResult.Cancelled
+                        item = try {
+                            upload(id, item, i, api, onDropped) { done -> onProgress(done, total()) }
+                        } catch (e: RelayException) {
+                            return failure(item, e)
                         }
-                    } catch (e2: RelayException) {
-                        return failure(item, e2)
                     }
-                    if (expired) continue
-                    // Every file is still there, so they are attached: an earlier post went through and its response was lost.
-                    unconfirmed = true
+                    if (get(id) == null) return ChatOutboxResult.Cancelled // cancelled or cleared meanwhile: never post
+                    val first = item.posted == 0
+                    val text = if (first) item.text else null
+                    val attachments = range.filterNot { item.attachments[it].dropped }.map { item.attachments[it].toAttachment() }
+                    if (text == null && attachments.isEmpty()) { // every file of this message was too large: nothing to post
+                        item = persist(id) { it.copy(posted = range.last + 1) } ?: return ChatOutboxResult.Cancelled
+                        break
+                    }
+                    try {
+                        val message = api.postMessage(item.chatId, text, if (first) item.mentions else emptyList(), attachments)
+                        onPosted(message)
+                    } catch (e: RelayException) {
+                        if (e.kind != RelayErrorKind.INVALID || e.message != "invalid_files" || uploadedAgain) return failure(item, e)
+                        uploadedAgain = true
+                        var expired = false
+                        try {
+                            for (i in range) {
+                                val a = item.attachments[i]
+                                if (a.dropped) continue
+                                val upload = if (gone(api, a.upload)) a.upload.restarted() else a.upload
+                                val thumb = a.thumb?.let { if (gone(api, it)) it.restarted() else it }
+                                if (upload == a.upload && thumb == a.thumb) continue
+                                expired = true
+                                item = persist(id) { m -> m.withAttachment(i) { it.copy(upload = upload, thumb = thumb) } } ?: return ChatOutboxResult.Cancelled
+                            }
+                        } catch (e2: RelayException) {
+                            return failure(item, e2)
+                        }
+                        if (expired) continue
+                        // Every file is still there, so they are attached: an earlier post went through and its response was lost.
+                        unconfirmed = true
+                    }
+                    item = persist(id) { it.copy(posted = range.last + 1, serverErrors = 0) } ?: return ChatOutboxResult.Cancelled
+                    break
                 }
-                item = persist(id) { it.copy(posted = range.last + 1) } ?: return ChatOutboxResult.Retry
-                break
             }
+        } catch (_: SendCancelled) {
+            return ChatOutboxResult.Cancelled
         }
-        onProgress(total, total)
+        onProgress(total(), total())
         remove(id)
         ChatOutboxResult.Done(unconfirmed)
     }
 
-    /** Uploads attachment [index] of [item] and its thumbnail, persisting each step; returns the updated item. */
-    private suspend fun upload(id: String, item: OutgoingMessage, index: Int, api: RelayApi, onProgress: (Long) -> Unit): OutgoingMessage {
+    /** Thrown out of an upload whose send was removed meanwhile: it stops at once. */
+    private class SendCancelled : Exception()
+
+    /**
+     * Uploads attachment [index] of [item] and its thumbnail, persisting each step; returns the updated item. A file the
+     * relay refuses as too large is marked dropped (its thumbnail deleted) and reported to [onDropped].
+     */
+    private suspend fun upload(
+        id: String, item: OutgoingMessage, index: Int, api: RelayApi, onDropped: (String) -> Unit, onProgress: (Long) -> Unit,
+    ): OutgoingMessage {
         var current = item
         val before = current.attachments.withIndex().sumOf { (i, a) -> if (i < current.posted) a.totalBytes else a.uploadedBytes }
         var base = before
@@ -309,15 +339,27 @@ class ChatOutbox(
             val att = current.attachments[index]
             val file = (if (isThumb) att.thumb else att.upload) ?: continue
             if (file.ref != null) continue
-            uploadResumable(
-                api, file, open = { offset -> open(file, offset) },
-                onState = { state ->
-                    current = persist(id) { m -> m.withAttachment(index) { a -> if (isThumb) a.copy(thumb = state) else a.copy(upload = state) } }
-                        ?: current.withAttachment(index) { a -> if (isThumb) a.copy(thumb = state) else a.copy(upload = state) }
-                },
-                onProgress = { bytes -> onProgress(base + bytes) },
-                chunkBytes = chunkBytes,
-            )
+            try {
+                uploadResumable(
+                    api, file, open = { offset -> open(file, offset) },
+                    onState = { state ->
+                        current = persist(id) { m ->
+                            m.withAttachment(index) { a -> if (isThumb) a.copy(thumb = state) else a.copy(upload = state) }.copy(serverErrors = 0)
+                        } ?: throw SendCancelled()
+                    },
+                    onProgress = { bytes ->
+                        if (get(id) == null) throw SendCancelled() // cancelled: stop after this chunk
+                        onProgress(base + bytes)
+                    },
+                    chunkBytes = chunkBytes,
+                )
+            } catch (e: RelayException) {
+                if (isThumb || e.kind != RelayErrorKind.TOO_LARGE) throw e
+                current = persist(id) { m -> m.withAttachment(index) { it.copy(dropped = true) } } ?: throw SendCancelled()
+                att.thumb?.let { File(it.path).delete() }
+                onDropped(att.name)
+                return current
+            }
             base += file.sizeBytes
         }
         return current
@@ -334,13 +376,26 @@ class ChatOutbox(
         }
     }
 
-    private fun failure(item: OutgoingMessage, e: RelayException): ChatOutboxResult = when (e.kind) {
-        RelayErrorKind.NETWORK, RelayErrorKind.SERVER, RelayErrorKind.RATE_LIMITED -> ChatOutboxResult.Retry
-        else -> {
-            val message = Messages.mediaNotSent(e)
-            persist(item.id) { it.copy(failure = message) }
-            ChatOutboxResult.Failed(message)
+    private fun failure(item: OutgoingMessage, e: RelayException): ChatOutboxResult {
+        val current = get(item.id) ?: return ChatOutboxResult.Cancelled // e.g. its file was deleted with it mid-upload
+        return when {
+            e.kind == RelayErrorKind.NETWORK -> ChatOutboxResult.Retry
+            e.kind == RelayErrorKind.RATE_LIMITED -> ChatOutboxResult.RateLimited
+            e.kind == RelayErrorKind.SERVER && current.serverErrors + 1 < MAX_SERVER_ERRORS -> {
+                persist(item.id) { it.copy(serverErrors = it.serverErrors + 1) }
+                ChatOutboxResult.Retry
+            }
+            else -> {
+                val message = Messages.mediaNotSent(e)
+                persist(item.id) { it.copy(failure = message) }
+                ChatOutboxResult.Failed(message)
+            }
         }
+    }
+
+    companion object {
+        /** Server errors in a row (no progress in between) after which a send fails, so it can be dismissed and the queue moves on. */
+        const val MAX_SERVER_ERRORS = 5
     }
 
     private fun persist(id: String, change: (OutgoingMessage) -> OutgoingMessage): OutgoingMessage? {

@@ -74,6 +74,8 @@ object Messages {
     const val NOBODY_YET = "Nobody yet"
     const val DOWNLOAD = "Download"
     const val DISMISS = "Dismiss"
+    /** On a send still uploading: stops it and drops what it had not posted. */
+    const val CANCEL = "Cancel"
 
     /** The owner's approval prompt: "Sam wants to add Ann". */
     fun inviteApproval(inviter: String, name: String) = "$inviter wants to add $name"
@@ -104,9 +106,12 @@ object Messages {
     /** A folder bubble's detail line: "Folder · 12 files · 3 MB". */
     fun folderDetail(files: Int, bytes: Long) = "Folder · ${files(files)} · ${size(bytes)}"
 
+    /** A file of a chat send the relay refused as too large; the rest of the send goes on without it (ruling CM-R7). */
+    fun tooBigForRelay(name: String) = "$name is too big for the relay"
+
     /** Why a send with attachments failed for good, as the failed bubble shows it. */
     fun mediaNotSent(e: RelayException): String = notSent(
-        e.userMessage ?: when {
+        e.userMessage?.replaceFirstChar(Char::lowercaseChar) ?: when {
             e.kind == RelayErrorKind.TOO_LARGE -> "a file is too big for the relay"
             e.kind == RelayErrorKind.STORAGE_FULL -> failureReason(e.kind, "")
             e.kind == RelayErrorKind.UNAUTHORIZED -> failureReason(e.kind, "")
@@ -138,6 +143,7 @@ object Messages {
 
     /** A refused chat action as a sentence; the relay's code is the exception's message. */
     fun chatError(e: RelayException): String = when {
+        e.message == "too_many_files" -> e.userMessage ?: "That folder has too many files (max 1000)."
         e.kind == RelayErrorKind.NETWORK -> "Can't reach the relay. Check your connection."
         e.kind == RelayErrorKind.RATE_LIMITED -> "Too many messages. Wait a moment."
         e.kind == RelayErrorKind.UNAUTHORIZED -> RESET

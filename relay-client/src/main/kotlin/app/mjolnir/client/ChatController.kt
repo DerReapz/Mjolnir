@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -124,6 +125,15 @@ class ChatController(
     /** Sends with attachments still uploading or waiting to post (kept across restarts), oldest first; failed ones until dismissed. */
     val pendingSends: StateFlow<List<PendingSend>> = _pendingSends.asStateFlow()
     private val sendLock = Mutex()
+    @Volatile private var rateLimitRetry: Job? = null
+
+    private val _connects = MutableStateFlow(0)
+    /** Counts the relay connections ([RelayEvent.Connected]): media that failed to load offline tries again when it changes. */
+    val connects: StateFlow<Int> = _connects.asStateFlow()
+
+    private val _sendNotices = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    /** What a send could not take along ("clip.mov is too big for the relay"), for the app's notice line. */
+    val sendNotices: SharedFlow<String> = _sendNotices.asSharedFlow()
 
     /** Bumped by [clear]: background work that was suspended across a clear drops its results instead of writing them back. */
     @Volatile private var generation = 0
@@ -408,6 +418,7 @@ class ChatController(
 
     /** Feeds a relay event in; the work runs on the controller's scope. */
     fun onEvent(e: RelayEvent) {
+        if (e == RelayEvent.Connected) _connects.update { it + 1 }
         scope.launch {
             when (e) {
                 is RelayEvent.ChatChanged -> chatChanged(e.chatId, e.rev, e.receipts)
@@ -484,13 +495,20 @@ class ChatController(
      * this is a plain post. Otherwise the send is queued (see [pendingSends]) and this returns: the files upload in the
      * background, resuming after a network loss or restart ([resumeSends]), and are posted once all are up, in messages of
      * at most 20 attachments with [text] and [mentions] on the first. [thumbnailer] makes the photo and GIF previews; a photo
-     * it can't read goes as a file. Throws INVALID "empty" when there is nothing to send, "too_long" for text over the limit.
+     * it can't read goes as a file. Throws INVALID "empty" when there is nothing to send, "too_long" for text over the limit,
+     * "too_many_files" (user message [Messages.tooManyFiles]) for a folder of more than [Limits.MAX_FILES_PER_SEND] files.
+     * A file the relay refuses as too large is left out of the send and named in [sendNotices] (ruling CM-R7).
      */
     suspend fun send(chatId: String, text: String?, files: List<File>, thumbnailer: Thumbnailer, mentions: List<String> = emptyList()) {
         val body = text?.takeIf { it.isNotBlank() }?.also(::checked)
         val picked = withContext(Dispatchers.IO) {
             files.flatMap { f ->
-                if (f.isDirectory) walkFolder(f).map { it to it.relativePath }
+                if (f.isDirectory) walkFolder(f).also { found ->
+                    // Like a delivery, a folder over the per-send file limit is refused whole.
+                    if (found.size > Limits.MAX_FILES_PER_SEND) {
+                        throw RelayException(RelayErrorKind.INVALID, "too_many_files", userMessage = Messages.tooManyFiles(f.name))
+                    }
+                }.map { it to it.relativePath }
                 else listOf(LocalUpload(f.absolutePath, f.name, mimeOf(f.name), f.length()) to null)
             }
         }
@@ -521,7 +539,10 @@ class ChatController(
         resumeSends()
     }
 
-    /** Uploads and posts the queued sends in order; one that can't go on for now (network) holds back the rest until the next call. */
+    /**
+     * Uploads and posts the queued sends in order; one that can't go on for now (network) holds back the rest until the next
+     * call. A rate-limited one is tried again by itself after [RATE_LIMIT_RETRY_MS].
+     */
     fun resumeSends(): Job {
         val gen = generation
         return scope.launch { drainSends(gen) }
@@ -542,6 +563,12 @@ class ChatController(
                             updatePending(item.id) { it.copy(text = null, files = it.files.drop(m.attachments.size)) }
                         }
                     },
+                    onDropped = { name ->
+                        if (gen == generation) {
+                            _sendNotices.tryEmit(Messages.tooBigForRelay(name))
+                            ob.get(item.id)?.let { fresh -> updatePending(item.id) { pendingOf(fresh) } }
+                        }
+                    },
                 )
                 if (gen != generation) return
                 when (result) {
@@ -549,7 +576,16 @@ class ChatController(
                         _pendingSends.update { list -> list.filter { it.id != item.id } }
                         if (result.unconfirmed) sync(item.chatId)
                     }
+                    ChatOutboxResult.Cancelled -> _pendingSends.update { list -> list.filter { it.id != item.id } }
                     ChatOutboxResult.Retry -> return
+                    ChatOutboxResult.RateLimited -> {
+                        rateLimitRetry?.cancel()
+                        rateLimitRetry = scope.launch {
+                            delay(RATE_LIMIT_RETRY_MS)
+                            if (gen == generation) drainSends(gen)
+                        }
+                        return
+                    }
                     is ChatOutboxResult.Failed -> updatePending(item.id) { it.copy(failure = result.message) }
                 }
             }
@@ -559,9 +595,11 @@ class ChatController(
     /** Waits for the sends being uploaded and posted right now (tests). */
     internal suspend fun awaitSendsIdle() = sendLock.withLock { }
 
-    /** Removes a failed send from [pendingSends] and the outbox (with what it had not posted); one still in progress stays. */
+    /**
+     * *Cancel* on a send still uploading or waiting, *Dismiss* on a failed one: removes it from [pendingSends] and the outbox
+     * with what it had not posted and its thumbnails. An upload in progress stops at its next chunk; nothing more is posted.
+     */
     fun dismissSend(id: String) {
-        if (_pendingSends.value.none { it.id == id && it.failure != null }) return
         outbox?.remove(id)
         _pendingSends.update { list -> list.filter { it.id != id } }
     }
@@ -642,5 +680,10 @@ class ChatController(
     /** Shows our own post or edit at once. The cache's rev stays, so the next sync still delivers everything in between. */
     private fun keep(chatId: String, message: ChatMessage) {
         show(chatId, store.update(chatId) { it.copy(messages = it.messages + (message.id to message)) })
+    }
+
+    companion object {
+        /** How long a rate-limited send waits before it is tried again. */
+        const val RATE_LIMIT_RETRY_MS = 60_000L
     }
 }

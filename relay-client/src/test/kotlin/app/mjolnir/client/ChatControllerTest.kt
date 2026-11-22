@@ -296,6 +296,14 @@ class ChatControllerTest {
         assertEquals(listOf("missed"), c.messages(chat).value.map { it.text })
     }
 
+    @Test fun connectsCountsEachConnection() = runTest {
+        val (api, _) = fakeWithChat()
+        val c = controller(api)
+        assertEquals(0, c.connects.value)
+        c.onEvent(RelayEvent.Connected); c.onEvent(RelayEvent.Connected)
+        assertEquals(2, c.connects.value) // media that failed offline keys its reload on this
+    }
+
     private fun TestScope.collect(c: ChatController, into: MutableList<IncomingMessage>) {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.newMessages.collect { into += it } }
     }
@@ -920,15 +928,121 @@ class ChatControllerTest {
         assertTrue(mediaController(api).pendingSends.value.isEmpty())
     }
 
-    @Test fun dismissIgnoresASendInProgress() = runTest {
+    @Test fun cancelDropsASendWaitingToResume() = runTest {
         val (fake, chat) = fakeWithChat()
         val c = mediaController(FlakyUploads(fake, failChunk = 1))
-        c.send(chat, null, listOf(pick("a.bin", 5)), ImageIoThumbnailer)
+        c.send(chat, "hi", listOf(pickPng("photo.png")), ImageIoThumbnailer)
         c.awaitSendsIdle()
         val pending = c.pendingSends.value.single()
+        assertNull(pending.failure)
+        val thumb = File(assertNotNull(pending.files.single().thumbPath))
         c.dismissSend(pending.id)
-        assertEquals(listOf(pending.id), c.pendingSends.value.map { it.id })
-        assertEquals(1, ChatOutbox(File(mediaDir, "outbox")).pending().size)
+        assertTrue(c.pendingSends.value.isEmpty())
+        assertTrue(ChatOutbox(File(mediaDir, "outbox")).pending().isEmpty())
+        assertFalse(thumb.exists())
+        c.resumeSends().join()
+        assertEquals(0, fake.postCalls)
+    }
+
+    @Test fun cancelMidUploadNeverPostsAndTheQueueGoesOn() = runTest {
+        val (fake, chat) = fakeWithChat()
+        lateinit var c: ChatController
+        var cancelled = false
+        var chunks = 0
+        val api = object : RelayApi by fake {
+            override suspend fun uploadChunk(uploadId: String, start: Long, total: Long, bytes: ByteArray, length: Int): app.mjolnir.protocol.UploadStatus {
+                chunks++
+                val status = fake.uploadChunk(uploadId, start, total, bytes, length)
+                if (!cancelled) { cancelled = true; c.dismissSend(c.pendingSends.value.first().id) } // the user taps Cancel mid-upload
+                return status
+            }
+        }
+        c = mediaController(api)
+        c.send(chat, "first", listOf(pick("big.bin", 40)), ImageIoThumbnailer)
+        c.send(chat, "second", listOf(pick("small.bin", 3)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        assertEquals(1, fake.postCalls)
+        assertEquals(listOf("second"), c.messages(chat).value.filter { it.author.deviceId == "dev-1" }.map { it.text })
+        assertTrue(c.pendingSends.value.isEmpty())
+        assertEquals(2, chunks) // the cancelled upload stopped after its first chunk; "second" took one
+    }
+
+    @Test fun repeatedServerErrorsFailTheSendAndTheQueueGoesOn() = runTest {
+        val (fake, chat) = fakeWithChat()
+        val api = object : RelayApi by fake {
+            override suspend fun postMessage(chatId: String, text: String?, mentions: List<String>, attachments: List<Attachment>): ChatMessage {
+                if (text == "stuck") throw RelayException(RelayErrorKind.SERVER, "http_500")
+                return fake.postMessage(chatId, text, mentions, attachments)
+            }
+        }
+        val c = mediaController(api)
+        c.send(chat, "stuck", listOf(pick("a.bin", 3)), ImageIoThumbnailer)
+        c.send(chat, "next", listOf(pick("b.bin", 3)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        repeat(2) { c.resumeSends().join() } // tried on each send() and on each resume
+        assertEquals(listOf(null, null), c.pendingSends.value.map { it.failure }) // four tries: still retrying, the rest waits
+        c.resumeSends().join() // the fifth server error in a row
+        val failed = c.pendingSends.value.single()
+        assertEquals("Not sent: the relay had a problem.", failed.failure)
+        assertEquals(listOf("next"), c.messages(chat).value.filter { it.author.deviceId == "dev-1" }.map { it.text })
+    }
+
+    @Test fun aFileTooBigForTheRelayFailsAloneWithANotice() = runTest {
+        val (fake, chat) = fakeWithChat()
+        val api = object : RelayApi by fake {
+            override suspend fun createUpload(relativePath: String, mimeType: String, sizeBytes: Long): app.mjolnir.protocol.UploadStatus {
+                if (relativePath.startsWith("huge")) throw RelayException(RelayErrorKind.TOO_LARGE, "too_large")
+                return fake.createUpload(relativePath, mimeType, sizeBytes)
+            }
+        }
+        val c = mediaController(api)
+        val notices = mutableListOf<String>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.sendNotices.collect { notices += it } }
+        c.send(chat, "look", listOf(pick("a.bin", 3), pick("huge.mov", 9), pick("b.bin", 3)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        val posted = c.messages(chat).value.single { it.author.deviceId == "dev-1" }
+        assertEquals("look", posted.text)
+        assertEquals(listOf("a.bin", "b.bin"), posted.attachments.map { it.name })
+        assertTrue(c.pendingSends.value.isEmpty())
+        assertEquals(listOf("huge.mov is too big for the relay"), notices)
+        // Only that file and no text: nothing is posted, the send just goes.
+        c.send(chat, null, listOf(pick("huge2.bin", 9)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        assertEquals(1, fake.postCalls)
+        assertTrue(c.pendingSends.value.isEmpty())
+        assertEquals(listOf("huge.mov is too big for the relay", "huge2.bin is too big for the relay"), notices)
+    }
+
+    @Test fun rateLimitedSendRetriesAfterAMinute() = runTest {
+        val (fake, chat) = fakeWithChat()
+        var limited = true
+        val api = object : RelayApi by fake { // refused before any file is read, so the test stays on its own thread
+            override suspend fun createUpload(relativePath: String, mimeType: String, sizeBytes: Long): app.mjolnir.protocol.UploadStatus {
+                if (limited) { limited = false; throw RelayException(RelayErrorKind.RATE_LIMITED, "rate_limited") }
+                return fake.createUpload(relativePath, mimeType, sizeBytes)
+            }
+        }
+        val c = mediaController(api)
+        c.send(chat, "later", listOf(pick("a.bin", 3)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        assertEquals(1, c.pendingSends.value.size)
+        testScheduler.advanceTimeBy(59_000)
+        assertEquals(1, c.pendingSends.value.size)
+        testScheduler.advanceTimeBy(2_000)
+        c.awaitSendsIdle()
+        assertTrue(c.pendingSends.value.isEmpty())
+        assertEquals(listOf("later"), c.messages(chat).value.filter { it.author.deviceId == "dev-1" }.map { it.text })
+    }
+
+    @Test fun aFolderOverTheFileLimitIsRefused() = runTest {
+        val (fake, chat) = fakeWithChat()
+        val c = mediaController(fake)
+        val folder = File(picked, "Huge").apply { mkdirs() }
+        repeat(app.mjolnir.protocol.Limits.MAX_FILES_PER_SEND + 1) { File(folder, "f$it.txt").writeText("x") }
+        val e = assertFailsWith<RelayException> { c.send(chat, null, listOf(folder), ImageIoThumbnailer) }
+        assertEquals("Huge has too many files (max 1000)", e.userMessage)
+        assertEquals("Huge has too many files (max 1000)", Messages.chatError(e))
+        assertTrue(c.pendingSends.value.isEmpty())
     }
 
     @Test fun clearDropsPendingSends() = runTest {

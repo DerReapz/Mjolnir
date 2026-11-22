@@ -47,4 +47,15 @@ class MessagesTest {
         assertEquals("", Messages.receiptLine(emptyList(), emptyList(), everyone = false))
         assertEquals("Info", Messages.INFO)
     }
+
+    @Test fun mediaNotSentReadsAsOneSentence() {
+        val unreadable = RelayException(RelayErrorKind.INVALID, "short", userMessage = Messages.unreadable("x.jpg"))
+        assertEquals("Not sent: couldn't read x.jpg.", Messages.mediaNotSent(unreadable))
+        assertEquals("Not sent: the relay is out of space.", Messages.mediaNotSent(RelayException(RelayErrorKind.STORAGE_FULL, "relay_full")))
+    }
+
+    @Test fun mediaSendCopy() {
+        assertEquals("Cancel", Messages.CANCEL)
+        assertEquals("clip.mov is too big for the relay", Messages.tooBigForRelay("clip.mov"))
+    }
 }
