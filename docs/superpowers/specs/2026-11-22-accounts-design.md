@@ -1,6 +1,6 @@
 # Accounts: username and password sign-in
 
-Status: draft for the owner's approval (2026-11-22).
+Status: draft for the owner's approval (2026-11-22), updated with the owner's answers to the builder check.
 
 ## Why
 
@@ -41,7 +41,9 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
 
 - **Threat:** impersonation by another member. Light security is fine.
 - **Accounts:** one account per person, across all their devices.
-- **Password reset:** done by the space admin.
+- **Password reset:** done by the space admin, scoped to their own space (see Password reset).
+- **Names:** every identity is unique. Display names can't copy anyone else's display name or username.
+- **Cross-person pairings:** dropped at the move-over. People re-connect through spaces where needed.
 - **Approach:** option 1, "accounts become the identity" (below).
 
 ## Approaches considered
@@ -62,7 +64,7 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
 
 - **The account record** holds:
   - `username`: 3–24 characters, from `a–z`, `0–9`, `.`, `_` and `-`. It is stored lower-case, compared case-insensitively, unique, and can never be changed.
-  - `displayName`: at most 40 characters, changeable. It is optional and defaults to the username.
+  - `displayName`: at most 40 characters, changeable. It is optional and defaults to the username. **Unique across the relay (owner's decision):** compared case-insensitively after trimming and collapsing whitespace. It may not equal any other account's display name or any other account's username, and a new username may not equal an existing display name. A clash gives `name_taken` on create, sign-up and rename. Lookalike characters (homoglyphs) are left to the builder: at minimum, refuse invisible and bidi control characters.
   - The password hash.
   - The creation time, plus `passwordResetBy` / `passwordResetAt` (see Password reset).
 - **Password rules:**
@@ -82,14 +84,14 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
 
 ### Password reset by a space admin
 
-- **Who and when:** an admin of any space the person is in can choose *Reset password* on that member and enter a temporary password.
+- **Who and when (owner's decision):** only the admin of a space, and only for people who are members of that space. *Reset password…* is on the member card in that admin's space. No one else can reset a password.
 - **What it does:**
   - signs out **all** of that person's devices;
   - sets the temporary password;
   - marks the account as "must change password at next sign-in";
   - records who reset it and when.
 - **What the person sees on next sign-in:** `Your password was reset by {admin name}`. They must then choose a new password before using the app.
-- **What the person's spaces see:** the space shows a system line, `{admin} reset {person}'s password`, so it's visible to the group. This is a proposal; see "Left to the builder / open".
+- **Who else sees it (owner's decision):** only the space where the reset was done. That space's card shows `{admin} reset {person}'s password` for 7 days. Other spaces the person is in are not told. The owner accepted this: an admin who resets a password could use the account elsewhere without the other spaces being told, but the real person always finds out at their next sign-in.
 - **Limits:**
   - An admin can't reset their own password this way; they use Change password.
   - A reset is rate-limited per admin.
@@ -114,12 +116,14 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
   - The Send tab and *Throw to* show *My devices*, then one heading per space with each person's devices under their name ("Fred · PC", "Fred · Phone").
   - Space deliveries are labelled with the person and the space.
 - **Pairing a device you don't own** (with another person's device) is removed. Sharing with other people happens through spaces.
-  - **Existing cross-person pairings:** see "Left to the builder / open".
+  - **Existing cross-person pairings are dropped (owner's decision).** They are dropped once both devices belong to different accounts, or at the move-over. Each side sees once: `Your link with {name} was removed. Share a space to send to each other.`
   - Existing pairings between two devices that end up in the same account become "My devices" naturally.
+  - The guest room's own pairing (the `links` rows it uses) is unaffected.
 
 ### Moving existing installs over
 
-- **Relay upgrade:** devices without an account keep working **read-only** until they sign in. In that state they can see their spaces, chats and deliveries. The relay migrates their data when they do.
+- **Relay upgrade (my call):** there is no read-only in-between mode. A device without an account can only create an account or sign in, using its existing device token so the relay knows which device's data to move. Every other request gets `sign_in_required`. Deliveries addressed to it wait on the relay as usual (7-day limit) and arrive once it signs in.
+- **Telling app versions apart:** apps send a protocol version header. An app from before accounts sends none, so it gets `update_required` on every request, and both apps show that as "Update the app".
 - **On first launch after the update, each app shows:**
   - *Create account*. The device's existing memberships, admin roles, chat ownership, messages, receipts and read positions move onto the new account.
   - *Sign in*. For a second device of the same person, the device joins the existing account, and its memberships are **merged** into the account:
@@ -128,7 +132,7 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
     - **Messages the device wrote:** re-attributed to the account.
     - **Anything only the device had:** moves to the account.
 - **During the move-over,** people who haven't moved yet still appear as their old device name, marked as not yet signed in, for example "Fred's phone (not signed in)".
-- **Mixed old and new versions:** an app from before accounts that talks to an upgraded relay is told to update. The relay answers with a clear `update_required` error, and both apps already show relay errors. Old apps don't need to keep working beyond that.
+- **Mixed old and new versions:** see "Telling app versions apart" above. Old apps don't need to keep working beyond that.
 
 ### Screens (both apps)
 
@@ -156,8 +160,8 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
 
 - **Password hashing:** Argon2id or bcrypt, and its parameters. Builder's call, documented in the README.
 - **Session lifetime:** device tokens don't expire, as today. A reset or sign-out revokes them. This is the builder's call; the owner may revisit.
-- **Admin-reset system line in the space:** proposed above, so every member sees `{admin} reset {person}'s password`. *(Needs the owner's confirmation; see the questions after the builder check.)*
-- **Existing pairings between two different people's devices:** they are lost when pairing goes away. *(Needs the owner's decision; see the questions after the builder check.)*
+- How the move-over identifies the old device, how stored ids inside message bodies and events are rewritten, merges that hit limits, and local caches and nicknames keyed by device id.
+- Lockout handling for the per-username sign-in limit.
 - **Plan split:** expected to be about three plans, done in order:
   1. Relay accounts, sign-in and migration.
   2. Spaces and chats keyed by account, in the relay and the shared client.
