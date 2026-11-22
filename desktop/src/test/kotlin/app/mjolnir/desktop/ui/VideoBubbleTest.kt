@@ -51,6 +51,8 @@ import kotlin.test.assertTrue
 /** A [VideoEngine] that plays nothing and records what the bubble asked (ruling CV-P3: no JavaFX in tests). */
 internal class FakeEngine(
     private val failLoad: Throwable? = null, private val length: Long = 42_000, private val failRelease: Throwable? = null,
+    /** Holds release's completion back until [finishRelease], as JavaFX disposes later on its own thread. */
+    private val holdRelease: Boolean = false,
 ) : VideoEngine {
     override val positionMs = MutableStateFlow(0L)
     override val durationMs = MutableStateFlow<Long?>(null)
@@ -65,10 +67,13 @@ internal class FakeEngine(
     override fun play() { check(!released) { "played after release" }; playing.value = true }
     override fun pause() { playing.value = false }
     override fun seek(ms: Long) { positionMs.value = ms }
-    override fun release() {
+    private var onReleased: (() -> Unit)? = null
+    override fun release(onReleased: () -> Unit) {
         released = true; playing.value = false
         failRelease?.let { throw it }
+        if (holdRelease) this.onReleased = onReleased else onReleased()
     }
+    fun finishRelease() { onReleased?.invoke(); onReleased = null }
 }
 
 /** Hands out [FakeEngine]s from [make] and draws a stand-in picture. */
@@ -243,6 +248,22 @@ class VideoBubbleTest {
         waitForIdle()
         assertTrue(engine.released)
         assertFalse("v1" in media.pins())
+        assertTrue(media.pins().isEmpty(), media.pins().toString())
+    }
+
+    @Test fun unpinsOnlyOnceThePlayerHasLetGo() = runComposeUiTest {
+        // Windows can't delete a file JavaFX still holds: the pin goes only after the player is disposed (finding I1).
+        val media = media()
+        val video = FakeVideo { FakeEngine(holdRelease = true) }
+        var state by mutableStateOf(ui(listOf(msg("m1", video())), media, video))
+        setContent { MjolnirTheme { ChatsTabContent(state, ChatsActions(), now = { at }) } }
+        play()
+        val engine = video.engines.single()
+        state = ui(listOf(msg("m1", video())), media, video, selected = "c2")
+        waitForIdle()
+        assertTrue(engine.released)
+        assertEquals(listOf("v1"), media.pins(), "still pinned while the player lets go of the file")
+        engine.finishRelease()
         assertTrue(media.pins().isEmpty(), media.pins().toString())
     }
 

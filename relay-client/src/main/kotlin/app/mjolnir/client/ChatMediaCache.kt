@@ -16,7 +16,12 @@ import kotlinx.coroutines.withContext
  * least recently used. A pinned id (a bubble on screen, a video playing) is never evicted, even when it alone is over the
  * cap; it goes as soon as it is unpinned while the cache is over the cap (ruling CV-P1). Survives restarts.
  */
-class ChatMediaCache(private val dir: File, private val capBytes: Long = 512L shl 20) {
+class ChatMediaCache(
+    private val dir: File,
+    private val capBytes: Long = 512L shl 20,
+    /** Deletes a cached file, false when it couldn't (on Windows, a file still open). Injectable for tests. */
+    private val delete: (File) -> Boolean = File::delete,
+) {
     private val lock = Any()
     /** id → size, least recently used first. */
     private val entries = LinkedHashMap<String, Long>(16, 0.75f, true)
@@ -26,9 +31,11 @@ class ChatMediaCache(private val dir: File, private val capBytes: Long = 512L sh
     init {
         dir.mkdirs()
         val files = dir.listFiles().orEmpty().filter { it.isFile }
-        files.filter { it.name.endsWith(PART) }.forEach { it.delete() } // an interrupted download
+        files.filter { it.name.endsWith(PART) }.forEach { delete(it) } // an interrupted download
         synchronized(lock) {
+            // Every file is counted, so one an earlier run couldn't delete is trimmed with the rest.
             files.filter { !it.name.endsWith(PART) }.sortedBy { it.lastModified() }.forEach { entries[it.name] = it.length() }
+            evict(keep = null)
         }
     }
 
@@ -55,10 +62,13 @@ class ChatMediaCache(private val dir: File, private val capBytes: Long = 512L sh
         }
     }
 
-    /** Deletes everything cached (the device moved to another relay or was reset). */
+    /**
+     * Deletes everything cached (the device moved to another relay or was reset). A file that can't be deleted yet (still
+     * open) stays counted, so a later eviction or clear deletes it.
+     */
     fun clear() = synchronized(lock) {
-        entries.clear()
-        dir.listFiles().orEmpty().forEach { it.delete() }
+        dir.listFiles().orEmpty().forEach { f -> if (delete(f) || !f.exists()) entries.remove(f.name) }
+        entries.keys.retainAll { File(dir, it).exists() }
     }
 
     /** [id]'s file, downloaded unless cached; a download must come to [expectedBytes] when that is known. */
@@ -92,14 +102,18 @@ class ChatMediaCache(private val dir: File, private val capBytes: Long = 512L sh
         }
     }
 
-    /** Deletes the least recently used unpinned entries (never [keep]) until the cache fits its cap. */
+    /**
+     * Deletes the least recently used unpinned entries (never [keep]) until the cache fits its cap. One that can't be
+     * deleted (still open) stays counted, to go at a later eviction.
+     */
     private fun evict(keep: String?) {
         var total = entries.values.sum()
         val it = entries.entries.iterator()
         while (total > capBytes && it.hasNext()) {
             val (id, size) = it.next()
             if (id == keep || (pins[id] ?: 0) > 0) continue
-            File(dir, id).delete()
+            val file = File(dir, id)
+            if (!delete(file) && file.exists()) continue
             it.remove()
             total -= size
         }

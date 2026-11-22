@@ -67,6 +67,7 @@ import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.AttachmentKind
 import app.mjolnir.protocol.ChatMessage
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -279,19 +280,44 @@ private sealed interface VideoPhase {
     data object Unavailable : VideoPhase
 }
 
-/** What a video bubble holds that must be let go when it leaves the screen: the engine and the cache pin. */
+/**
+ * What a video bubble holds that must be let go when it leaves the screen: the engine and the cache pin. The pin goes
+ * only once every engine has let go of the file: unpinning may delete it, and Windows can't delete an open file.
+ */
 private class VideoHold(val media: ChatMediaSource, val fileId: String) {
     var engine: VideoEngine? = null
     private var pinned = false
+    /** Engines released whose player has not let go of the file yet. */
+    private var releasing = 0
+    /** [releaseAll] ran while [releasing]: the last release to finish unpins. */
+    private var unpinPending = false
     fun pin() { if (!pinned) { pinned = true; media.pin(fileId) } }
     /** Never throws: it runs from catch blocks and from onDispose. */
     fun releaseEngine() {
         val e = engine ?: return
         engine = null
         NowPlaying.stopped(e)
-        runCatching { e.release() }
+        synchronized(this) { releasing++ }
+        val once = AtomicBoolean(false)
+        val done = { if (once.compareAndSet(false, true)) released() }
+        try {
+            e.release(done)
+        } catch (_: Throwable) {
+            done() // it never got to hold the file (no JavaFX here)
+        }
     }
-    fun releaseAll() { releaseEngine(); if (pinned) { pinned = false; media.unpin(fileId) } }
+    private fun released() = synchronized(this) {
+        releasing--
+        if (releasing == 0 && unpinPending) { unpinPending = false; media.unpin(fileId) }
+    }
+    fun releaseAll() {
+        releaseEngine()
+        synchronized(this) {
+            if (!pinned) return
+            pinned = false
+            if (releasing == 0) media.unpin(fileId) else unpinPending = true
+        }
+    }
 }
 
 /**

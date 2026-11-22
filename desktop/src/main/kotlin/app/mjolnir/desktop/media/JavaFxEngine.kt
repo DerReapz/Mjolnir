@@ -84,13 +84,18 @@ internal object JavaFx {
     fun started(): Boolean = synchronized(this) { startup }?.let { it.isDone && !it.isCompletedExceptionally } == true
 
     /**
-     * Runs [block] on the JavaFX thread once JavaFX has started: at once if it has, after the start if one is under way,
-     * never if it failed or was never started. Never blocks and never throws, so the UI thread may call it.
+     * Runs [block] on the JavaFX thread once JavaFX has started: at once if it has, after the start if one is under way;
+     * if it failed or was never started, runs [otherwise] instead (on whichever thread finds that out). Never blocks and
+     * never throws, so the UI thread may call it.
      */
-    fun runIfStarted(block: () -> Unit) {
-        val future = synchronized(this) { startup } ?: return
-        future.thenRun {
-            runCatching { if (Platform.isFxApplicationThread()) block() else Platform.runLater(block) }
+    fun runIfStarted(otherwise: () -> Unit = {}, block: () -> Unit) {
+        val future = synchronized(this) { startup } ?: return otherwise()
+        future.whenComplete { _, failure ->
+            when {
+                failure != null -> runCatching(otherwise)
+                Platform.isFxApplicationThread() -> runCatching(block)
+                else -> try { Platform.runLater(block) } catch (_: Exception) { runCatching(otherwise) } // JavaFX has exited
+            }
         }
     }
 
@@ -191,13 +196,17 @@ class JavaFxEngine : VideoEngine {
         JavaFx.runIfStarted { player?.seek(Duration.millis(ms.toDouble())) }
     }
 
-    override fun release() {
+    override fun release(onReleased: () -> Unit) {
         released = true
         _playing.value = false
-        JavaFx.runIfStarted {
-            view?.mediaPlayer = null
-            player?.dispose()
-            player = null
+        JavaFx.runIfStarted(otherwise = onReleased) {
+            try {
+                view?.mediaPlayer = null
+                player?.dispose()
+                player = null
+            } finally {
+                onReleased() // the file is let go: it may be deleted now
+            }
         }
     }
 

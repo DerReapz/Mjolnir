@@ -102,5 +102,60 @@ class ChatMediaCacheTest {
         assertEquals(setOf("s"), cachedIds())
     }
 
+    /** Files [stuck] names can't be deleted (Windows: JavaFX still holds them open). */
+    private val stuck = mutableSetOf<String>()
+    private val deleter: (File) -> Boolean = { f -> f.name !in stuck && f.delete() }
+
+    @Test fun fileThatCantBeDeletedStaysTrackedAndGoesLater() = runTest {
+        val cache = ChatMediaCache(dir, capBytes = 30, delete = deleter)
+        val a = att("a", 10); val b = att("b", 10); val c = att("c", 10); val d = att("d", 10); val e = att("e", 10)
+        cache.get(a, api); cache.get(b, api); cache.get(c, api)
+        stuck += "a"
+        cache.get(d, api) // over the cap: a can't go, so b goes instead
+        assertEquals(setOf("a", "c", "d"), cachedIds())
+        stuck.clear()
+        cache.get(e, api) // a is still counted, and goes now
+        assertEquals(setOf("c", "d", "e"), cachedIds())
+    }
+
+    @Test fun clearKeepsTrackOfWhatItCouldNotDelete() = runTest {
+        val cache = ChatMediaCache(dir, capBytes = 20, delete = deleter)
+        val a = att("a", 10); val b = att("b", 10); val c = att("c", 10); val d = att("d", 10)
+        cache.get(a, api); cache.get(b, api)
+        stuck += "a"
+        cache.clear()
+        assertEquals(setOf("a"), cachedIds())
+        stuck.clear()
+        cache.get(c, api); cache.get(d, api) // the left-over a still counts against the cap
+        assertEquals(setOf("c", "d"), cachedIds())
+        cache.clear()
+        assertEquals(emptySet(), cachedIds())
+    }
+
+    @Test fun startTrimsWhatAnEarlierRunCouldNotDelete() {
+        for ((i, id) in listOf("old", "mid", "new").withIndex()) {
+            File(dir, id).apply { writeBytes(ByteArray(10)); setLastModified(1_000_000_000_000L + i * 1000L) }
+        }
+        File(dir, "x.part").writeBytes(ByteArray(3)) // an interrupted download
+        ChatMediaCache(dir, capBytes = 20)
+        assertEquals(setOf("mid", "new"), cachedIds())
+    }
+
+    // Ruling m2: a video saved through Download (pinned only while it is copied) doesn't stay over the cap.
+    @Test fun savedVideoOverTheCapGoesAfterTheCopy() = runTest {
+        val cache = ChatMediaCache(dir, capBytes = 30)
+        val small = att("s", 10); val big = att("big", 50)
+        cache.get(small, api)
+        cache.pin("big") // ChatController.download
+        cache.get(big, api).copyTo(File(dir.parentFile, "saved-${dir.name}.bin"), overwrite = true)
+        cache.unpin("big")
+        assertEquals(emptySet(), cachedIds())
+        // Fetched without a pin, it is still handed back whole, then goes at the next eviction.
+        val file = cache.get(big, api)
+        assertEquals(50L, file.length())
+        cache.get(small, api)
+        assertEquals(setOf("s"), cachedIds())
+    }
+
     private fun cachedIds() = dir.listFiles()!!.filter { it.isFile }.map { it.name }.toSet()
 }

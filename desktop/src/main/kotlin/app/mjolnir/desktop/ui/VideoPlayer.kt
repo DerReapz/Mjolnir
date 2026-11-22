@@ -69,8 +69,11 @@ interface VideoEngine {
     val error: StateFlow<String?>
     /** True while playing; false when paused, ended, or paused by another video starting ([NowPlaying]). */
     val playing: StateFlow<Boolean>
-    /** Stops playback and frees the player; the engine is not used again. */
-    fun release()
+    /**
+     * Stops playback and frees the player; the engine is not used again. [onReleased] runs once the player has let go
+     * of the file (it may be later, on another thread): only then may the file be deleted (Windows keeps an open file).
+     */
+    fun release(onReleased: () -> Unit = {})
 }
 
 /** The one video playing in the app: starting another pauses it. */
