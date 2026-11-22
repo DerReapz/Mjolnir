@@ -13,7 +13,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Downloaded chat media (files and thumbnails) in [dir], one file per relay file id, kept to [capBytes] by evicting the
- * least recently used. A pinned id (a bubble on screen, a video playing) is never evicted. Survives restarts.
+ * least recently used. A pinned id (a bubble on screen, a video playing) is never evicted, even when it alone is over the
+ * cap; it goes as soon as it is unpinned while the cache is over the cap (ruling CV-P1). Survives restarts.
  */
 class ChatMediaCache(private val dir: File, private val capBytes: Long = 512L shl 20) {
     private val lock = Any()
@@ -31,18 +32,27 @@ class ChatMediaCache(private val dir: File, private val capBytes: Long = 512L sh
         }
     }
 
-    /** The attachment's file, downloaded first unless cached. Throws the [RelayException] of a failed download (NOT_FOUND: its message was deleted). */
-    suspend fun get(att: Attachment, api: RelayApi): File = file(att.fileId, api)
+    /**
+     * The attachment's file, downloaded first unless cached, reporting (bytes so far, [Attachment.sizeBytes]) to
+     * [onProgress] while it downloads. Throws the [RelayException] of a failed download (NOT_FOUND: its message was
+     * deleted), and NETWORK "incomplete_download" when fewer or more bytes than the attachment's size arrived.
+     */
+    suspend fun get(att: Attachment, api: RelayApi, onProgress: (Long, Long) -> Unit = { _, _ -> }): File =
+        file(att.fileId, api, att.sizeBytes) { onProgress(it, att.sizeBytes) }
 
     /** The attachment's thumbnail (null when it has none), downloaded first unless cached. */
-    suspend fun thumbnail(att: Attachment, api: RelayApi): File? = att.thumbFileId?.let { file(it, api) }
+    suspend fun thumbnail(att: Attachment, api: RelayApi): File? = att.thumbFileId?.let { file(it, api, null) {} }
 
     /** Keeps [fileId] from being evicted until a matching [unpin]; pins count, so two bubbles can show the same file. */
     fun pin(fileId: String) = synchronized(lock) { pins[fileId] = (pins[fileId] ?: 0) + 1 }
 
     fun unpin(fileId: String) = synchronized(lock) {
         val n = (pins[fileId] ?: return@synchronized) - 1
-        if (n > 0) pins[fileId] = n else pins.remove(fileId)
+        if (n > 0) pins[fileId] = n
+        else {
+            pins.remove(fileId)
+            evict(keep = null) // a pinned video over the cap goes now
+        }
     }
 
     /** Deletes everything cached (the device moved to another relay or was reset). */
@@ -51,7 +61,8 @@ class ChatMediaCache(private val dir: File, private val capBytes: Long = 512L sh
         dir.listFiles().orEmpty().forEach { it.delete() }
     }
 
-    private suspend fun file(id: String, api: RelayApi): File {
+    /** [id]'s file, downloaded unless cached; a download must come to [expectedBytes] when that is known. */
+    private suspend fun file(id: String, api: RelayApi, expectedBytes: Long?, onProgress: (Long) -> Unit): File {
         require(id.isNotEmpty() && id.all { it.isLetterOrDigit() || it == '-' || it == '_' }) { "unexpected file id $id" }
         val target = File(dir, id)
         return downloads.computeIfAbsent(id) { Mutex() }.withLock {
@@ -62,8 +73,13 @@ class ChatMediaCache(private val dir: File, private val capBytes: Long = 512L sh
             }
             val part = File(dir, id + PART)
             try {
-                api.downloadChatFile(id, part)
-                withContext(Dispatchers.IO) { Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING) }
+                api.downloadChatFile(id, part, onProgress)
+                withContext(Dispatchers.IO) {
+                    if (expectedBytes != null && part.length() != expectedBytes) {
+                        throw RelayException(RelayErrorKind.NETWORK, "incomplete_download")
+                    }
+                    Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
             } catch (e: Throwable) {
                 withContext(NonCancellable) { part.delete() }
                 throw e
@@ -77,7 +93,7 @@ class ChatMediaCache(private val dir: File, private val capBytes: Long = 512L sh
     }
 
     /** Deletes the least recently used unpinned entries (never [keep]) until the cache fits its cap. */
-    private fun evict(keep: String) {
+    private fun evict(keep: String?) {
         var total = entries.values.sum()
         val it = entries.entries.iterator()
         while (total > capBytes && it.hasNext()) {

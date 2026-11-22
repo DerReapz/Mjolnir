@@ -928,6 +928,26 @@ class ChatControllerTest {
         assertTrue(mediaController(api).pendingSends.value.isEmpty())
     }
 
+    @Test fun videoSendCarriesItsLengthAndShapeWithinBounds() = runTest {
+        val (fake, chat) = fakeWithChat()
+        val c = mediaController(fake)
+        val jpeg = ImageIoThumbnailer.jpegThumbnail(java.awt.image.BufferedImage(8, 8, java.awt.image.BufferedImage.TYPE_INT_RGB))
+        val thumbs = Thumbnailer { f, kind ->
+            when (f.name) {
+                "clip.mp4" -> Thumb(jpeg, 1080, 1920, 42_000).also { assertEquals(AttachmentKind.VIDEO, kind) }
+                "bogus.mp4" -> Thumb(jpeg, 40_000, 100, 0) // values the relay refuses are left out
+                else -> null // capture failed: sent with no thumbnail
+            }
+        }
+        c.send(chat, null, listOf(pick("clip.mp4", 6), pick("bogus.mp4", 6), pick("broken.mov", 6)), thumbs)
+        c.awaitSendsIdle()
+        val (clip, bogus, broken) = c.messages(chat).value.single { it.author.deviceId == "dev-1" }.attachments
+        assertEquals(AttachmentKind.VIDEO, clip.kind)
+        assertEquals(Triple(1080, 1920, 42_000L), Triple(clip.width, clip.height, clip.durationMs)); assertNotNull(clip.thumbFileId)
+        assertEquals(Triple(null, null, null), Triple(bogus.width, bogus.height, bogus.durationMs)); assertNotNull(bogus.thumbFileId)
+        assertEquals(AttachmentKind.VIDEO, broken.kind); assertNull(broken.thumbFileId); assertNull(broken.durationMs)
+    }
+
     @Test fun cancelDropsASendWaitingToResume() = runTest {
         val (fake, chat) = fakeWithChat()
         val c = mediaController(FlakyUploads(fake, failChunk = 1))

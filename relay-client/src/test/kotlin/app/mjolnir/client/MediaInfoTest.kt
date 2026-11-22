@@ -119,4 +119,14 @@ class MediaInfoTest {
         writer.dispose()
         return out.toByteArray()
     }
+
+    @Test fun mediaMetadataBounds() {
+        assertEquals(42_000L, validDurationMs(42_000)); assertEquals(null, validDurationMs(0)); assertEquals(null, validDurationMs(null))
+        assertEquals(app.mjolnir.protocol.Limits.MAX_MEDIA_DURATION_MS, validDurationMs(app.mjolnir.protocol.Limits.MAX_MEDIA_DURATION_MS))
+        assertEquals(null, validDurationMs(app.mjolnir.protocol.Limits.MAX_MEDIA_DURATION_MS + 1))
+        assertEquals(16_384, validSidePx(16_384)); assertEquals(null, validSidePx(16_385)); assertEquals(null, validSidePx(-1))
+        fun att(w: Int?, h: Int?) = app.mjolnir.protocol.Attachment("v", AttachmentKind.VIDEO, "a.mp4", 1, "video/mp4", w, h)
+        assertEquals(1080 to 1920, att(1080, 1920).validSize())
+        assertEquals(null, att(1080, 0).validSize()); assertEquals(null, att(null, 10).validSize())
+    }
 }

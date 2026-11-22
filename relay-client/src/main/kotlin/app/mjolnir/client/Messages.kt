@@ -76,6 +76,11 @@ object Messages {
     const val DISMISS = "Dismiss"
     /** On a send still uploading: stops it and drops what it had not posted. */
     const val CANCEL = "Cancel"
+    /** The PC's video bubble when JavaFX can't decode the video (HEVC, WebM…), with [OPEN_IN_PLAYER]. */
+    const val CANT_PLAY_VIDEO = "Can't play this video here"
+    const val OPEN_IN_PLAYER = "Open in player"
+    /** A video that can't be fetched (deleted, or this device lost access). */
+    const val VIDEO_UNAVAILABLE = "Video unavailable"
 
     /** The owner's approval prompt: "Sam wants to add Ann". */
     fun inviteApproval(inviter: String, name: String) = "$inviter wants to add $name"
@@ -93,9 +98,25 @@ object Messages {
         AttachmentKind.FILE -> "File"
     }
 
-    /** A message in a notification or the chat list: its text, else the label of its first attachment ("Photo"). */
+    /**
+     * A message in a notification or the chat list: its text, else the label of its first attachment ("Photo"); a video
+     * with a known length adds it ("Video · 0:42").
+     */
     fun messagePreview(m: ChatMessage): String =
-        m.text?.takeIf { it.isNotBlank() } ?: m.attachments.firstOrNull()?.let { mediaLabel(it.kind) } ?: m.text.orEmpty()
+        m.text?.takeIf { it.isNotBlank() } ?: m.attachments.firstOrNull()?.let { a ->
+            val length = if (a.kind == AttachmentKind.VIDEO) validDurationMs(a.durationMs) else null
+            if (length != null) "${mediaLabel(a.kind)} · ${duration(length)}" else mediaLabel(a.kind)
+        } ?: m.text.orEmpty()
+
+    /** A video's length or position: "0:42", "12:05", "1:02:03" (whole seconds, rounded down; negative counts as 0). */
+    fun duration(ms: Long): String {
+        val total = ms.coerceAtLeast(0) / 1000
+        val h = total / 3600; val m = total / 60 % 60; val sec = total % 60
+        return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, sec) else String.format(Locale.US, "%d:%02d", m, sec)
+    }
+
+    /** A playing video's time text: "0:16 / 0:42", "1:02:03 / 1:10:00". */
+    fun videoTime(positionMs: Long, durationMs: Long): String = "${duration(positionMs)} / ${duration(durationMs)}"
 
     /** A file bubble's detail line: "report.pdf · 2 MB". */
     fun attachmentDetail(name: String, bytes: Long) = "$name · ${size(bytes)}"

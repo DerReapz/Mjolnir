@@ -1,6 +1,8 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.AttachmentKind
+import app.mjolnir.protocol.Limits
 import java.awt.Color
 import java.awt.RenderingHints
 import java.awt.image.BufferedImage
@@ -53,12 +55,25 @@ fun interface Thumbnailer {
     fun thumbnail(file: File, kind: AttachmentKind): Thumb?
 }
 
-/** How a picked file is sent: its [kind] and, for photos and GIFs (later videos), its [thumb]. */
+/** A media length the relay accepts (1 ms to [Limits.MAX_MEDIA_DURATION_MS]), else null: absent or bad values show no badge. */
+fun validDurationMs(ms: Long?): Long? = ms?.takeIf { it in 1..Limits.MAX_MEDIA_DURATION_MS }
+
+/** A width or height the relay accepts (1 to [Limits.MAX_MEDIA_SIDE_PX] px), else null. */
+fun validSidePx(px: Int?): Int? = px?.takeIf { it in 1..Limits.MAX_MEDIA_SIDE_PX }
+
+/** The attachment's size in pixels when both sides are valid ([validSidePx]), else null: the bubble then uses its default shape. */
+fun Attachment.validSize(): Pair<Int, Int>? {
+    val w = validSidePx(width) ?: return null
+    val h = validSidePx(height) ?: return null
+    return w to h
+}
+
+/** How a picked file is sent: its [kind] and, for photos, GIFs and videos, its [thumb]. */
 data class MediaInfo(val kind: AttachmentKind, val thumb: Thumb?)
 
 /**
  * The [MediaInfo] of [file] with media type [mime]. A photo or GIF that [thumbnailer] can't read (null or an exception)
- * is sent as a FILE. Videos keep their kind without a thumbnail until the video plan lands.
+ * is sent as a FILE. A video it can't read keeps its kind and goes without a thumbnail (a plain video tile).
  */
 fun mediaInfo(file: File, mime: String?, thumbnailer: Thumbnailer): MediaInfo {
     val kind = classify(mime, file.name)
@@ -76,9 +91,9 @@ fun mediaInfo(file: File, mime: String?, thumbnailer: Thumbnailer): MediaInfo {
 }
 
 /**
- * The desktop's [Thumbnailer]: photos and the first frame of GIFs through ImageIO, read subsampled so a huge image never
- * decodes at full size, scaled to at most [MAX_SIDE] px and saved as a JPEG of quality 0.8. Null for videos (until the
- * video plan), other kinds, and anything ImageIO can't read (including WebP and HEIC, which it has no reader for).
+ * The desktop's [Thumbnailer] for pictures: photos and the first frame of GIFs through ImageIO, read subsampled so a huge
+ * image never decodes at full size, scaled to at most [MAX_SIDE] px and saved as a JPEG of quality 0.8. Null for videos
+ * (the desktop app has its own), other kinds, and anything ImageIO can't read (including WebP and HEIC).
  */
 object ImageIoThumbnailer : Thumbnailer {
     const val MAX_SIDE = 320
@@ -97,7 +112,7 @@ object ImageIoThumbnailer : Thumbnailer {
                     val step = max(1, max(width, height) / (MAX_SIDE * 2))
                     val param = reader.defaultReadParam.apply { setSourceSubsampling(step, step, 0, 0) }
                     val decoded = reader.read(0, param) // index 0: a GIF's first frame
-                    Thumb(jpeg(scaled(decoded)), width, height, null)
+                    Thumb(jpegThumbnail(decoded), width, height, null)
                 } finally {
                     reader.dispose()
                 }
@@ -106,6 +121,9 @@ object ImageIoThumbnailer : Thumbnailer {
             null
         }
     }
+
+    /** [img] scaled to at most [MAX_SIDE] px a side, as thumbnail JPEG bytes (a video frame's too). */
+    fun jpegThumbnail(img: BufferedImage): ByteArray = jpeg(scaled(img))
 
     private fun scaled(img: BufferedImage): BufferedImage {
         val scale = min(1.0, MAX_SIDE.toDouble() / max(img.width, img.height))

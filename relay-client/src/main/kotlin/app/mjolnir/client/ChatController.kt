@@ -526,7 +526,10 @@ class ChatController(
                     val f = ob.thumbFile(id, i).apply { parentFile.mkdirs(); writeBytes(t.jpeg) }
                     LocalUpload(f.absolutePath, f.name, "image/jpeg", f.length())
                 }
-                OutgoingAttachment(upload, info.kind, info.thumb?.width, info.thumb?.height, info.thumb?.durationMs, thumb, relativePath)
+                // Values the relay would refuse (a huge panorama, a bogus length) are left out rather than fail the send.
+                val t = info.thumb
+                val (w, h) = validSidePx(t?.width)?.let { w -> validSidePx(t?.height)?.let { h -> w to h } } ?: (null to null)
+                OutgoingAttachment(upload, info.kind, w, h, validDurationMs(t?.durationMs), thumb, relativePath)
             }
         }
         if (gen != generation) { // cleared meanwhile: this send belonged to the old relay

@@ -58,4 +58,28 @@ class MessagesTest {
         assertEquals("Cancel", Messages.CANCEL)
         assertEquals("clip.mov is too big for the relay", Messages.tooBigForRelay("clip.mov"))
     }
+
+    @Test fun videoTimeFormats() {
+        assertEquals("0:00", Messages.duration(0))
+        assertEquals("0:42", Messages.duration(42_999))
+        assertEquals("12:05", Messages.duration(725_000))
+        assertEquals("1:02:03", Messages.duration(3_723_000))
+        assertEquals("0:00", Messages.duration(-5))
+        assertEquals("0:16 / 0:42", Messages.videoTime(16_000, 42_000))
+        assertEquals("1:02:03 / 1:10:00", Messages.videoTime(3_723_000, 4_200_000))
+        assertEquals("Can't play this video here", Messages.CANT_PLAY_VIDEO)
+        assertEquals("Open in player", Messages.OPEN_IN_PLAYER)
+        assertEquals("Video unavailable", Messages.VIDEO_UNAVAILABLE)
+    }
+
+    @Test fun videoPreviewAddsItsLength() {
+        val fred = app.mjolnir.protocol.Peer("f", "Fred", app.mjolnir.protocol.DeviceKind.PHONE)
+        fun video(durationMs: Long?) = app.mjolnir.protocol.ChatMessage(
+            "m", "c", fred, 1, 0,
+            attachments = listOf(app.mjolnir.protocol.Attachment("v", app.mjolnir.protocol.AttachmentKind.VIDEO, "a.mp4", 9, "video/mp4", durationMs = durationMs)),
+        )
+        assertEquals("Video · 0:42", Messages.messagePreview(video(42_000)))
+        assertEquals("Video", Messages.messagePreview(video(null)))
+        assertEquals("Video", Messages.messagePreview(video(0))) // a bad length shows none
+    }
 }

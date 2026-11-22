@@ -68,5 +68,39 @@ class ChatMediaCacheTest {
         assertFalse(File(dir, "nope").exists())
     }
 
+    @Test fun getReportsProgressAgainstTheAttachmentSize() = runTest {
+        val cache = ChatMediaCache(dir)
+        val a = att("v1", 40)
+        val seen = mutableListOf<Pair<Long, Long>>()
+        cache.get(a, api) { done, total -> seen += done to total }
+        assertEquals(40L to 40L, seen.last())
+        assertTrue(seen.all { it.second == 40L })
+    }
+
+    @Test fun downloadOfTheWrongLengthIsDropped() = runTest {
+        val cache = ChatMediaCache(dir)
+        val a = att("v1", 40).copy(sizeBytes = 50) // the relay sent less than the message says
+        val error = assertFailsWith<RelayException> { cache.get(a, api) }
+        assertEquals(RelayErrorKind.NETWORK, error.kind)
+        assertEquals("incomplete_download", error.message)
+        assertTrue(cachedIds().isEmpty(), cachedIds().toString())
+        // A good copy later is kept.
+        cache.get(a.copy(sizeBytes = 40), api)
+        assertEquals(setOf("v1"), cachedIds())
+    }
+
+    @Test fun pinnedEntryOverTheCapStaysUntilUnpinned() = runTest {
+        val cache = ChatMediaCache(dir, capBytes = 30)
+        val small = att("s", 10); val other = att("o", 10); val video = att("v", 50)
+        cache.get(small, api); cache.get(other, api)
+        cache.pin("v") // playing
+        cache.get(video, api) // alone over the cap: every unpinned entry goes, the video stays
+        assertEquals(setOf("v"), cachedIds())
+        cache.get(small, api) // the one just fetched is kept beside the pinned video
+        assertEquals(setOf("v", "s"), cachedIds())
+        cache.unpin("v") // stopped: over the cap, so the video goes
+        assertEquals(setOf("s"), cachedIds())
+    }
+
     private fun cachedIds() = dir.listFiles()!!.filter { it.isFile }.map { it.name }.toSet()
 }
