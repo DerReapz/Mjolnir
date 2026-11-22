@@ -81,8 +81,10 @@ object Messages {
     const val OPEN_IN_PLAYER = "Open in player"
     /** A video that can't be fetched (deleted, or this device lost access). */
     const val VIDEO_UNAVAILABLE = "Video unavailable"
-    /** Under [VIDEO_UNAVAILABLE] on the phone: tries the stream again from where it stopped. */
+    /** Under [VIDEO_UNAVAILABLE]: on the phone tries the stream again from where it stopped; on the PC fetches it again. */
     const val RETRY = "Retry"
+    /** The phone's chat-sending notification channel, and its title when no send is going any more. */
+    const val SENDING_TO_CHATS = "Sending to chats"
 
     /** The owner's approval prompt: "Sam wants to add Ann". */
     fun inviteApproval(inviter: String, name: String) = "$inviter wants to add $name"

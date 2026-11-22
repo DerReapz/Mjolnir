@@ -65,4 +65,12 @@ class VideoEngineTest {
         assertEquals(listOf(copy), marked) // the Mark of the Web, as on a saved chat file
         tmp.deleteRecursively()
     }
+
+    @Test fun playerCopiesAreDeleted() {
+        val root = Files.createTempDirectory("player-copies").toFile()
+        File(root, "v1").mkdirs(); File(root, "v1/clip.mp4").writeText("x")
+        deletePlayerCopies(root)
+        assertFalse(root.exists())
+        deletePlayerCopies(root) // nothing there: fine
+    }
 }

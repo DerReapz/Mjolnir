@@ -898,6 +898,19 @@ class AppControllerTest {
         scope.cancel()
     }
 
+    @Test fun playerCopiesAreDeletedAtStartAndOnReset() = runTest {
+        val (fake, _) = chatRelay()
+        File(dir, "config.json").writeText(chatConfig)
+        val copies = File(dir, "player-copies").apply { File(this, "v1").mkdirs(); File(this, "v1/clip.mp4").writeText("x") }
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        val c = AppController(dir, scope, playerCopies = copies) { _, _ -> fake }
+        assertFalse(copies.exists(), "left by the last run")
+        File(copies, "v2").mkdirs(); File(copies, "v2/other.mp4").writeText("y")
+        c.changeRelay("https://b.example"); runCurrent()
+        assertFalse(copies.exists(), "the chats they came from are gone")
+        scope.cancel()
+    }
+
     @Test fun minimisedWindowCountsAsNotVisible() = runTest {
         val (fake, chat) = chatRelay()
         val (c, scope) = controller(fake, config = chatConfig)

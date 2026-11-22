@@ -415,7 +415,10 @@ private fun VideoBubble(att: Attachment, media: ChatMediaSource, video: VideoSup
             else -> {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     PlayButton(current as? VideoPhase.Fetching)
-                    if (current is VideoPhase.Unavailable) Text(Messages.VIDEO_UNAVAILABLE, style = body(12, color = Forge.text))
+                    if (current is VideoPhase.Unavailable) {
+                        Text(Messages.VIDEO_UNAVAILABLE, style = body(12, color = Forge.text))
+                        Text(Messages.RETRY, style = body(12, FontWeight.SemiBold, Forge.accent, ForgeFonts.inter600)) // the tile is the button
+                    }
                 }
                 if (length != null && thumb != null) DurationBadge(length, Modifier.align(Alignment.BottomEnd).padding(6.dp))
             }

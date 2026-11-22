@@ -21,6 +21,7 @@ import app.mjolnir.android.notificationId
 import app.mjolnir.android.postNotification
 import app.mjolnir.android.shouldReportProgress
 import app.mjolnir.android.ui.sendProgress
+import app.mjolnir.client.Messages
 import app.mjolnir.client.PendingSend
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -57,7 +58,7 @@ const val CHANNEL_CHAT_SENDING = "chat_sending"
 
 fun createChatSendingChannel(context: Context) {
     context.getSystemService(NotificationManager::class.java)
-        .createNotificationChannel(NotificationChannel(CHANNEL_CHAT_SENDING, "Sending to chats", NotificationManager.IMPORTANCE_LOW))
+        .createNotificationChannel(NotificationChannel(CHANNEL_CHAT_SENDING, Messages.SENDING_TO_CHATS, NotificationManager.IMPORTANCE_LOW))
 }
 
 /** The sends still going on (not failed), and how far they are together: done and total bytes. */
@@ -66,10 +67,14 @@ fun chatSendTotals(pending: List<PendingSend>): Pair<Long, Long> {
     return going.sumOf { it.sentBytes.coerceIn(0, it.totalBytes) } to going.sumOf { it.totalBytes }
 }
 
-/** The sending notification's title: `Sending to Trip`, or `Sending to 2 chats`. */
+/** The sending notification's title: `Sending to Trip`, `Sending to 2 chats`, or `Sending to chats` with none going. */
 fun chatSendTitle(pending: List<PendingSend>, chatName: (String) -> String?): String {
     val chats = pending.filter { it.failure == null }.map { it.chatId }.distinct()
-    return if (chats.size == 1) "Sending to ${chatName(chats.single()) ?: "a chat"}" else "Sending to ${chats.size} chats"
+    return when (chats.size) {
+        0 -> Messages.SENDING_TO_CHATS
+        1 -> "Sending to ${chatName(chats.single()) ?: "a chat"}"
+        else -> "Sending to ${chats.size} chats"
+    }
 }
 
 private val CHAT_SEND_NOTIFICATION_ID = notificationId("chat-send-progress")

@@ -107,7 +107,7 @@ internal object JavaFx {
     fun openInPlayer(att: Attachment, file: File) {
         Thread({
             try {
-                val copy = copyForPlayer(att, file, File(System.getProperty("java.io.tmpdir"), "mjolnir-videos"), ::markOfTheWeb) ?: return@Thread
+                val copy = copyForPlayer(att, file, playerCopiesDir(), ::markOfTheWeb) ?: return@Thread
                 Desktop.getDesktop().open(copy)
             } catch (_: Exception) {
                 // nothing to open it with: the bubble keeps offering Download
@@ -128,6 +128,14 @@ internal object JavaFx {
         copy.deleteOnExit(); dir.deleteOnExit()
         return copy
     }
+}
+
+/** Where [JavaFx.openInPlayer] puts its copies: `%TEMP%/mjolnir-videos`. */
+fun playerCopiesDir(): File = File(System.getProperty("java.io.tmpdir"), "mjolnir-videos")
+
+/** Deletes the copies made for the system player ([playerCopiesDir]); a file still open there stays. */
+fun deletePlayerCopies(root: File = playerCopiesDir()) {
+    runCatching { root.deleteRecursively() }
 }
 
 /** A [VideoEngine] on a JavaFX [MediaPlayer]; its picture is a [MediaView] shown through [panel]. */

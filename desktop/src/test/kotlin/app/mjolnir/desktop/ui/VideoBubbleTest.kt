@@ -186,6 +186,18 @@ class VideoBubbleTest {
         assertTrue(engine.playing.value)
     }
 
+    @Test fun unavailableOffersRetry() = runComposeUiTest {
+        val media = media().apply { gate = CompletableDeferred<Unit>().apply { completeExceptionally(java.io.IOException("offline")) } }
+        val video = FakeVideo()
+        show(ui(listOf(msg("m1", video())), media, video))
+        onNodeWithContentDescription("Video clip.mp4").performClick()
+        awaitText("Video unavailable")
+        onNodeWithText("Retry").assertExists() // the tile says a click tries again
+        media.gate = CompletableDeferred(Unit) // back online
+        onNodeWithText("Retry").performClick()
+        awaitTag("video-picture")
+    }
+
     @Test fun portraitBubbleKeepsAspect() = runComposeUiTest {
         val video = FakeVideo()
         show(ui(listOf(msg("m1", video(w = 1080, h = 1920))), media(), video))

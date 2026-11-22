@@ -96,6 +96,9 @@ class ChatSendWorkTest {
         assertEquals("Sending to Trip", chatSendTitle(listOf(trip, failed), names::get))
         assertEquals("Sending to 2 chats", chatSendTitle(listOf(trip, crew), names::get))
         assertEquals("Sending to a chat", chatSendTitle(listOf(trip.copy(chatId = "gone")), names::get))
+        // Only failed sends left (the notification is about to go): never "Sending to 0 chats".
+        assertEquals("Sending to chats", chatSendTitle(listOf(failed), names::get))
+        assertEquals("Sending to chats", chatSendTitle(emptyList(), names::get))
     }
 
     @Test fun viewerGifOverTheCapKeepsItsStill() {

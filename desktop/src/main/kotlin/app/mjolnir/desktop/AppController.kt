@@ -5,6 +5,8 @@ import app.mjolnir.client.ChatMediaCache
 import app.mjolnir.client.ChatOutbox
 import app.mjolnir.client.uniqueTarget
 import app.mjolnir.desktop.media.DesktopVideoThumbnailer
+import app.mjolnir.desktop.media.deletePlayerCopies
+import app.mjolnir.desktop.media.playerCopiesDir
 import app.mjolnir.desktop.ui.ChatMediaSource
 import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.ChatMessage
@@ -105,6 +107,8 @@ class AppController(
     private val sendToSetter: (Boolean) -> Boolean = { setSendToShortcut(it) },
     /** Tags a downloaded chat file as from the internet (the Mark of the Web), as caught files are. */
     private val markDownloaded: (File) -> Unit = ::markOfTheWeb,
+    /** The temp folder of copies opened in the system video player: deleted at start and when the chats are cleared. */
+    private val playerCopies: File = playerCopiesDir(),
     private val apiFactory: (url: String, token: () -> String?) -> RelayApi = { url, token -> RelayClient.create(url, token) },
 ) {
 
@@ -247,12 +251,14 @@ class AppController(
     /** Drops every chat, its cache and the screen state: after a re-registration or relay switch none of it is this device's any more. */
     private fun clearChats() {
         chats.clear()
+        deletePlayerCopies(playerCopies)
         _selectedChat.value = null
         _chatNotice.value = null
         _chatInfo.value = null
     }
 
     init {
+        deletePlayerCopies(playerCopies) // a run that ended without deleting them (deleteOnExit misses a crash)
         // Always on, and started before the first refresh: with no collector a new message would be dropped, not notified.
         scope.launch(start = CoroutineStart.UNDISPATCHED) { chats.newMessages.collect(::onIncomingChatMessage) }
         // Ruling CM-R7: a file the relay refused as too large is named; the rest of its send went on.
