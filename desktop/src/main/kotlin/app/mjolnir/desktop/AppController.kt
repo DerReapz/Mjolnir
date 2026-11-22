@@ -1,6 +1,15 @@
 package app.mjolnir.desktop
 
 import app.mjolnir.client.ChatController
+import app.mjolnir.client.ChatMediaCache
+import app.mjolnir.client.ChatOutbox
+import app.mjolnir.client.ImageIoThumbnailer
+import app.mjolnir.client.uniqueTarget
+import app.mjolnir.desktop.ui.ChatMediaSource
+import app.mjolnir.protocol.Attachment
+import app.mjolnir.protocol.ChatMessage
+import app.mjolnir.protocol.safeFileName
+import app.mjolnir.protocol.safeRelativePath
 import app.mjolnir.client.ChatStore
 import app.mjolnir.client.FileSeenDeliveries
 import app.mjolnir.client.IncomingMessage
@@ -94,6 +103,8 @@ class AppController(
     private val launchAtLoginSetter: (Boolean) -> Boolean = { app.mjolnir.desktop.setLaunchAtLogin(it) },
     /** Creates or deletes the Explorer *Send to* shortcut; returns whether it worked. */
     private val sendToSetter: (Boolean) -> Boolean = { setSendToShortcut(it) },
+    /** Tags a downloaded chat file as from the internet (the Mark of the Web), as caught files are. */
+    private val markDownloaded: (File) -> Unit = ::markOfTheWeb,
     private val apiFactory: (url: String, token: () -> String?) -> RelayApi = { url, token -> RelayClient.create(url, token) },
 ) {
 
@@ -123,11 +134,27 @@ class AppController(
         onUnauthorized = { scope.launch { recoverUnauthorized(store.read().token) } },
     )
 
-    /** The chats of this device's spaces; their cache lives in the app data folder `chats/`. */
+    /** Chat photos, GIFs and files fetched from the relay: an LRU cache in the app data folder `chat-media/`. */
+    private val chatMedia = ChatMediaCache(File(dataDir, "chat-media"))
+
+    /**
+     * The chats of this device's spaces; their cache lives in the app data folder `chats/`, sends with files queue in
+     * `chat-outbox/`.
+     */
     val chats = ChatController(
         api = ::api, store = ChatStore(File(dataDir, "chats").also { it.mkdirs() }), scope = scope,
+        outbox = ChatOutbox(File(dataDir, "chat-outbox")), media = chatMedia,
         me = { _config.value.deviceId },
     )
+
+    /** What the chat bubbles show: attachments through [chatMedia], fetched with the current relay connection. */
+    val chatMediaSource: ChatMediaSource = object : ChatMediaSource {
+        private fun relay() = api() ?: throw RelayException(RelayErrorKind.NETWORK, "no relay")
+        override suspend fun thumbnail(att: Attachment): File? = chatMedia.thumbnail(att, relay())
+        override suspend fun file(att: Attachment): File = chatMedia.get(att, relay())
+        override fun pin(fileId: String) = chatMedia.pin(fileId)
+        override fun unpin(fileId: String) = chatMedia.unpin(fileId)
+    }
 
     private val _selectedChat = MutableStateFlow<String?>(null)
     /** The chat the Chats tab shows; it outlives the tab, so *New chat…* elsewhere can open the chat it made. */
@@ -137,7 +164,57 @@ class AppController(
     private val _chatNotice = MutableStateFlow<String?>(null)
     /** The last failed chat action, as a sentence; null once dismissed. */
     val chatNotice: StateFlow<String?> = _chatNotice.asStateFlow()
-    fun dismissChatNotice() { _chatNotice.value = null }
+    fun dismissChatNotice() { _chatNotice.value = null; _chatInfo.value = null }
+
+    private val _chatInfo = MutableStateFlow<String?>(null)
+    /** The last chat download's result ("Saved to …"); null once dismissed. Failures go to [chatNotice]. */
+    val chatInfo: StateFlow<String?> = _chatInfo.asStateFlow()
+
+    /** Sends [files] (folders as their files) to [chatId]; they upload in the background and show as pending sends. */
+    fun sendChatFiles(chatId: String, files: List<File>) {
+        if (files.isEmpty()) return
+        scope.launch { chatCall { send(chatId, null, files, ImageIoThumbnailer) } }
+    }
+
+    /** Saves [attachments] of [m] into the save folder (see [saveChatFiles]); the result shows as [chatInfo] or [chatNotice]. */
+    fun downloadChatFiles(m: ChatMessage, attachments: List<Attachment>) {
+        if (attachments.isEmpty()) return
+        scope.launch { saveChatFiles(m, attachments) }
+    }
+
+    /**
+     * Saves [attachments] of [m] into the save folder, with the catch rules: safe names, a free name next to existing
+     * files ("name (1).ext"), a sent folder under one free top-folder name, and the Mark of the Web. Then shows
+     * "Saved to {folder}", or the failure ("Message deleted") as the notice.
+     */
+    internal suspend fun saveChatFiles(m: ChatMessage, attachments: List<Attachment>) {
+        _chatInfo.value = null
+        try {
+            val root = withContext(Dispatchers.IO) { _config.value.saveDirFile() }
+            val folders = HashMap<String, File>()
+            for (att in attachments) {
+                val path = att.relativePath?.let(::safeRelativePath)?.split('/')
+                val dir = if (path == null || path.size < 2) root else {
+                    val top = folders.getOrPut(path.first()) { withContext(Dispatchers.IO) { File(root, freeFolderName(root, path.first())).apply { mkdirs() } } }
+                    File(top, path.subList(1, path.size - 1).joinToString("/")).also { withContext(Dispatchers.IO) { it.mkdirs() } }
+                }
+                val target = withContext(Dispatchers.IO) { uniqueTarget(dir, path?.last() ?: safeFileName(att.name)) }
+                chats.download(m.chatId, att, target)
+                withContext(Dispatchers.IO) { markDownloaded(target) }
+            }
+            _chatInfo.value = Messages.savedTo(root.path)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: RelayException) {
+            _chatNotice.value = e.userMessage ?: Messages.chatError(e)
+        } catch (e: Exception) {
+            _chatNotice.value = "Couldn't save ${attachments.first().name}: ${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
+    /** [name], or "name (1)", "name (2)", … if a file or folder of that name is in [root] already. */
+    private fun freeFolderName(root: File, name: String): String =
+        generateSequence(1) { it + 1 }.map { "$name ($it)" }.let { sequenceOf(name) + it }.first { !File(root, it).exists() }
 
     /**
      * Runs a chat action in the controller's scope, so closing the window cannot cancel it half way; a refusal becomes
@@ -162,6 +239,7 @@ class AppController(
         chats.clear()
         _selectedChat.value = null
         _chatNotice.value = null
+        _chatInfo.value = null
     }
 
     init {
@@ -202,6 +280,11 @@ class AppController(
     private val _showing = MutableStateFlow(false)
     /** True while the main window is shown and not minimised: the one rule for "the user can see it" (notifications, read marks). */
     val windowShowing: StateFlow<Boolean> = _showing.asStateFlow()
+
+    init {
+        // Ruling CM-R2: the window coming back is a moment to retry sends held back by a network loss (Connected also does).
+        scope.launch { windowShowing.collect { if (it) chats.resumeSends() } }
+    }
 
     /** The window was minimised or restored; a minimised window counts as not visible. */
     fun setWindowMinimized(min: Boolean) = synchronized(windowLock) { minimized = min; _showing.value = shown && !minimized }

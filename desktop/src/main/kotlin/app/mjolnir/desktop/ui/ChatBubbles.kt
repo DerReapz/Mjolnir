@@ -1,0 +1,348 @@
+package app.mjolnir.desktop.ui
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.mjolnir.client.AttachmentGroup
+import app.mjolnir.client.Messages
+import app.mjolnir.client.PendingFile
+import app.mjolnir.client.PendingSend
+import app.mjolnir.client.groupAttachments
+import app.mjolnir.client.groupPendingFiles
+import app.mjolnir.protocol.Attachment
+import app.mjolnir.protocol.AttachmentKind
+import app.mjolnir.protocol.ChatMessage
+import java.io.File
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/** Where the bubbles get an attachment's files: the app's media cache, downloading on demand. */
+interface ChatMediaSource {
+    /** The attachment's thumbnail, or null when it has none. Throws when it can't be fetched. */
+    suspend fun thumbnail(att: Attachment): File?
+    /** The attachment's file. Throws when it can't be fetched (e.g. its message was deleted). */
+    suspend fun file(att: Attachment): File
+    /** Keeps [fileId] in the cache while a bubble shows it; matched by [unpin]. */
+    fun pin(fileId: String) {}
+    fun unpin(fileId: String) {}
+}
+
+/** No media at all: bubbles show their placeholders. */
+object NoChatMedia : ChatMediaSource {
+    override suspend fun thumbnail(att: Attachment): File? = null
+    override suspend fun file(att: Attachment): File = throw java.io.FileNotFoundException(att.name)
+}
+
+/** Inline photos and GIFs are at most this wide (and tall). */
+internal val MEDIA_MAX = 320.dp
+private const val MEDIA_MAX_PX = 320
+/** Inline bubbles fetch the full photo or GIF only up to this size; bigger ones stay on their thumbnail until opened. */
+private const val INLINE_FULL_MAX_BYTES = 16L shl 20
+/** Skia decodes unscaled, so formats ImageIO can't read (WebP) are decoded only up to this many pixels. */
+private const val SKIA_MAX_PIXELS = 40_000_000L
+
+private val PLACEHOLDER = Color(0xFF2A2418)
+private val TAG_FILL = Color(0xFF262626)
+private val mediaShape = RoundedCornerShape(12.dp)
+
+private fun body(size: Int, weight: FontWeight? = null, color: Color = Forge.text, family: FontFamily = ForgeFonts.inter400) =
+    TextStyle(fontFamily = family, fontSize = size.sp, color = color, fontWeight = weight)
+
+/** The picture in [file] scaled to fit [maxPx] (ImageIO, subsampled), else via Skia for formats ImageIO lacks; null if neither reads it. */
+internal fun decodeImage(file: File, maxPx: Int, pixels: Long? = null): ImageBitmap? =
+    loadThumbnail(file.path, maxPx) ?: try {
+        if (pixels != null && pixels > SKIA_MAX_PIXELS) null
+        else org.jetbrains.skia.Image.makeFromEncoded(file.readBytes()).toComposeImageBitmap()
+    } catch (_: Exception) {
+        null
+    } catch (_: OutOfMemoryError) {
+        null
+    }
+
+/** Runs [block], turning a failure (not a cancellation) into null: a bubble that can't fetch its media keeps its placeholder. */
+private suspend fun <T> orNull(block: suspend () -> T): T? = try {
+    block()
+} catch (e: CancellationException) {
+    throw e
+} catch (_: Exception) {
+    null
+}
+
+/** Keeps [ids] pinned in the media cache while this is in composition. */
+@Composable
+private fun PinWhileShown(media: ChatMediaSource, vararg ids: String?) {
+    val keys = ids.filterNotNull()
+    DisposableEffect(media, keys) {
+        keys.forEach(media::pin)
+        onDispose { keys.forEach(media::unpin) }
+    }
+}
+
+/** The size a picture of [w]×[h] shows at inline: as is, scaled down to fit [MEDIA_MAX] square. */
+private fun inlineSize(w: Int?, h: Int?): Pair<Dp, Dp> {
+    if (w == null || h == null || w <= 0 || h <= 0) return 240.dp to 150.dp // the mockup's photo placeholder
+    val scale = minOf(1f, MEDIA_MAX_PX.toFloat() / w, MEDIA_MAX_PX.toFloat() / h)
+    return (w * scale).coerceAtLeast(48f).dp to (h * scale).coerceAtLeast(32f).dp
+}
+
+/** A message's attachments: photos and GIFs as pictures, files and folders as file bubbles; in sent order. */
+@Composable
+internal fun MessageAttachments(
+    m: ChatMessage, mine: Boolean, media: ChatMediaSource, playing: Boolean,
+    onOpen: (Attachment) -> Unit, onDownload: (List<Attachment>) -> Unit,
+) {
+    val groups = remember(m.attachments) { groupAttachments(m.attachments) }
+    for (group in groups) {
+        when (group) {
+            is AttachmentGroup.Folder -> FolderBubble(group.name, group.count, group.totalBytes, mine) { onDownload(group.items) }
+            is AttachmentGroup.Single -> {
+                val att = group.item
+                when (att.kind) {
+                    AttachmentKind.IMAGE -> ImageBubble(att, media) { onOpen(att) }
+                    AttachmentKind.GIF -> GifBubble(att, media, playing) { onOpen(att) }
+                    // Ruling CM-R3: a video is a file bubble labelled "Video" until the video plan.
+                    AttachmentKind.VIDEO, AttachmentKind.FILE -> FileBubble(att.kind, att.name, att.sizeBytes, mine) { onDownload(listOf(att)) }
+                }
+            }
+        }
+    }
+}
+
+/** A photo: its thumbnail first, then the full picture once fetched. Clicking opens the viewer. */
+@Composable
+private fun ImageBubble(att: Attachment, media: ChatMediaSource, onOpen: () -> Unit) {
+    PinWhileShown(media, att.fileId, att.thumbFileId)
+    var thumb by remember(att.fileId) { mutableStateOf<ImageBitmap?>(null) }
+    var full by remember(att.fileId) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(att.fileId) {
+        thumb = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
+        if (att.sizeBytes <= INLINE_FULL_MAX_BYTES) {
+            full = orNull { media.file(att).let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX * 2, att.pixels()) } } }
+        }
+    }
+    val shown = full ?: thumb
+    val (w, h) = inlineSize(att.width ?: shown?.width, att.height ?: shown?.height)
+    Box(
+        Modifier.size(w, h).clip(mediaShape).background(PLACEHOLDER, mediaShape).border(1.dp, Forge.border, mediaShape)
+            .semantics { contentDescription = "Photo ${att.name}" }.clickable(role = Role.Button, onClick = onOpen),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (shown != null) {
+            Image(shown, null, Modifier.fillMaxSize().testTag(if (full != null) "image-full" else "image-thumb"), contentScale = ContentScale.Crop)
+        } else {
+            Text(Messages.mediaLabel(att.kind), style = body(12, color = Forge.muted))
+        }
+    }
+}
+
+private fun Attachment.pixels(): Long? = if (width != null && height != null) width!!.toLong() * height!! else null
+
+/** A GIF: its first frame (the thumbnail) at once, then animating once fetched; the `GIF` badge in its corner. */
+@Composable
+private fun GifBubble(att: Attachment, media: ChatMediaSource, playing: Boolean, onOpen: () -> Unit) {
+    PinWhileShown(media, att.fileId, att.thumbFileId)
+    var still by remember(att.fileId) { mutableStateOf<ImageBitmap?>(null) }
+    var gif by remember(att.fileId) { mutableStateOf<GifFrames?>(null) }
+    LaunchedEffect(att.fileId) {
+        still = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
+        if (att.sizeBytes <= INLINE_FULL_MAX_BYTES) gif = orNull { media.file(att).let { withContext(Dispatchers.IO) { GifFrames.decode(it.readBytes()) } } }
+    }
+    val (w, h) = inlineSize(att.width ?: gif?.width ?: still?.width, att.height ?: gif?.height ?: still?.height)
+    Box(
+        Modifier.size(w, h).clip(mediaShape).background(TAG_FILL, mediaShape).border(1.dp, Forge.border, mediaShape)
+            .semantics { contentDescription = "GIF ${att.name}" }.clickable(role = Role.Button, onClick = onOpen),
+    ) {
+        val frames = gif
+        if (frames != null) AnimatedGif(frames, null, Modifier.fillMaxSize(), playing)
+        else still?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+        GifBadge(Modifier.align(Alignment.BottomStart).padding(6.dp))
+    }
+}
+
+@Composable
+private fun GifBadge(modifier: Modifier = Modifier) = Text(
+    "GIF", style = body(10, FontWeight.Bold, Forge.onAccent, ForgeFonts.inter600),
+    modifier = modifier.background(Forge.text, RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 1.dp),
+)
+
+/** The file type tag of a file bubble: its extension ("PDF"), else "FILE"; "VIDEO" for a video. */
+internal fun fileTag(kind: AttachmentKind, name: String): String =
+    if (kind == AttachmentKind.VIDEO) "VIDEO"
+    else name.substringAfterLast('.', "").takeIf { it.isNotEmpty() && it.length <= 4 && it != name }?.uppercase() ?: "FILE"
+
+/** A file (or a video, ruling CM-R3): its type tag, `File`/`Video` and `{name} · {size}`. Clicking downloads it. */
+@Composable
+private fun FileBubble(kind: AttachmentKind, name: String, bytes: Long, mine: Boolean, onDownload: (() -> Unit)?) =
+    FileLikeBubble(fileTag(kind, name), Messages.mediaLabel(kind), Messages.attachmentDetail(name, bytes), name, mine, onDownload)
+
+/** A sent folder as one bubble: its name and `Folder · {n} files · {size}`. Clicking downloads all of it. */
+@Composable
+private fun FolderBubble(name: String, count: Int, bytes: Long, mine: Boolean, onDownload: (() -> Unit)?) =
+    FileLikeBubble(null, name, Messages.folderDetail(count, bytes), name, mine, onDownload)
+
+@Composable
+private fun FileLikeBubble(tag: String?, title: String, detail: String, name: String, mine: Boolean, onDownload: (() -> Unit)?) {
+    val base = if (mine) Modifier.background(MINE_FILL, mediaShape).border(1.dp, MINE_BORDER, mediaShape) else Modifier.background(Forge.surface, mediaShape)
+    val click = if (onDownload != null) Modifier.semantics { contentDescription = "Download $name" }.clickable(role = Role.Button, onClick = onDownload) else Modifier
+    Row(
+        Modifier.widthIn(max = MEDIA_MAX).clip(mediaShape).then(base).then(click).padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(Modifier.size(36.dp).background(TAG_FILL, RoundedCornerShape(6.dp)), contentAlignment = Alignment.Center) {
+            if (tag != null) Text(tag, style = body(10, FontWeight.SemiBold, Forge.muted, ForgeFonts.inter600), maxLines = 1)
+            else ForgeIcon(ICON_FOLDER, Forge.muted, 18.dp)
+        }
+        Column(Modifier.weight(1f, fill = false)) {
+            Text(title, style = body(14, FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(detail, style = body(12, color = Forge.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+// ---- sends not posted yet ----
+
+/** "400 KB of 1 MB · 40%". */
+internal fun sendProgress(done: Long, total: Long): String {
+    val fraction = if (total > 0) done.coerceIn(0, total).toFloat() / total else 1f
+    return "${Messages.size(done)} of ${Messages.size(total)} · ${(fraction * 100).toInt()}%"
+}
+
+/**
+ * A send still uploading: its text and files greyed, with a progress bar. One that failed for good shows why and
+ * offers *Dismiss*.
+ */
+@Composable
+internal fun PendingSendBubbles(send: PendingSend, onDismiss: () -> Unit) {
+    val failed = send.failure != null
+    Column(
+        Modifier.fillMaxWidth().testTag("pending-${send.id}"), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Column(
+            Modifier.alpha(0.5f).semantics { contentDescription = if (failed) "Not sent" else "Sending" },
+            horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            send.text?.takeIf { it.isNotBlank() }?.let { text ->
+                val shape = RoundedCornerShape(12.dp, 12.dp, 4.dp, 12.dp)
+                Text(text, style = body(14).copy(lineHeight = 20.sp), modifier = Modifier.widthIn(max = 480.dp)
+                    .background(MINE_FILL, shape).border(1.dp, MINE_BORDER, shape).padding(horizontal = 12.dp, vertical = 9.dp))
+            }
+            for (group in remember(send.files) { groupPendingFiles(send.files) }) {
+                when (group) {
+                    is AttachmentGroup.Folder -> FolderBubble(group.name, group.count, group.totalBytes, mine = true, onDownload = null)
+                    is AttachmentGroup.Single -> PendingFileBubble(group.item)
+                }
+            }
+        }
+        if (failed) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(send.failure!!, style = body(12, color = Forge.error))
+                ForgeTextButton(Messages.DISMISS, onClick = onDismiss, muted = true)
+            }
+        } else {
+            val fraction = if (send.totalBytes > 0) send.sentBytes.coerceIn(0, send.totalBytes).toFloat() / send.totalBytes else 0f
+            Box(
+                Modifier.width(160.dp).height(4.dp).background(Forge.border, RoundedCornerShape(2.dp))
+                    .semantics { progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f) },
+            ) { Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).background(Forge.accent, RoundedCornerShape(2.dp))) }
+            Text(sendProgress(send.sentBytes, send.totalBytes), style = body(11, color = Forge.muted))
+        }
+    }
+}
+
+/** A queued photo or GIF from its local thumbnail (or the file itself); anything else as a file bubble. */
+@Composable
+private fun PendingFileBubble(f: PendingFile) {
+    if (f.kind == AttachmentKind.IMAGE || f.kind == AttachmentKind.GIF) {
+        val bitmap = rememberThumbnail(f.thumbPath?.takeIf { File(it).exists() } ?: f.path, MEDIA_MAX_PX)
+        val (w, h) = inlineSize(bitmap?.width, bitmap?.height)
+        Box(Modifier.size(w, h).clip(mediaShape).background(PLACEHOLDER, mediaShape).border(1.dp, Forge.border, mediaShape)) {
+            bitmap?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+            if (f.kind == AttachmentKind.GIF) GifBadge(Modifier.align(Alignment.BottomStart).padding(6.dp))
+        }
+    } else {
+        FileBubble(f.kind, f.name, f.sizeBytes, mine = true, onDownload = null)
+    }
+}
+
+// ---- the viewer ----
+
+/** A photo or GIF at full size over the conversation, with *Download* and *Close*. */
+@Composable
+internal fun ImageViewer(att: Attachment, media: ChatMediaSource, playing: Boolean, onDownload: () -> Unit, onClose: () -> Unit) {
+    PinWhileShown(media, att.fileId, att.thumbFileId)
+    var still by remember(att.fileId) { mutableStateOf<ImageBitmap?>(null) }
+    var gif by remember(att.fileId) { mutableStateOf<GifFrames?>(null) }
+    var failed by remember(att.fileId) { mutableStateOf(false) }
+    LaunchedEffect(att.fileId) {
+        still = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
+        val file = orNull { media.file(att) }
+        if (file == null) { failed = true; return@LaunchedEffect }
+        if (att.kind == AttachmentKind.GIF) gif = withContext(Dispatchers.IO) { GifFrames.decode(file.readBytes()) }
+        if (gif == null) still = withContext(Dispatchers.IO) { decodeImage(file, 4096, att.pixels()) } ?: still
+    }
+    Box(
+        Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.85f)).semantics { contentDescription = "Image viewer" }
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClose),
+    ) {
+        Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                val frames = gif
+                when {
+                    frames != null -> AnimatedGif(frames, att.name, Modifier.fillMaxSize(), playing)
+                    still != null -> Image(still!!, att.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                    else -> Text(if (failed) "Couldn't load ${att.name}" else "Loading…", style = body(13, color = Forge.muted))
+                }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(Messages.attachmentDetail(att.name, att.sizeBytes), Modifier.weight(1f), style = body(13, color = Forge.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                ChatButton(Messages.DOWNLOAD, onDownload)
+                ChatButton("Close", onClose, primary = true)
+            }
+        }
+    }
+}

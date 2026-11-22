@@ -915,4 +915,47 @@ class AppControllerTest {
         assertFalse(c.windowShowing.value) // restoring does not show a window that is hidden
         scope.cancel()
     }
+
+    // ---- chat media ----
+
+    @Test fun chatDownloadSavesIntoTheSaveFolder() = runTest {
+        val (fake, chat) = chatRelay()
+        File(dir, "config.json").writeText(chatConfig)
+        val marked = mutableListOf<String>()
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        val c = AppController(dir, scope, markDownloaded = { marked += it.name }) { _, _ -> fake }
+        val save = File(dir, "save").apply { mkdirs() }
+        File(save, "itinerary.pdf").writeText("already here")
+        File(save, "Holiday").mkdirs()
+        fake.blobs["f1"] = "pdf".toByteArray(); fake.blobs["a"] = "aa".toByteArray(); fake.blobs["b"] = "bb".toByteArray()
+        val pdf = Attachment("f1", AttachmentKind.FILE, "itinerary.pdf", 3, "application/pdf")
+        val a = Attachment("a", AttachmentKind.FILE, "a.txt", 2, "text/plain", relativePath = "Holiday/a.txt")
+        val b = Attachment("b", AttachmentKind.FILE, "b.txt", 2, "text/plain", relativePath = "Holiday/docs/b.txt")
+        val m = fake.incoming(chat, fred, null, attachments = listOf(pdf, a, b))
+
+        c.saveChatFiles(m, m.attachments)
+
+        assertEquals("pdf", File(save, "itinerary (1).pdf").readText()) // a free name next to the existing file
+        assertEquals("already here", File(save, "itinerary.pdf").readText())
+        assertEquals("aa", File(save, "Holiday (1)/a.txt").readText()) // the folder under one free name
+        assertEquals("bb", File(save, "Holiday (1)/docs/b.txt").readText())
+        assertEquals(listOf("itinerary (1).pdf", "a.txt", "b.txt"), marked) // the Mark of the Web on each
+        assertEquals("Saved to ${save.path}", c.chatInfo.value)
+        assertNull(c.chatNotice.value)
+        scope.cancel()
+    }
+
+    @Test fun chatDownloadOfADeletedMessageSaysSo() = runTest {
+        val (fake, chat) = chatRelay()
+        val (c, scope) = controller(fake, config = chatConfig)
+        val gone = Attachment("gone", AttachmentKind.IMAGE, "IMG_2041.jpg", 10, "image/jpeg")
+        val m = fake.incoming(chat, fred, null, attachments = listOf(gone)) // no blob: the relay answers 404
+
+        c.saveChatFiles(m, m.attachments)
+
+        assertEquals("Message deleted", c.chatNotice.value)
+        assertNull(c.chatInfo.value)
+        assertEquals(emptyList(), File(dir, "save").listFiles().orEmpty().map { it.name })
+        scope.cancel()
+    }
 }

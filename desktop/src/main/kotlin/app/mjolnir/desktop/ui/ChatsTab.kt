@@ -4,6 +4,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -34,7 +35,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.DragData
+import androidx.compose.ui.draganddrop.dragData
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -68,6 +74,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.MentionPicks
+import app.mjolnir.client.PendingSend
 import app.mjolnir.client.Messages
 import app.mjolnir.client.Segment
 import app.mjolnir.client.capCodePoints
@@ -85,6 +92,7 @@ import app.mjolnir.client.TextPart
 import app.mjolnir.client.linkify
 import app.mjolnir.desktop.AppController
 import app.mjolnir.desktop.browseWithSystem
+import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.ChatEvent
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
@@ -96,19 +104,21 @@ import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
+import java.io.File
 import java.net.URI
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import javax.swing.JFileChooser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 private val DANGER = Color(0xFFF87171)
-private val MINE_FILL = Color(0xFF3B2A0E)
-private val MINE_BORDER = Color(0xFF5A4114)
+internal val MINE_FILL = Color(0xFF3B2A0E)
+internal val MINE_BORDER = Color(0xFF5A4114)
 
 /** Everything the Chats tab shows, so the tab is stateless and can be tested and rendered headless. */
 class ChatsUi(
@@ -129,6 +139,14 @@ class ChatsUi(
     val receipts: List<Receipt> = emptyList(),
     /** The chats with an unread message that mentions this device: the list marks them with an `@`. */
     val unreadMentions: Set<String> = emptySet(),
+    /** Sends with files not posted yet (any chat's; the selected chat's show greyed at its end). */
+    val pending: List<PendingSend> = emptyList(),
+    /** Where photos, GIFs and their thumbnails come from. */
+    val media: ChatMediaSource = NoChatMedia,
+    /** GIFs animate only while the window is showing. */
+    val animate: Boolean = true,
+    /** The last download's result ("Saved to …"), shown until dismissed; [notice] is for failures. */
+    val info: String? = null,
 ) {
     val selected: ChatSummary? get() = chats.firstOrNull { it.id == selectedId }
 
@@ -158,6 +176,14 @@ class ChatsActions(
     val onSettings: () -> Unit = {},
     val onAdminJoin: () -> Unit = {},
     val onDismissNotice: () -> Unit = {},
+    /** Saves these attachments of the message into the save folder. */
+    val onDownload: (ChatMessage, List<Attachment>) -> Unit = { _, _ -> },
+    /** *Attach*: pick files or folders to send to the open chat. */
+    val onAttach: () -> Unit = {},
+    /** Files or folders dropped on the open chat: sent there. */
+    val onDropFiles: (List<File>) -> Unit = {},
+    /** Drops a send that failed for good. */
+    val onDismissSend: (String) -> Unit = {},
 )
 
 private val timeFormat = DateTimeFormatter.ofPattern("HH:mm")
@@ -331,6 +357,7 @@ private fun InvitationCard(invite: ChatInvite, actions: ChatsActions) {
 
 // ---- the conversation ----
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
 private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
     val chat = ui.selected
@@ -343,21 +370,35 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
     val isAdmin = chat.spaceId in ui.adminSpaceIds
     var editing by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     var info by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
+    var viewing by remember(chat.id) { mutableStateOf<Pair<ChatMessage, Attachment>?>(null) }
     val latestOwn = remember(ui.messages, ui.selfId) { latestOwnMessage(ui.messages, ui.selfId) }
     val names = remember(ui.members, ui.messages) {
         (ui.messages.map { it.author } + ui.members).associateBy { it.deviceId } + ui.members.associateBy { it.deviceId }
     }
     val nameOf = { id: String -> names[id]?.let(ui.nicknameOf) ?: "Someone" }
-    Column(Modifier.fillMaxSize()) {
+    val pending = ui.pending.filter { it.chatId == chat.id }
+    val dropTarget = remember(actions.onDropFiles) {
+        object : DragAndDropTarget {
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                val data = event.dragData() as? DragData.FilesList ?: return false
+                actions.onDropFiles(data.readFiles().mapNotNull { runCatching { File(URI(it)) }.getOrNull() })
+                return true
+            }
+        }
+    }
+    // Files dropped on a chat you're in are sent there (else they go to the Send tab, like anywhere in the window).
+    val drop = if (chat.member) Modifier.dragAndDropTarget(shouldStartDragAndDrop = { it.dragData() is DragData.FilesList }, target = dropTarget) else Modifier
+    Column(Modifier.fillMaxSize().then(drop)) {
         ConversationHeader(chat, ui, actions)
-        ui.notice?.let {
+        (ui.notice ?: ui.info)?.let {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(it, Modifier.weight(1f), style = body(13, color = Forge.error))
+                Text(it, Modifier.weight(1f), style = body(13, color = if (ui.notice != null) Forge.error else Forge.muted))
                 ForgeTextButton("Close", muted = true, onClick = actions.onDismissNotice)
             }
         }
         val listState = rememberLazyListState()
-        LaunchedEffect(chat.id, ui.messages.size) { if (ui.messages.isNotEmpty()) listState.scrollToItem(ui.messages.lastIndex) } // the newest message
+        val count = ui.messages.size + pending.size
+        LaunchedEffect(chat.id, count) { if (count > 0) listState.scrollToItem(count - 1) } // the newest message
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(), state = listState,
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 16.dp),
@@ -369,8 +410,10 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
                 else MessageRow(
                     m, mine = m.author.deviceId == ui.selfId, byAdmin = isAdmin, ui, actions, onEdit = { editing = it }, onInfo = { info = it },
                     receiptLine = if (m.id == latestOwn?.id) receiptLineOf(m, ui) else "",
+                    onOpen = { a -> viewing = m to a },
                 )
             }
+            items(pending, key = { "pending-${it.id}" }) { p -> PendingSendBubbles(p, onDismiss = { actions.onDismissSend(p.id) }) }
         }
         if (chat.member) {
             Composer(chat, editing, ui, actions, onDone = { editing = null })
@@ -386,6 +429,7 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
         }
     }
     info?.let { MessageInfoDialog(it, ui, actions, onClose = { info = null }) }
+    viewing?.let { (m, a) -> ImageViewer(a, ui.media, ui.animate, onDownload = { actions.onDownload(m, listOf(a)) }, onClose = { viewing = null }) }
 }
 
 /** The line under your latest message ("Read by Ann · Seen by Bo"), or empty while nobody has seen it. */
@@ -455,12 +499,13 @@ private class MenuItem(val label: String, val danger: Boolean, val onClick: () -
 @Composable
 private fun MessageRow(
     m: ChatMessage, mine: Boolean, byAdmin: Boolean, ui: ChatsUi, actions: ChatsActions, onEdit: (ChatMessage) -> Unit,
-    onInfo: (ChatMessage) -> Unit, receiptLine: String,
+    onInfo: (ChatMessage) -> Unit, receiptLine: String, onOpen: (Attachment) -> Unit,
 ) {
     var menuOpen by remember(m.id) { mutableStateOf(false) }
     val firstLink = remember(m.text) { m.text?.let { t -> linkify(t).filterIsInstance<TextPart.Link>().firstOrNull()?.url } }
     val items = buildList {
         if (!m.deleted) {
+            if (m.attachments.isNotEmpty()) add(MenuItem(Messages.DOWNLOAD, false) { actions.onDownload(m, m.attachments) })
             firstLink?.let { add(MenuItem(Messages.COPY_LINK, false) { actions.onCopy(it) }) }
             if (mine && m.text != null) add(MenuItem(Messages.INFO, false) { onInfo(m) })
             if (mine && m.text != null) add(MenuItem(Messages.EDIT, false) { onEdit(m) })
@@ -498,7 +543,10 @@ private fun MessageRow(
             if (mine) menu()
             Column(Modifier.widthIn(max = maxBubble), horizontalAlignment = if (mine) Alignment.End else Alignment.Start, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 if (!mine) Text(ui.nicknameOf(m.author), style = body(12, color = Forge.muted))
-                Bubble(m, mine, ui, actions)
+                if (!m.deleted && m.attachments.isNotEmpty()) {
+                    MessageAttachments(m, mine, ui.media, ui.animate, onOpen = onOpen, onDownload = { actions.onDownload(m, it) })
+                }
+                if (m.deleted || m.attachments.isEmpty() || !m.text.isNullOrBlank()) Bubble(m, mine, ui, actions)
                 val meta = clockTime(m.sentAtEpochMs) + if (m.editedAtEpochMs != null && !m.deleted) " · ${Messages.EDITED}" else ""
                 Text(meta, style = body(11, color = Forge.muted))
                 if (receiptLine.isNotEmpty()) Text(receiptLine, style = body(11, color = Forge.muted), textAlign = TextAlign.End)
@@ -584,6 +632,14 @@ private fun Composer(chat: ChatSummary, editing: ChatMessage?, ui: ChatsUi, acti
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        if (editing == null) {
+            Box(
+                Modifier.width(40.dp).heightIn(min = 40.dp).clip(Forge.inputShape).background(Forge.surface, Forge.inputShape)
+                    .border(1.dp, Forge.border, Forge.inputShape).semantics { contentDescription = "Attach" }
+                    .clickable(role = Role.Button, onClick = actions.onAttach),
+                contentAlignment = Alignment.Center,
+            ) { Text("+", style = body(18)) }
+        }
         BasicTextField(
             value = text, onValueChange = { text = capCodePoints(it, Limits.MAX_CHAT_TEXT_LENGTH) },
             textStyle = body(14), cursorBrush = SolidColor(Forge.accent),
@@ -644,7 +700,7 @@ private sealed interface ChatDialog {
 /** The Chats tab wired to the [AppController]: its chat list, the chat on screen (read while visible), and the dialogs. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun ChatsTab(c: AppController) {
+fun ChatsTab(c: AppController, parent: java.awt.Component? = null) {
     val chats by c.chats.chats.collectAsState()
     val invites by c.chats.invites.collectAsState()
     val unread by c.chats.unread.collectAsState()
@@ -655,6 +711,8 @@ fun ChatsTab(c: AppController) {
     val nicknames by c.nicknames.changes.collectAsState()
     val notice by c.chatNotice.collectAsState()
     val showing by c.windowShowing.collectAsState()
+    val pending by c.chats.pendingSends.collectAsState()
+    val info by c.chatInfo.collectAsState()
     val selected = chats.firstOrNull { it.id == selectedId }
     val id = selected?.id
     val messages by remember(id) { id?.let(c.chats::messages) ?: MutableStateFlow(emptyList()) }.collectAsState()
@@ -693,10 +751,23 @@ fun ChatsTab(c: AppController) {
         onSettings = { dialog = ChatDialog.Settings },
         onAdminJoin = { if (id != null) run { adminJoinChat(id) } },
         onDismissNotice = c::dismissChatNotice,
+        onDownload = c::downloadChatFiles,
+        onAttach = {
+            val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.FILES_AND_DIRECTORIES; isMultiSelectionEnabled = true; dialogTitle = "Attach" }
+            if (id != null && chooser.showOpenDialog(parent) == JFileChooser.APPROVE_OPTION) c.sendChatFiles(id, chooser.selectedFiles.toList())
+        },
+        onDropFiles = { files -> if (id != null) c.sendChatFiles(id, files) },
+        onDismissSend = c.chats::dismissSend,
     )
 
     Box(Modifier.fillMaxSize()) {
-        ChatsTabContent(ChatsUi(chats, invites, unread, config.deviceId, adminSpaceIds, selectedId, messages, members, nicknameOf, notice, receipts, unreadMentions), actions)
+        ChatsTabContent(
+            ChatsUi(
+                chats, invites, unread, config.deviceId, adminSpaceIds, selectedId, messages, members, nicknameOf, notice, receipts, unreadMentions,
+                pending = pending, media = c.chatMediaSource, animate = showing, info = info,
+            ),
+            actions,
+        )
         val close = { dialog = null }
         when (dialog) {
             null -> {}

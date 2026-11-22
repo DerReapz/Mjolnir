@@ -72,6 +72,8 @@ object Messages {
     const val READ = "Read"
     const val SEEN = "Seen"
     const val NOBODY_YET = "Nobody yet"
+    const val DOWNLOAD = "Download"
+    const val DISMISS = "Dismiss"
 
     /** The owner's approval prompt: "Sam wants to add Ann". */
     fun inviteApproval(inviter: String, name: String) = "$inviter wants to add $name"
@@ -95,6 +97,8 @@ object Messages {
 
     /** A file bubble's detail line: "report.pdf · 2 MB". */
     fun attachmentDetail(name: String, bytes: Long) = "$name · ${size(bytes)}"
+    /** Where a PC download went: "Saved to {the save folder}". */
+    fun savedTo(folder: String) = "Saved to $folder"
     /** A folder bubble's detail line: "Folder · 12 files · 3 MB". */
     fun folderDetail(files: Int, bytes: Long) = "Folder · ${files(files)} · ${size(bytes)}"
 
