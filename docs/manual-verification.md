@@ -74,7 +74,7 @@ Needs two PCs (A, B) and a phone (C) in one space, with A as the space admin (so
 - **Offline catch-up:** turn the phone's network off, send several messages from a PC, restore the network; the chat catches up in order.
 
 ## Chat media
-Needs two PCs (A, B) and a phone (C) in one chat, on the updated relay. 
+Needs two PCs (A, B) and a phone (C) in one chat, on the updated relay.
 - **Send each kind from every app:** a photo, a GIF, a file and a folder from A, B and C. Photos and GIFs show as thumbnails; a file shows its name and `File · {size}`; a folder shows one `Folder · {n} files · {size}` bubble. Sends start immediately (no caption step).
 - **GIF animates:** on A, B and C the GIF moves in the bubble and in the full-screen view.
 - **Phone image view:** tap a photo on C; pinch-zoom works and double tap resets.
@@ -105,6 +105,9 @@ Needs a PC (A), a second PC (B) and a phone (C) in one chat, on the updated rela
 - **Full screen on the phone:** open full screen, rotate, close; no audio continues. Open full screen while paused: the frame shows. The position is kept when closing and reopening.
 - **Background (phone):** with a video playing, switch to another app; it pauses.
 - **Errors (phone):** turn airplane mode on mid-stream; it shows buffering, then `Video unavailable` with *Retry*; restore the network and *Retry* resumes.
+- **Offline (PC):** with A offline, click a video not yet downloaded; it shows `Video unavailable` with *Retry*; reconnect and a click fetches and plays it.
+- **Tray (PC):** close A's window to the tray while a video plays; it pauses.
+- **Hostile name (PC):** post a file named `clip.exe` as a video (through the relay API); A shows `Can't play this video here` with no *Open in player*; ⋯ → *Download* still saves it.
 - **Big background send:** send a video that takes over 10 minutes from C and leave the app; the "sending" notification stays and the send completes.
 - **Old relay data:** a video from an older message (no thumbnail or duration) shows a plain video tile without a badge.
 

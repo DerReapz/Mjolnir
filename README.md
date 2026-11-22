@@ -31,7 +31,7 @@ The relay limits are `MJOLNIR_MAX_SPACES` and `MJOLNIR_MAX_MEMBERS` (see the tab
 
 ## Chats
 
-Chats are private conversations inside a space. Only the chat's members and the space admin can see one. Chats carry text, links, photos, GIFs and files and videos (videos play inline on both apps).
+Chats are private conversations inside a space. Only the chat's members and the space admin can see one. Chats carry text, links, photos, GIFs, files and videos (videos play inline on both apps).
 
 - **Start one:** on the PC, the *Chats* tab → *New chat…*; on the phone, the *Chats* tab → *New chat*. Pick the space and name the chat. You become its owner.
 - **Invite:** any member of the chat can choose *Invite…* and pick people from the same space. If the owner invites, the invitee just taps *Join*. If another member invites, the owner first sees `{inviter} wants to add {name}` and chooses *Approve* or *Deny*; only after approval does the invitee see `You're invited to {chat}` with *Join* and *Decline*. An invite expires after 7 days, or as soon as the invitee or the inviter leaves the space.
@@ -47,7 +47,7 @@ Chats are private conversations inside a space. Only the chat's members and the 
 - **Space admin oversight:** the admin of a space sees and reads every chat in that space, and can rename a chat, remove members, delete any message and delete the chat (shown as `Deleted by the space admin` and `Removed by the space admin`). The admin can join any chat directly, without an invite or approval; an admin who is not a member sees `You see this chat as the space admin. Join to write in it.` and must join to post. The admin cannot edit other people's text.
 - **Leaving the space:** a member who leaves or is removed from the space loses access to its chats.
 - **Retention:** messages are kept on the relay until the chat is deleted. Chat files are not removed by the 1-hour cleanup of unsent files or the 7-day cleanup of deliveries; an uploaded file that is never posted is still removed after 1 hour. Chat files are freed right away when their message, chat or space is deleted.
-- **Relay update:** the relay drops out-of-range video length, width or height metadata (the message still posts, the video just has no badge), so older apps keep working. Chats need the new relay. Rebuild with `./gradlew :server:buildFatJar` and replace the jar on your relay host (or `fly deploy`), then update the apps. Defaults: 60 messages a minute (`chatMessagesPerMinute`), 7-day invite expiry.
+- **Relay update:** out-of-range media length, width or height is dropped (a video without a valid length shows no badge); the message still posts. Chats need the new relay. Rebuild with `./gradlew :server:buildFatJar` and replace the jar on your relay host (or `fly deploy`), then update the apps. Defaults: 60 messages a minute (`chatMessagesPerMinute`), 7-day invite expiry.
 
 ## Run the relay locally
 
