@@ -36,7 +36,9 @@ fun decodeBitmap(
 ): Bitmap? = try {
     ImageDecoder.decodeBitmap(ImageDecoder.createSource(file)) { decoder, info, _ ->
         val w = info.size.width; val h = info.size.height
-        if (w <= 0 || h <= 0 || w.toLong() * h > maxPixels) throw IOException("refused ${w}x$h")
+        // GIFs don't downsample while decoding (a full-canvas buffer, natively): whatever the sender called it, cap them harder.
+        val cap = if (info.mimeType.equals("image/gif", ignoreCase = true)) minOf(maxPixels, GIF_MAX_PIXELS) else maxPixels
+        if (w <= 0 || h <= 0 || w.toLong() * h > cap) throw IOException("refused ${w}x$h")
         onSize(w, h)
         val (tw, th) = fitWithin(w, h, maxSide)
         decoder.setTargetSize(tw, th)
@@ -64,6 +66,23 @@ fun decodeAnimated(file: File, maxSide: Int, maxBytes: Long): AnimatedImageDrawa
     null
 } catch (_: OutOfMemoryError) {
     null
+}
+
+/** What the viewer shows of a file: its animation, a full still, or neither (it keeps the thumbnail it has). */
+data class ViewerPicture<A : Any, S : Any>(val animated: A? = null, val still: S? = null)
+
+/**
+ * Decides how the viewer decodes a file of [kind] and [bytes]. A GIF animates if [animate] can; when it can't (over the
+ * byte cap or the canvas cap) it is never decoded whole: a still only up to [gifMaxBytes] and [GIF_MAX_PIXELS], else the
+ * thumbnail stays. Other pictures get [still] up to [STILL_MAX_PIXELS]. [still] takes the pixel cap.
+ */
+fun <A : Any, S : Any> viewerPicture(
+    kind: AttachmentKind, bytes: Long, gifMaxBytes: Long, animate: () -> A?, still: (maxPixels: Long) -> S?,
+): ViewerPicture<A, S> {
+    if (kind != AttachmentKind.GIF) return ViewerPicture(still = still(STILL_MAX_PIXELS))
+    animate()?.let { return ViewerPicture(animated = it) }
+    if (bytes > gifMaxBytes) return ViewerPicture()
+    return ViewerPicture(still = still(GIF_MAX_PIXELS))
 }
 
 /**

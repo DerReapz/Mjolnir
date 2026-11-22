@@ -19,6 +19,8 @@ import app.mjolnir.android.session.SwitchingRelayApi
 import android.net.ConnectivityManager
 import android.net.Network
 import app.mjolnir.android.chat.ChatSendFiles
+import app.mjolnir.android.chat.enqueueChatSends
+import app.mjolnir.android.chat.scheduleChatSendsWhenWaiting
 import app.mjolnir.client.ChatController
 import app.mjolnir.client.ChatMediaCache
 import app.mjolnir.client.ChatOutbox
@@ -142,6 +144,8 @@ class AppContainer(context: Context) {
     init {
         // A send's copies go once no pending send needs them (posted, dismissed, or everything reset); also at start.
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { chatController.pendingSends.collect { chatSendFiles.prune(it) } }
+        // Ruling CM-R6: sends waiting (left over at start, or just queued) also get their own background work.
+        scheduleChatSendsWhenWaiting(chatController.pendingSends, CoroutineScope(SupervisorJob() + Dispatchers.IO)) { enqueueChatSends(appContext) }
     }
 
     /** Always on, and started before any refresh: with no collector a new message would be dropped, not notified. */

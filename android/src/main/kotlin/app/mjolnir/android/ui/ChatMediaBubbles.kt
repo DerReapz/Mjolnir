@@ -63,6 +63,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import app.mjolnir.android.chat.decodeAnimated
 import app.mjolnir.android.chat.decodeBitmap
+import app.mjolnir.android.chat.viewerPicture
 import app.mjolnir.client.AttachmentGroup
 import app.mjolnir.client.Messages
 import app.mjolnir.client.PendingFile
@@ -373,9 +374,18 @@ internal fun ImageViewer(att: Attachment, media: ChatMediaSource?, onDownload: (
         still = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { inlineBitmap(it, thumbPx) } } }
         val file = orNull { media.file(att) }
         if (file == null) { failed = true; return@LaunchedEffect }
-        if (att.kind == AttachmentKind.GIF) gif = orNull { withContext(Dispatchers.IO) { decodeAnimated(file, screenPx, VIEWER_GIF_MAX_BYTES) } }
-        // Decoded at screen size and never cached: one big picture, dropped when the viewer closes.
-        if (gif == null) still = orNull { withContext(Dispatchers.IO) { decodeBitmap(file, screenPx) } } ?: still
+        // Decoded at screen size and never cached: one big picture, dropped when the viewer closes. A GIF over the caps keeps its thumbnail.
+        val picture = orNull {
+            withContext(Dispatchers.IO) {
+                viewerPicture(
+                    att.kind, file.length(), VIEWER_GIF_MAX_BYTES,
+                    animate = { decodeAnimated(file, screenPx, VIEWER_GIF_MAX_BYTES) },
+                    still = { maxPixels -> decodeBitmap(file, screenPx, maxPixels) },
+                )
+            }
+        }
+        gif = picture?.animated
+        still = picture?.still ?: still
     }
     var scale by remember(att.fileId) { mutableFloatStateOf(1f) }
     var offset by remember(att.fileId) { mutableStateOf(Offset.Zero) }

@@ -32,6 +32,9 @@ import app.mjolnir.android.postNotification
 import app.mjolnir.android.send.networkDecision
 import app.mjolnir.android.send.progressPercent
 import app.mjolnir.android.shouldReportProgress
+import app.mjolnir.android.chat.enqueueChatSends
+import app.mjolnir.android.chat.sendsWaiting
+import app.mjolnir.client.ChatController
 import app.mjolnir.client.InboxDrainer
 import app.mjolnir.client.Messages
 import app.mjolnir.client.RelayErrorKind
@@ -104,6 +107,17 @@ private fun enqueueWifiInboxDrain(context: Context) {
     WorkManager.getInstance(context).enqueueUniqueWork(WORK_WIFI, ExistingWorkPolicy.KEEP, request)
 }
 
+/**
+ * Chat messages ride the same doorbell: refresh the chats (which syncs those that moved); the app-wide notifier posts what
+ * is new. Sends with files waiting are handed to their own work ([scheduleSends]), never waited on here: an upload would
+ * hold up every later drain.
+ */
+internal suspend fun syncChats(controller: ChatController, scheduleSends: () -> Unit) {
+    controller.refresh()
+    controller.refreshInvites()
+    if (sendsWaiting(controller.pendingSends.value)) scheduleSends()
+}
+
 /** Receives everything in the inbox: tabs at once, files now or (large ones on mobile data) once on Wi-Fi. */
 class InboxWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     private val container: AppContainer get() = (applicationContext as MjolnirApp).container
@@ -121,21 +135,12 @@ class InboxWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         if (config.token == null) return@withContext Result.success() // not registered yet: nothing to drain
         // One drain at a time across all inbox workers, so no delivery is downloaded or published twice.
         val result = c.inboxLock.withLock { drain(c, config) }
-        syncChats(c)
-        result
-    }
-
-    /** Chat messages ride the same doorbell: refresh the chats (which syncs those that moved); the app-wide notifier posts what is new. */
-    private suspend fun syncChats(c: AppContainer) {
         try {
-            c.chatController.refresh()
-            c.chatController.refreshInvites()
-            c.chatController.resumeSends().join() // sends with files left by a process that died go on (they resume where they stopped)
-        } catch (e: CancellationException) {
-            throw e
+            syncChats(c.chatController) { enqueueChatSends(applicationContext) }
         } catch (e: IOException) {
             // The chat cache couldn't be written; the next run tries again.
         }
+        result
     }
 
     private suspend fun drain(c: AppContainer, config: PhoneConfig): Result {
