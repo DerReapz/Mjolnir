@@ -74,7 +74,7 @@ Needs two PCs (A, B) and a phone (C) in one space, with A as the space admin (so
 - **Offline catch-up:** turn the phone's network off, send several messages from a PC, restore the network; the chat catches up in order.
 
 ## Chat media
-Needs two PCs (A, B) and a phone (C) in one chat, on the updated relay. Videos are sent as file bubbles labelled `Video` for now.
+Needs two PCs (A, B) and a phone (C) in one chat, on the updated relay. 
 - **Send each kind from every app:** a photo, a GIF, a file and a folder from A, B and C. Photos and GIFs show as thumbnails; a file shows its name and `File · {size}`; a folder shows one `Folder · {n} files · {size}` bubble. Sends start immediately (no caption step).
 - **GIF animates:** on A, B and C the GIF moves in the bubble and in the full-screen view.
 - **Phone image view:** tap a photo on C; pinch-zoom works and double tap resets.
@@ -89,6 +89,24 @@ Needs two PCs (A, B) and a phone (C) in one chat, on the updated relay. Videos a
 - **Offline catch-up:** turn C's network off, send a photo and a file from A; restore the network; C shows both without reopening the chat.
 - **Interrupted send:** on C start sending a large file, swipe the app away, and turn airplane mode on, then off; the send finishes and the message arrives.
 - **Non-member:** a member of the space who is not in the chat cannot open its files.
+
+## Chat video
+Needs a PC (A), a second PC (B) and a phone (C) in one chat, on the updated relay. Playback and the Windows installer cannot be checked headlessly, so every item here is a manual check.
+- **Installer:** install the `mjolnir-msi` artifact (about 74 MB, larger than before because it bundles JavaFX) on a clean Windows PC; Mjolnir installs, launches, and plays an MP4 inline.
+- **Inline everywhere:** an MP4 recorded on C plays inline on A (after the download progress ring) and on C; on C it also plays full screen (±10 s, scrubbing, `Download`). A PC-sent MP4 plays on C and B.
+- **Sound:** a video with audio plays with sound on the PC.
+- **Portrait clip:** a portrait phone clip shows upright on A and C, both the thumbnail and the playback.
+- **Download:** PC ⋯ → *Download* and phone long-press → *Download* both save the video, and it opens.
+- **Unsupported file (PC):** send an HEVC or WebM file; A shows `Can't play this video here` with *Open in player*, which opens it in the default player.
+- **One at a time (PC):** start a second video; the first stops.
+- **PC pauses:** open a dialog (*Info*, *Invite…*) or the photo viewer over a playing video and it pauses; scroll it partly out of view and it pauses.
+- **Leaving the chat:** leave the chat (another chat or tab); playback stops, on A and on C.
+- **Phone long-press:** long-press a playing video on C; the sheet (*Download*, *Share…*) still opens, and the video pauses under it, under *Info* and in the viewer.
+- **Full screen on the phone:** open full screen, rotate, close; no audio continues. Open full screen while paused: the frame shows. The position is kept when closing and reopening.
+- **Background (phone):** with a video playing, switch to another app; it pauses.
+- **Errors (phone):** turn airplane mode on mid-stream; it shows buffering, then `Video unavailable` with *Retry*; restore the network and *Retry* resumes.
+- **Big background send:** send a video that takes over 10 minutes from C and leave the app; the "sending" notification stays and the send completes.
+- **Old relay data:** a video from an older message (no thumbnail or duration) shows a plain video tile without a badge.
 
 ## Guest room
 Needs the PC app, a phone with Mjolnir, and a second phone or computer with a browser and no Mjolnir (the guest). The relay must be reachable over HTTPS from the guest.
