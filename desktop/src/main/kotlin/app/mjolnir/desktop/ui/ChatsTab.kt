@@ -144,10 +144,12 @@ class ChatsUi(
     val pending: List<PendingSend> = emptyList(),
     /** Where photos, GIFs and their thumbnails come from. */
     val media: ChatMediaSource = NoChatMedia,
-    /** GIFs animate only while the window is showing. */
+    /** GIFs animate, and videos play, only while the window is showing. */
     val animate: Boolean = true,
     /** The last download's result ("Saved to …"), shown until dismissed; [notice] is for failures. */
     val info: String? = null,
+    /** How videos play inline. */
+    val video: VideoSupport = NoVideo,
 ) {
     val selected: ChatSummary? get() = chats.firstOrNull { it.id == selectedId }
 
@@ -550,7 +552,7 @@ private fun MessageRow(
             Column(Modifier.widthIn(max = maxBubble), horizontalAlignment = if (mine) Alignment.End else Alignment.Start, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 if (!mine) Text(ui.nicknameOf(m.author), style = body(12, color = Forge.muted))
                 if (!m.deleted && m.attachments.isNotEmpty()) {
-                    MessageAttachments(m, mine, ui.media, ui.animate, onOpen = onOpen, onDownload = { actions.onDownload(m, it) })
+                    MessageAttachments(m, mine, ui.media, ui.animate, onOpen = onOpen, onDownload = { actions.onDownload(m, it) }, video = ui.video)
                 }
                 if (m.deleted || m.attachments.isEmpty() || !m.text.isNullOrBlank()) Bubble(m, mine, ui, actions)
                 val meta = clockTime(m.sentAtEpochMs) + if (m.editedAtEpochMs != null && !m.deleted) " · ${Messages.EDITED}" else ""
@@ -775,7 +777,7 @@ fun ChatsTab(c: AppController, parent: java.awt.Component? = null) {
         ChatsTabContent(
             ChatsUi(
                 chats, invites, unread, config.deviceId, adminSpaceIds, selectedId, messages, members, nicknameOf, notice, receipts, unreadMentions,
-                pending = pending, media = c.chatMediaSource, animate = showing, info = info,
+                pending = pending, media = c.chatMediaSource, animate = showing, info = info, video = JavaFxVideo,
             ),
             actions,
         )

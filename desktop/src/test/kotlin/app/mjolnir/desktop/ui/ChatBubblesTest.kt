@@ -94,16 +94,13 @@ class ChatBubblesTest {
     @Test fun fileBubbleShowsNameAndSize() = runComposeUiTest {
         val downloads = mutableListOf<List<String>>()
         val pdf = att("f1", AttachmentKind.FILE, "itinerary.pdf", 225_280)
-        val video = att("v1", AttachmentKind.VIDEO, "cabin.mp4", 3L shl 20)
-        show(ui(listOf(msg("m1", fred, null, listOf(pdf, video)))), ChatsActions(onDownload = { _, a -> downloads += a.map { it.fileId } }))
+        show(ui(listOf(msg("m1", fred, null, listOf(pdf)))), ChatsActions(onDownload = { _, a -> downloads += a.map { it.fileId } }))
         // Ruling CM-R4: the name, then "{label} · {size}".
         onNodeWithText("itinerary.pdf").assertExists()
         onNodeWithText("File · 220 KB").assertExists()
         onNodeWithText("PDF").assertExists() // the type tag
-        onNodeWithText("cabin.mp4").assertExists()
-        onNodeWithText("Video · 3 MB").assertExists() // ruling CM-R3: a video is a file labelled Video until the video plan
-        onNodeWithContentDescription("Download cabin.mp4").performClick()
-        assertEquals(listOf(listOf("v1")), downloads)
+        onNodeWithContentDescription("Download itinerary.pdf").performClick()
+        assertEquals(listOf(listOf("f1")), downloads)
     }
 
     @Test fun folderBubbleCounts() = runComposeUiTest {

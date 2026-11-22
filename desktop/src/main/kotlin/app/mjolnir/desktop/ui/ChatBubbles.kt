@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -26,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,12 +57,15 @@ import app.mjolnir.client.PendingFile
 import app.mjolnir.client.PendingSend
 import app.mjolnir.client.groupAttachments
 import app.mjolnir.client.groupPendingFiles
+import app.mjolnir.client.validDurationMs
+import app.mjolnir.client.validSize
 import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.AttachmentKind
 import app.mjolnir.protocol.ChatMessage
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -70,6 +76,8 @@ interface ChatMediaSource {
     suspend fun thumbnail(att: Attachment): File?
     /** The attachment's file. Throws when it can't be fetched (e.g. its message was deleted). */
     suspend fun file(att: Attachment): File
+    /** A video's file, as [file], reporting (bytes so far, total) while it downloads. */
+    suspend fun video(att: Attachment, onProgress: (Long, Long) -> Unit): File = file(att)
     /** Keeps [fileId] in the cache while a bubble shows it; matched by [unpin]. */
     fun pin(fileId: String) {}
     fun unpin(fileId: String) {}
@@ -177,7 +185,7 @@ private fun inlineSize(w: Int?, h: Int?): Pair<Dp, Dp> {
 @Composable
 internal fun MessageAttachments(
     m: ChatMessage, mine: Boolean, media: ChatMediaSource, playing: Boolean,
-    onOpen: (Attachment) -> Unit, onDownload: (List<Attachment>) -> Unit,
+    onOpen: (Attachment) -> Unit, onDownload: (List<Attachment>) -> Unit, video: VideoSupport = NoVideo,
 ) {
     val groups = remember(m.attachments) { groupAttachments(m.attachments) }
     for (group in groups) {
@@ -188,8 +196,8 @@ internal fun MessageAttachments(
                 when (att.kind) {
                     AttachmentKind.IMAGE -> ImageBubble(att, media) { onOpen(att) }
                     AttachmentKind.GIF -> GifBubble(att, media, playing) { onOpen(att) }
-                    // Ruling CM-R3: a video is a file bubble labelled "Video" until the video plan.
-                    AttachmentKind.VIDEO, AttachmentKind.FILE -> FileBubble(att.kind, att.name, att.sizeBytes, mine) { onDownload(listOf(att)) }
+                    AttachmentKind.VIDEO -> VideoBubble(att, media, video, playing)
+                    AttachmentKind.FILE -> FileBubble(att.kind, att.name, att.sizeBytes, mine) { onDownload(listOf(att)) }
                 }
             }
         }
@@ -255,12 +263,144 @@ private fun GifBadge(modifier: Modifier = Modifier) = Text(
     modifier = modifier.background(Forge.text, RoundedCornerShape(4.dp)).padding(horizontal = 4.dp, vertical = 1.dp),
 )
 
+/** Where a video bubble is: its still, fetching the file, playing inline, or unplayable here. */
+private sealed interface VideoPhase {
+    data object Still : VideoPhase
+    /** Downloading into the cache: [fraction] done. */
+    data class Fetching(val fraction: Float) : VideoPhase
+    data class Playing(val engine: VideoEngine, val file: File) : VideoPhase
+    /** JavaFX can't decode it: the system player can try ([file] is the cached copy). */
+    data class Unplayable(val file: File) : VideoPhase
+    /** The file couldn't be fetched (offline, or its message was deleted); clicking tries again. */
+    data object Unavailable : VideoPhase
+}
+
+/** What a video bubble holds that must be let go when it leaves the screen: the engine and the cache pin. */
+private class VideoHold(val media: ChatMediaSource, val fileId: String) {
+    var engine: VideoEngine? = null
+    private var pinned = false
+    fun pin() { if (!pinned) { pinned = true; media.pin(fileId) } }
+    fun releaseEngine() {
+        engine?.let { it.release(); NowPlaying.stopped(it) }
+        engine = null
+    }
+    fun releaseAll() { releaseEngine(); if (pinned) { pinned = false; media.unpin(fileId) } }
+}
+
+/**
+ * A video: its thumbnail with a play button and a `0:42` badge (a plain tile when it has neither), 320 px wide with its
+ * aspect kept. Play downloads it first (a ring on the button shows how far), then plays it inline; it stays pinned in
+ * the cache while it plays. Leaving the screen (scrolled away, another chat, the message deleted) releases the player;
+ * a hidden window pauses it. A video JavaFX can't decode offers the system player.
+ */
+@Composable
+private fun VideoBubble(att: Attachment, media: ChatMediaSource, video: VideoSupport, showing: Boolean) {
+    PinWhileShown(media, att.thumbFileId)
+    var thumb by remember(att.fileId) { mutableStateOf<ImageBitmap?>(null) }
+    var phase by remember(att.fileId) { mutableStateOf<VideoPhase>(VideoPhase.Still) }
+    val hold = remember(att.fileId) { VideoHold(media, att.fileId) }
+    DisposableEffect(hold) { onDispose { hold.releaseAll() } }
+    val connects by media.connects.collectAsState()
+    LaunchedEffect(att.fileId, connects) {
+        if (thumb == null) thumb = orNull { media.thumbnail(att)?.let { withContext(Dispatchers.IO) { decodeImage(it, MEDIA_MAX_PX) } } }
+    }
+    val current = phase
+    if (current is VideoPhase.Playing) {
+        val error by current.engine.error.collectAsState()
+        LaunchedEffect(error) { if (error != null) { hold.releaseEngine(); phase = VideoPhase.Unplayable(current.file) } }
+        LaunchedEffect(showing) { if (!showing) current.engine.pause() }
+    }
+    val scope = rememberCoroutineScope()
+    val start: () -> Unit = {
+        scope.launch {
+            hold.pin()
+            phase = VideoPhase.Fetching(0f)
+            val file = try {
+                media.video(att) { done, total -> phase = VideoPhase.Fetching(if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else 0f) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                phase = VideoPhase.Unavailable
+                return@launch
+            }
+            val engine = try {
+                video.engine().also { hold.engine = it; withContext(Dispatchers.IO) { it.load(file) } }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) { // MediaException and the like: an unsupported codec, or no JavaFX here
+                hold.releaseEngine(); phase = VideoPhase.Unplayable(file); return@launch
+            } catch (_: LinkageError) {
+                hold.releaseEngine(); phase = VideoPhase.Unplayable(file); return@launch
+            }
+            NowPlaying.start(engine)
+            engine.play()
+            phase = VideoPhase.Playing(engine, file)
+        }
+    }
+    val size = att.validSize() ?: thumb?.let { it.width to it.height }
+    val (w, h) = videoSize(size)
+    if (current is VideoPhase.Playing) {
+        Box(Modifier.clip(mediaShape).border(1.dp, Forge.border, mediaShape)) { InlineVideoPlayer(current.engine, video, w, h, att.name) }
+        return
+    }
+    val length = validDurationMs(att.durationMs)
+    val clickable = current is VideoPhase.Still || current is VideoPhase.Unavailable
+    Box(
+        Modifier.size(w, h).clip(mediaShape).background(VIDEO_FRAME, mediaShape).border(1.dp, Forge.border, mediaShape)
+            .semantics { contentDescription = "Video ${att.name}" }
+            .then(if (clickable) Modifier.clickable(role = Role.Button, onClick = start) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        thumb?.let {
+            Image(it, null, Modifier.fillMaxSize().testTag("video-thumb").alpha(if (current is VideoPhase.Unplayable) 0.35f else 1f), contentScale = ContentScale.Crop)
+        }
+        when (current) {
+            is VideoPhase.Unplayable -> Column(
+                Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(Messages.CANT_PLAY_VIDEO, style = body(13, color = Forge.text))
+                ChatButton(Messages.OPEN_IN_PLAYER, { video.openInPlayer(att, current.file) })
+            }
+            else -> {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    PlayButton(current as? VideoPhase.Fetching)
+                    if (current is VideoPhase.Unavailable) Text(Messages.VIDEO_UNAVAILABLE, style = body(12, color = Forge.text))
+                }
+                if (length != null && thumb != null) DurationBadge(length, Modifier.align(Alignment.BottomEnd).padding(6.dp))
+            }
+        }
+    }
+}
+
+/** The round play button; while [fetching], a ring around it fills as the video downloads. */
+@Composable
+private fun PlayButton(fetching: VideoPhase.Fetching?) {
+    Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
+        if (fetching != null) {
+            CircularProgressIndicator(
+                progress = { fetching.fraction }, color = Forge.accent, trackColor = Color.Black.copy(alpha = 0.5f), strokeWidth = 3.dp,
+                modifier = Modifier.size(56.dp).semantics { contentDescription = "Downloading video" },
+            )
+        }
+        Box(
+            Modifier.size(44.dp).background(Forge.accent.copy(alpha = 0.92f), CircleShape).semantics { contentDescription = "Play" },
+            contentAlignment = Alignment.Center,
+        ) { PlayGlyph(Forge.onAccent, 16.dp) }
+    }
+}
+
+@Composable
+private fun DurationBadge(ms: Long, modifier: Modifier = Modifier) = Text(
+    Messages.duration(ms), style = body(11, FontWeight.SemiBold, Color.White, ForgeFonts.inter600),
+    modifier = modifier.background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 1.dp),
+)
+
 /** The file type tag of a file bubble: its extension ("PDF"), else "FILE"; "VIDEO" for a video. */
 internal fun fileTag(kind: AttachmentKind, name: String): String =
     if (kind == AttachmentKind.VIDEO) "VIDEO"
     else name.substringAfterLast('.', "").takeIf { it.isNotEmpty() && it.length <= 4 && it != name }?.uppercase() ?: "FILE"
 
-/** A file (or a video, ruling CM-R3): its type tag, its name, and `File · 220 KB` / `Video · 18 MB` (ruling CM-R4). Clicking downloads it. */
+/** A file (or a video still uploading): its type tag, its name, and `File · 220 KB` / `Video · 18 MB` (ruling CM-R4). Clicking downloads it. */
 @Composable
 private fun FileBubble(kind: AttachmentKind, name: String, bytes: Long, mine: Boolean, onDownload: (() -> Unit)?) =
     FileLikeBubble(fileTag(kind, name), name, Messages.fileBubbleDetail(kind, bytes), name, mine, onDownload)

@@ -3,8 +3,8 @@ package app.mjolnir.desktop
 import app.mjolnir.client.ChatController
 import app.mjolnir.client.ChatMediaCache
 import app.mjolnir.client.ChatOutbox
-import app.mjolnir.client.ImageIoThumbnailer
 import app.mjolnir.client.uniqueTarget
+import app.mjolnir.desktop.media.DesktopVideoThumbnailer
 import app.mjolnir.desktop.ui.ChatMediaSource
 import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.ChatMessage
@@ -152,6 +152,7 @@ class AppController(
         private fun relay() = api() ?: throw RelayException(RelayErrorKind.NETWORK, "no relay")
         override suspend fun thumbnail(att: Attachment): File? = chatMedia.thumbnail(att, relay())
         override suspend fun file(att: Attachment): File = chatMedia.get(att, relay())
+        override suspend fun video(att: Attachment, onProgress: (Long, Long) -> Unit): File = chatMedia.get(att, relay(), onProgress)
         override fun pin(fileId: String) = chatMedia.pin(fileId)
         override fun unpin(fileId: String) = chatMedia.unpin(fileId)
         override val connects: StateFlow<Int> get() = chats.connects
@@ -181,7 +182,7 @@ class AppController(
     /** Sends [files] (folders as their files) to [chatId]; they upload in the background and show as pending sends. */
     fun sendChatFiles(chatId: String, files: List<File>) {
         if (files.isEmpty()) return
-        scope.launch { chatCall { send(chatId, null, files, ImageIoThumbnailer) } }
+        scope.launch { chatCall { send(chatId, null, files, DesktopVideoThumbnailer) } }
     }
 
     /** Saves [attachments] of [m] into the save folder (see [saveChatFiles]); the result shows as [chatInfo] or [chatNotice]. */
