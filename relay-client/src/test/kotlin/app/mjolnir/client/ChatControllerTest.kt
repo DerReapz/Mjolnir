@@ -1011,6 +1011,11 @@ class ChatControllerTest {
         assertEquals(1, fake.postCalls)
         assertTrue(c.pendingSends.value.isEmpty())
         assertEquals(listOf("huge.mov is too big for the relay", "huge2.bin is too big for the relay"), notices)
+        // Several in one send are named together, so no notice hides another.
+        c.send(chat, null, listOf(pick("huge3.mov", 9), pick("c.bin", 3), pick("huge4.mov", 9)), ImageIoThumbnailer)
+        c.awaitSendsIdle()
+        assertEquals("huge3.mov, huge4.mov are too big for the relay", notices.last())
+        assertEquals(3, notices.size)
     }
 
     @Test fun rateLimitedSendRetriesAfterAMinute() = runTest {

@@ -107,7 +107,9 @@ object Messages {
     fun folderDetail(files: Int, bytes: Long) = "Folder · ${files(files)} · ${size(bytes)}"
 
     /** A file of a chat send the relay refused as too large; the rest of the send goes on without it (ruling CM-R7). */
-    fun tooBigForRelay(name: String) = "$name is too big for the relay"
+    fun tooBigForRelay(name: String) = tooBigForRelay(listOf(name))
+    fun tooBigForRelay(names: List<String>) =
+        if (names.size == 1) "${names[0]} is too big for the relay" else "${names.joinToString(", ")} are too big for the relay"
 
     /** Why a send with attachments failed for good, as the failed bubble shows it. */
     fun mediaNotSent(e: RelayException): String = notSent(

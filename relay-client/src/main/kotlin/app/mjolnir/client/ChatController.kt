@@ -554,6 +554,7 @@ class ChatController(
             for (item in ob.pending().filter { it.failure == null }) { // a failed send waits for the user to dismiss it
                 if (gen != generation) return
                 val a = api() ?: return
+                val dropped = mutableListOf<String>() // named together once this round ends, so none is overwritten
                 val result = ob.process(
                     item.id, a,
                     onProgress = { done, _ -> if (gen == generation) updatePending(item.id) { it.copy(sentBytes = done) } },
@@ -565,12 +566,13 @@ class ChatController(
                     },
                     onDropped = { name ->
                         if (gen == generation) {
-                            _sendNotices.tryEmit(Messages.tooBigForRelay(name))
+                            dropped += name
                             ob.get(item.id)?.let { fresh -> updatePending(item.id) { pendingOf(fresh) } }
                         }
                     },
                 )
                 if (gen != generation) return
+                if (dropped.isNotEmpty()) _sendNotices.tryEmit(Messages.tooBigForRelay(dropped))
                 when (result) {
                     is ChatOutboxResult.Done -> {
                         _pendingSends.update { list -> list.filter { it.id != item.id } }
