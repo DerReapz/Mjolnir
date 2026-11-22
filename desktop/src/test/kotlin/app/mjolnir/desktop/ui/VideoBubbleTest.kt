@@ -206,6 +206,16 @@ class VideoBubbleTest {
         assertEquals(listOf("v1" to clipFile), video.opened)
     }
 
+    @Test fun hostileNameGetsNoOpenInPlayer() = runComposeUiTest {
+        // Ruling CV-R4: a "video" named evil.exe that JavaFX can't play is never offered to the system.
+        val video = FakeVideo { FakeEngine(failLoad = UnsupportedOperationException("not a video")) }
+        show(ui(listOf(msg("m1", video(name = "evil.exe"))), media(), video))
+        onNodeWithContentDescription("Video evil.exe").performClick()
+        awaitText("Can't play this video here")
+        onNodeWithText("Open in player").assertDoesNotExist()
+        assertTrue(video.opened.isEmpty())
+    }
+
     @Test fun playbackErrorShowsFallback() = runComposeUiTest {
         val video = FakeVideo()
         show(ui(listOf(msg("m1", video())), media(), video))

@@ -51,6 +51,7 @@ import app.mjolnir.client.Messages
 import app.mjolnir.desktop.media.JavaFx
 import app.mjolnir.desktop.media.JavaFxEngine
 import app.mjolnir.protocol.Attachment
+import app.mjolnir.protocol.safeFileName
 import java.io.File
 import kotlinx.coroutines.flow.StateFlow
 
@@ -95,7 +96,7 @@ interface VideoSupport {
     fun engine(): VideoEngine
     /** [engine]'s picture, filling [modifier]'s bounds with the video's aspect kept. */
     @Composable fun Picture(engine: VideoEngine, modifier: Modifier)
-    /** Opens the cached [file] of [att] in the system's video player. */
+    /** Opens the cached [file] of [att] in the system's video player; only for a [playerFileName]. */
     fun openInPlayer(att: Attachment, file: File)
 }
 
@@ -117,6 +118,17 @@ object JavaFxVideo : VideoSupport {
 
     override fun openInPlayer(att: Attachment, file: File) = JavaFx.openInPlayer(att, file)
 }
+
+/**
+ * The name [name]'s copy is handed to the system player under, or null when its extension is not a video's: the system
+ * runs whatever the name says, so a "video" named `clip.exe` must never get there (ruling CV-R4).
+ */
+internal fun playerFileName(name: String): String? =
+    safeFileName(name).takeIf { it.contains('.') && it.substringAfterLast('.').lowercase() in PLAYER_EXTENSIONS }
+
+private val PLAYER_EXTENSIONS = setOf(
+    "mp4", "m4v", "mov", "webm", "mkv", "avi", "wmv", "3gp", "3g2", "mpg", "mpeg", "ts", "m2ts", "mts", "ogv", "flv",
+)
 
 /** A video bubble is 320 px wide (portrait: 400 px tall at most), with the video's aspect kept; 320×180 when its size is unknown. */
 internal fun videoSize(size: Pair<Int, Int>?): Pair<Dp, Dp> {

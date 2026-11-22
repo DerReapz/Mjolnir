@@ -300,7 +300,7 @@ private class VideoHold(val media: ChatMediaSource, val fileId: String) {
  * the cache while it plays. Leaving the screen (scrolled away, another chat, the message deleted) releases the player;
  * a hidden window pauses it. While an overlay covers the conversation or the bubble is not wholly inside the list, it is
  * paused and shows its still instead of the player, whose Swing panel would draw over everything (ruling CV-R2). A video
- * JavaFX can't decode offers the system player.
+ * JavaFX can't decode offers the system player when its name is a video's.
  */
 @Composable
 private fun VideoBubble(att: Attachment, media: ChatMediaSource, video: VideoSupport, showing: Boolean) {
@@ -383,7 +383,8 @@ private fun VideoBubble(att: Attachment, media: ChatMediaSource, video: VideoSup
                 Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(Messages.CANT_PLAY_VIDEO, style = body(13, color = Forge.text))
-                ChatButton(Messages.OPEN_IN_PLAYER, { video.openInPlayer(att, current.file) })
+                // Not for a name the system would run rather than play (ruling CV-R4): Download stays in ⋯.
+                if (playerFileName(att.name) != null) ChatButton(Messages.OPEN_IN_PLAYER, { video.openInPlayer(att, current.file) })
             }
             else -> {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {

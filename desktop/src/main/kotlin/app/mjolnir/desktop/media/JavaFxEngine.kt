@@ -1,9 +1,10 @@
 package app.mjolnir.desktop.media
 
 import app.mjolnir.client.videoRotation
+import app.mjolnir.desktop.markOfTheWeb
 import app.mjolnir.desktop.ui.VideoEngine
+import app.mjolnir.desktop.ui.playerFileName
 import app.mjolnir.protocol.Attachment
-import app.mjolnir.protocol.safeFileName
 import java.awt.Desktop
 import java.awt.GraphicsEnvironment
 import java.io.File
@@ -94,21 +95,33 @@ internal object JavaFx {
     }
 
     /**
-     * Opens the cached [file] of [att] in the system player. The cache names files by id, so a copy with the
-     * attachment's name (and so its extension) is made in the temp folder first, once.
+     * Opens the cached [file] of [att] in the system player, unless its name is not a video's ([playerFileName]). The
+     * cache names files by id, so a copy with the attachment's name (and so its extension) is made in the temp folder
+     * first, once.
      */
     fun openInPlayer(att: Attachment, file: File) {
         Thread({
             try {
-                val dir = File(System.getProperty("java.io.tmpdir"), "mjolnir-videos/${att.fileId}").apply { mkdirs() }
-                val copy = File(dir, safeFileName(att.name))
-                if (copy.length() != file.length()) Files.copy(file.toPath(), copy.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                copy.deleteOnExit(); dir.deleteOnExit()
+                val copy = copyForPlayer(att, file, File(System.getProperty("java.io.tmpdir"), "mjolnir-videos"), ::markOfTheWeb) ?: return@Thread
                 Desktop.getDesktop().open(copy)
             } catch (_: Exception) {
                 // nothing to open it with: the bubble keeps offering Download
             }
         }, "open-video").apply { isDaemon = true }.start()
+    }
+
+    /**
+     * The copy of [file] under [att]'s name in [root] that the system player opens, tagged by [mark] (the Mark of the
+     * Web); null, with nothing written, when the name is not a video's.
+     */
+    internal fun copyForPlayer(att: Attachment, file: File, root: File, mark: (File) -> Unit): File? {
+        val name = playerFileName(att.name) ?: return null
+        val dir = File(root, att.fileId).apply { mkdirs() }
+        val copy = File(dir, name)
+        if (copy.length() != file.length()) Files.copy(file.toPath(), copy.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        mark(copy)
+        copy.deleteOnExit(); dir.deleteOnExit()
+        return copy
     }
 }
 
