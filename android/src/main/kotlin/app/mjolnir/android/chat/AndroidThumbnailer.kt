@@ -88,13 +88,14 @@ fun <A : Any, S : Any> viewerPicture(
 /**
  * The phone's [Thumbnailer]: photos (JPEG, PNG, WebP, HEIC, BMP) and the first frame of GIFs through `ImageDecoder`,
  * decoded straight to at most [MAX_SIDE] px (a huge image is never decoded at full size) and saved as a JPEG of quality
- * 80 on white. Null for videos (until the video plan), other kinds, and anything it can't read.
+ * 80 on white. Videos go to [AndroidVideoThumbnailer]. Null for other kinds and anything it can't read.
  */
 object AndroidThumbnailer : Thumbnailer {
     const val MAX_SIDE = 320
     private const val QUALITY = 80
 
     override fun thumbnail(file: File, kind: AttachmentKind): Thumb? {
+        if (kind == AttachmentKind.VIDEO) return AndroidVideoThumbnailer.thumbnail(file, kind)
         if (kind != AttachmentKind.IMAGE && kind != AttachmentKind.GIF) return null
         var width = 0; var height = 0
         val decoded = decodeBitmap(file, MAX_SIDE, software = true) { w, h -> width = w; height = h } ?: return null

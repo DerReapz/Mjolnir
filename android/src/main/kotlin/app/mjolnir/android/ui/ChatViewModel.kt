@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.mjolnir.client.ChatController
 import app.mjolnir.client.Messages
+import app.mjolnir.client.validDurationMs
 import app.mjolnir.client.MentionPicks
 import app.mjolnir.client.capCodePoints
 import app.mjolnir.client.insertMention
@@ -31,6 +32,7 @@ import app.mjolnir.client.PendingSend
 import app.mjolnir.client.ReceivedPath
 import app.mjolnir.client.uniqueName
 import app.mjolnir.protocol.Attachment
+import app.mjolnir.protocol.AttachmentKind
 import app.mjolnir.protocol.FileRef
 import app.mjolnir.protocol.safeFileName
 import app.mjolnir.protocol.safeRelativePath
@@ -88,11 +90,13 @@ fun messageActions(m: ChatMessage, selfId: String?, isSpaceAdmin: Boolean): List
     }
 }
 
-/** The long-press sheet's first line (before "· from …"): the text, else what is attached ("Video · 18 MB", "2 files · 3 MB"). */
+/** The long-press sheet's first line (before "· from …"): the text, else what is attached ("Video · 0:42 · 18 MB", "2 files · 3 MB"). */
 fun sheetSummary(m: ChatMessage): String {
     m.text?.takeIf { it.isNotBlank() }?.let { return it.replace('\n', ' ') }
     val single = m.attachments.singleOrNull()
-    return if (single != null) Messages.fileBubbleDetail(single.kind, single.sizeBytes)
+    val length = single?.takeIf { it.kind == AttachmentKind.VIDEO }?.let { validDurationMs(it.durationMs) }
+    return if (length != null) "${Messages.mediaLabel(AttachmentKind.VIDEO)} · ${Messages.duration(length)} · ${Messages.size(single.sizeBytes)}"
+    else if (single != null) Messages.fileBubbleDetail(single.kind, single.sizeBytes)
     else "${m.attachments.size} files · ${Messages.size(m.attachments.sumOf { it.sizeBytes })}"
 }
 
@@ -141,6 +145,8 @@ class ChatViewModel(
     private val onRead: (chatId: String) -> Unit = {},
     /** Attachments: the media cache, sends with files, Download and Share…; without it the bubbles show placeholders. */
     private val media: ChatMediaSupport? = null,
+    /** The app's one video player; without it videos show as file bubbles. */
+    val videos: VideoPlayerState? = null,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
     private val _spaces = MutableStateFlow<List<Space>>(emptyList())
@@ -244,6 +250,12 @@ class ChatViewModel(
     val selfDeviceId: String? get() = selfId()
 
     init {
+        if (videos != null) {
+            // The app went to the background or another tab came up: the video pauses (its bubble frees it once it leaves).
+            viewModelScope.launch { combine(foreground, chatsVisible) { fg, shown -> fg && shown }.collect { if (!it) videos.pause() } }
+            // A video whose message was deleted stops and says so.
+            viewModelScope.launch { messages.collect(videos::messagesChanged) }
+        }
         // Ruling CM-R7: a file the relay refused as too large is named; the rest of its send went on.
         viewModelScope.launch { controller.sendNotices.collect { _notice.value = it } }
         viewModelScope.launch {
@@ -263,6 +275,11 @@ class ChatViewModel(
                 }
             }
         }
+    }
+
+    /** The activity is gone for good (not a rotation): the video player goes too. */
+    override fun onCleared() {
+        videos?.releaseAll()
     }
 
     /** A chat that left the list (deleted, removed from it, or everything reset): closes it if open and drops its draft, stash and picks. */

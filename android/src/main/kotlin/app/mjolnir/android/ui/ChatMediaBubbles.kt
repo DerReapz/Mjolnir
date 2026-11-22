@@ -95,7 +95,7 @@ interface ChatMediaSource {
     val connects: StateFlow<Int> get() = NO_CONNECTS
 }
 
-private val NO_CONNECTS: StateFlow<Int> = MutableStateFlow(0)
+internal val NO_CONNECTS: StateFlow<Int> = MutableStateFlow(0)
 
 /** Inline photos and GIFs fit in this square (the mockup's 250 × 150 photo). */
 private val MEDIA_MAX = 250.dp
@@ -109,7 +109,7 @@ private const val VIEWER_MAX_PX = 4096
 private val PLACEHOLDER = Color(0xFF2A2418)
 private val TAG_FILL = Color(0xFF262626)
 private val FailureInk = Color(0xFFF87171)
-private val mediaShape = RoundedCornerShape(14.dp)
+internal val mediaShape = RoundedCornerShape(14.dp)
 
 /**
  * Decoded inline pictures (never larger than a bubble), by file and size, up to 16 MB, so scrolling back doesn't flicker.
@@ -120,14 +120,14 @@ private val inlineBitmaps = object : LruCache<String, Bitmap>(16 shl 20) {
 }
 
 /** [file] decoded to at most [maxPx], from [inlineBitmaps] when there. */
-private fun inlineBitmap(file: File, maxPx: Int): Bitmap? {
+internal fun inlineBitmap(file: File, maxPx: Int): Bitmap? {
     val key = "${file.path}@$maxPx"
     inlineBitmaps.get(key)?.let { return it }
     return decodeBitmap(file, maxPx)?.also { inlineBitmaps.put(key, it) }
 }
 
 /** Runs [block], turning a failure (not a cancellation) into null: a bubble that can't fetch its media keeps its placeholder. */
-private suspend fun <T> orNull(block: suspend () -> T): T? = try {
+internal suspend fun <T> orNull(block: suspend () -> T): T? = try {
     block()
 } catch (e: CancellationException) {
     throw e
@@ -139,7 +139,7 @@ private suspend fun <T> orNull(block: suspend () -> T): T? = try {
 
 /** Keeps [ids] pinned in the media cache while this is in composition. */
 @Composable
-private fun PinWhileShown(media: ChatMediaSource?, vararg ids: String?) {
+internal fun PinWhileShown(media: ChatMediaSource?, vararg ids: String?) {
     val keys = ids.filterNotNull()
     DisposableEffect(media, keys) {
         if (media != null) keys.forEach(media::pin)
@@ -156,15 +156,16 @@ private fun inlineSize(w: Int?, h: Int?): Pair<Dp, Dp> {
 }
 
 @Composable
-private fun inlineMaxPx(): Int = with(LocalDensity.current) { MEDIA_MAX.toPx().roundToInt() }
+internal fun inlineMaxPx(): Int = with(LocalDensity.current) { MEDIA_MAX.toPx().roundToInt() }
 
 /**
- * A message's attachments: photos and GIFs as pictures, files (and videos, ruling CM-R3) and folders as file bubbles,
- * in sent order. A tap opens a picture or downloads a file; a long press opens the message's sheet.
+ * A message's attachments: photos and GIFs as pictures, videos as inline players through [videos] (file bubbles without
+ * it), files and folders as file bubbles, in sent order. A tap opens a picture, plays a video or downloads a file; a long
+ * press opens the message's sheet.
  */
 @Composable
 internal fun MessageAttachments(
-    m: ChatMessage, mine: Boolean, media: ChatMediaSource?,
+    m: ChatMessage, mine: Boolean, media: ChatMediaSource?, videos: VideoPlayerState?,
     onOpen: (Attachment) -> Unit, onDownload: (List<Attachment>) -> Unit, onLongPress: (() -> Unit)?,
 ) {
     val groups = remember(m.attachments) { groupAttachments(m.attachments) }
@@ -176,7 +177,10 @@ internal fun MessageAttachments(
                 when (att.kind) {
                     AttachmentKind.IMAGE -> ImageBubble(att, media, { onOpen(att) }, onLongPress)
                     AttachmentKind.GIF -> GifBubble(att, media, { onOpen(att) }, onLongPress)
-                    AttachmentKind.VIDEO, AttachmentKind.FILE -> FileBubble(att.kind, att.name, att.sizeBytes, mine, { onDownload(listOf(att)) }, onLongPress)
+                    AttachmentKind.VIDEO ->
+                        if (videos != null) VideoBubble(m, att, media, videos, onLongPress)
+                        else FileBubble(att.kind, att.name, att.sizeBytes, mine, { onDownload(listOf(att)) }, onLongPress)
+                    AttachmentKind.FILE -> FileBubble(att.kind, att.name, att.sizeBytes, mine, { onDownload(listOf(att)) }, onLongPress)
                 }
             }
         }
@@ -184,7 +188,7 @@ internal fun MessageAttachments(
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-private fun Modifier.tapOrHold(label: String, onTap: (() -> Unit)?, onLongPress: (() -> Unit)?): Modifier =
+internal fun Modifier.tapOrHold(label: String, onTap: (() -> Unit)?, onLongPress: (() -> Unit)?): Modifier =
     if (onTap == null && onLongPress == null) this
     else semantics { contentDescription = label }.combinedClickable(
         role = Role.Button, onClick = onTap ?: {}, onLongClick = onLongPress, onLongClickLabel = if (onLongPress != null) "Message actions" else null,
@@ -269,7 +273,7 @@ internal fun fileTag(kind: AttachmentKind, name: String): String =
     if (kind == AttachmentKind.VIDEO) "VIDEO"
     else name.substringAfterLast('.', "").takeIf { it.isNotEmpty() && it.length <= 4 && it != name }?.uppercase() ?: "FILE"
 
-/** A file (or a video, ruling CM-R3): its type tag, its name in bold and `File · 220 KB` / `Video · 18 MB` (ruling CM-R4). A tap downloads it. */
+/** A file (or a video still uploading, or with no player): its type tag, its name in bold and `File · 220 KB` / `Video · 18 MB` (ruling CM-R4). A tap downloads it. */
 @Composable
 private fun FileBubble(kind: AttachmentKind, name: String, bytes: Long, mine: Boolean, onDownload: (() -> Unit)?, onLongPress: (() -> Unit)?) =
     FileLikeBubble(fileTag(kind, name), name, Messages.fileBubbleDetail(kind, bytes), mine, onDownload, onLongPress)

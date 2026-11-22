@@ -19,6 +19,10 @@ import app.mjolnir.android.session.SwitchingRelayApi
 import android.net.ConnectivityManager
 import android.net.Network
 import app.mjolnir.android.chat.ChatSendFiles
+import app.mjolnir.android.chat.createChatSendingChannel
+import app.mjolnir.android.chat.ExoVideoPlayer
+import app.mjolnir.android.chat.chatVideoHttpClient
+import app.mjolnir.android.ui.VideoPlayerState
 import app.mjolnir.android.chat.enqueueChatSends
 import app.mjolnir.android.chat.scheduleChatSendsWhenWaiting
 import app.mjolnir.client.ChatController
@@ -64,6 +68,7 @@ class MjolnirApp : Application() {
         createSendingChannels(this)
         createReceivingChannels(this)
         createChatChannel(this)
+        createChatSendingChannel(this)
         schedulePeriodicInboxDrain(this)
         syncPushToken(this)
         resumeChatSendsOnNetwork()
@@ -123,6 +128,15 @@ class AppContainer(context: Context) {
 
     /** Downloaded chat photos and files (an LRU cache of 512 MB in the app's cache folder); bubbles pin what they show. */
     val chatMediaCache = ChatMediaCache(File(appContext.cacheDir, "chat-media"))
+
+    /**
+     * The app's one chat video player (ExoPlayer, made on first play and freed when no bubble shows a video), streaming
+     * from the relay with the bearer token. Used from the main thread only.
+     */
+    val chatVideos: VideoPlayerState by lazy {
+        val http = chatVideoHttpClient(api)
+        VideoPlayerState { ExoVideoPlayer(appContext, http) }
+    }
 
     /** The app's copies of files being sent to a chat (a picked file's grant is temporary; the send outlives the process). */
     val chatSendFiles = ChatSendFiles(File(filesDir, "chat-send"))

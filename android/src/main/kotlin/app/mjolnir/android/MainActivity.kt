@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
                 return ChatViewModel(
                     c.chatController, c.api, c.nicknames, { try { c.config.read().deviceId } catch (e: java.io.IOException) { null } },
                     c.appForeground, c.chatsVisible, extras.createSavedStateHandle(),
-                    onRead = { chatId -> cancelChatNotification(appContext, chatId) }, media = media,
+                    onRead = { chatId -> cancelChatNotification(appContext, chatId) }, media = media, videos = c.chatVideos,
                 ) as T
             }
             if (modelClass != SpacesViewModel::class.java) return create(modelClass)

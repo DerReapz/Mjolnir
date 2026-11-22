@@ -86,6 +86,18 @@ class ChatSendWorkTest {
         assertTrue(!sendsWaiting(listOf(pending("x", failure = "no"))))
     }
 
+    @Test fun sendingNotificationSumsTheSendsStillGoing() {
+        val trip = PendingSend("a", "c1", null, emptyList(), 30, 100)
+        val crew = PendingSend("b", "c2", null, emptyList(), 50, 100)
+        val failed = PendingSend("x", "c3", null, emptyList(), 0, 900, failure = "Not sent")
+        assertEquals(30L to 100L, chatSendTotals(listOf(trip, failed)))
+        assertEquals(80L to 200L, chatSendTotals(listOf(trip, crew, failed)))
+        val names = mapOf("c1" to "Trip", "c2" to "Crew")
+        assertEquals("Sending to Trip", chatSendTitle(listOf(trip, failed), names::get))
+        assertEquals("Sending to 2 chats", chatSendTitle(listOf(trip, crew), names::get))
+        assertEquals("Sending to a chat", chatSendTitle(listOf(trip.copy(chatId = "gone")), names::get))
+    }
+
     @Test fun viewerGifOverTheCapKeepsItsStill() {
         val stills = mutableListOf<Long>()
         val still = { cap: Long -> stills += cap; "still" }

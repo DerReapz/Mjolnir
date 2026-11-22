@@ -134,6 +134,10 @@ class ChatMediaTest {
         assertTrue(messageActions(msg(sam, null, photo, deleted = true), me.deviceId, isSpaceAdmin = false).isEmpty())
         // The sheet's first line, as in the mockup ("Video · 18 MB · from Fred's phone").
         assertEquals("Video · 18 MB", sheetSummary(msg(sam, null, listOf(att("v", AttachmentKind.VIDEO, "trip.mp4", 18L shl 20)))))
+        // The mockup's sheet line gives a video's length when it is known and in bounds.
+        val clip = att("v", AttachmentKind.VIDEO, "trip.mp4", 18L shl 20).copy(durationMs = 42_000)
+        assertEquals("Video · 0:42 · 18 MB", sheetSummary(msg(sam, null, listOf(clip))))
+        assertEquals("Video · 18 MB", sheetSummary(msg(sam, null, listOf(clip.copy(durationMs = -5)))))
         assertEquals("look", sheetSummary(msg(sam, "look", photo)))
         assertEquals("2 files · 20 B", sheetSummary(msg(sam, null, photo + att("g", AttachmentKind.FILE, "b.txt", 10))))
         // Photos decode straight to the bubble's size from their real size, never enlarged.

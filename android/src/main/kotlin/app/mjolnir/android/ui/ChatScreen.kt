@@ -89,10 +89,13 @@ import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 internal val MineFill = Color(0xFF3B2A0E)
 internal val MineBorder = Color(0xFF5A4114)
 private val Danger = Color(0xFFF87171)
+private val NO_VIDEO: StateFlow<VideoUi?> = MutableStateFlow(null)
 
 private val BackIcon = strokeIcon("back", "M15 18l-6-6 6-6")
 private val ShareIcon = strokeIcon("share", "M4 12v8h16v-8", "M12 3v13", "M7 8l5-5 5 5")
@@ -168,6 +171,10 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
     val attach = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         vm.attach(uris.map { it.toString() })
     }
+    val videos = vm.videos
+    // No sound under the long-press sheet, the image viewer or Info: the video pauses while one covers the chat.
+    val covered = sheet != null || infoFor != null || viewing != null
+    LaunchedEffect(covered) { if (covered) videos?.pause() }
     val shownName = { p: Peer -> names[p.deviceId] ?: p.name }
     val latestOwn = remember(messages, self) { latestOwnMessage(messages, self) }
     val nameOf = { id: String -> names[id] ?: members.firstOrNull { it.deviceId == id }?.name ?: messages.firstOrNull { it.author.deviceId == id }?.author?.name ?: "Someone" }
@@ -200,7 +207,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
                     segments = remember(m.text, m.mentions, members, names) { messageSegments(m.text.orEmpty(), m.mentions, members, shownName) },
                     mentionsMe = self != null && self in m.mentions,
                     receiptLine = if (m.id == latestOwn?.id) vm.receiptLine() else "",
-                    media = vm.mediaSource, onOpen = { a -> viewing = m to a }, onDownload = { atts -> vm.download(m, atts) },
+                    media = vm.mediaSource, videos = videos, onOpen = { a -> viewing = m to a }, onDownload = { atts -> vm.download(m, atts) },
                 )
             }
             items(pending, key = { "pending-${it.id}" }) { p -> PendingSendBubbles(p, onDismiss = { vm.dismissSend(p.id) }) }
@@ -227,6 +234,19 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
         )
     }
     infoFor?.let { m -> MessageInfoDialog(m, receipts, members, shownName, loadTimes = { vm.receiptTimes(m) }, onDismiss = { infoFor = null }) }
+    val video by (videos?.now ?: NO_VIDEO).collectAsState()
+    video?.takeIf { it.fullScreen }?.let { full ->
+        val m = messages.firstOrNull { it.id == full.key.messageId }
+        val att = m?.attachments?.firstOrNull { it.fileId == full.key.fileId }
+        if (videos == null || m == null || (att == null && full.status != VideoStatus.DELETED)) {
+            LaunchedEffect(full.key) { videos?.closeFullScreen() }
+        } else {
+            VideoScreen(
+                full, att, authorName = names[m.author.deviceId] ?: m.author.name, subtitle = "${current.name} · ${clockTime(m.sentAtEpochMs)}",
+                media = vm.mediaSource, videos = videos, onDownload = { att?.let { vm.download(m, listOf(it)) } }, onClose = videos::closeFullScreen,
+            )
+        }
+    }
     viewing?.let { (m, a) ->
         ImageViewer(
             a, vm.mediaSource, onDownload = { vm.download(m, listOf(a)) },
@@ -319,7 +339,7 @@ private fun SystemLine(text: String) {
 private fun MessageRow(
     m: ChatMessage, mine: Boolean, authorName: String, canAct: Boolean, onLongPress: () -> Unit,
     segments: List<Segment>, mentionsMe: Boolean, receiptLine: String,
-    media: ChatMediaSource?, onOpen: (Attachment) -> Unit, onDownload: (List<Attachment>) -> Unit,
+    media: ChatMediaSource?, videos: VideoPlayerState?, onOpen: (Attachment) -> Unit, onDownload: (List<Attachment>) -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val maxBubble = maxWidth * 0.8f
@@ -331,7 +351,7 @@ private fun MessageRow(
                 Column(
                     Modifier.widthIn(max = maxBubble), horizontalAlignment = if (mine) Alignment.End else Alignment.Start,
                     verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) { MessageAttachments(m, mine, media, onOpen, onDownload, onLongPress = if (canAct) onLongPress else null) }
+                ) { MessageAttachments(m, mine, media, videos, onOpen, onDownload, onLongPress = if (canAct) onLongPress else null) }
             }
             // A message of only attachments has no empty text bubble.
             if (m.deleted || m.attachments.isEmpty() || !m.text.isNullOrBlank()) TextBubble(m, mine, canAct, onLongPress, segments, mentionsMe, maxBubble)
