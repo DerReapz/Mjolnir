@@ -1,4 +1,4 @@
-# Accounts: username and password sign-in
+# Accounts: username and PIN sign-in
 
 Status: draft for the owner's approval (2026-11-22), updated with the owner's answers to the builder check.
 
@@ -10,7 +10,7 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
 
 ## Goals
 
-- **One account per person** with a username that is unique on the relay and can't be changed or copied, plus a password. Signing in proves you are that person.
+- **One account per person** with a username that is unique on the relay and can't be changed or copied, plus a PIN. Signing in proves you are that person.
 - **The account is the identity everywhere people see each other:**
   - space members
   - chat members, owners and admins
@@ -20,12 +20,12 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
   - message authors
 - **All your devices are you.** Signing in on a device makes it yours. Joining a space or chat once covers every device you're signed in on. Read on one device means read on all of them.
 - **Your own devices link by signing in.** No pairing code is needed between them.
-- **Forgotten passwords:** any admin of a space the person belongs to can reset it (owner's decision). It is made visible, so it can't be used quietly.
+- **Forgotten PINs:** any admin of a space the person belongs to can reset it (owner's decision). It is made visible, so it can't be used quietly.
 - **Existing installs move over** without losing their spaces, chats, admin roles or history.
 
 ## Non-goals
 
-- Email, phone numbers, password recovery by email, two-step codes, passkeys.
+- Email, phone numbers, PIN recovery by email, two-step codes, passkeys.
 - Protecting against the relay owner. They run the server and can read its database.
 - Limiting who may create an account. Registration stays open, rate-limited per IP as today. The threat is impersonation inside a group, not strangers.
 - Accounts for guest-room guests. Guests stay anonymous browser visitors.
@@ -33,15 +33,16 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
 ## Anti-goals (a failure even if it "works")
 
 - A member can make others see a name that belongs to someone else.
-- An admin can reset a password silently and use the account unnoticed.
+- An admin can reset a PIN silently and use the account unnoticed.
 - Updating the apps or relay loses someone's spaces, chats, messages or admin role.
-- Day-to-day use gets heavier. Someone who is signed in should never be asked for the password again on that device unless it was reset or signed out.
+- Day-to-day use gets heavier. Someone who is signed in should never be asked for the PIN again on that device unless it was reset or signed out.
 
 ## Decisions (owner)
 
 - **Threat:** impersonation by another member. Light security is fine.
+- **Authenticator:** username + 6-digit PIN (owner's choice, 2026-11-23), replacing the draft's password.
 - **Accounts:** one account per person, across all their devices.
-- **Password reset:** done by the space admin, scoped to their own space (see Password reset).
+- **PIN reset:** done by the space admin, scoped to their own space (see PIN reset).
 - **Names:** every identity is unique. Display names can't copy anyone else's display name or username.
 - **Cross-person pairings:** dropped at the move-over. People re-connect through spaces where needed.
 - **Approach:** option 1, "accounts become the identity" (below).
@@ -65,35 +66,37 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
 - **The account record** holds:
   - `username`: 3–24 characters, from `a–z`, `0–9`, `.`, `_` and `-`. It is stored lower-case, compared case-insensitively, unique, and can never be changed.
   - `displayName`: at most 40 characters, changeable. It is optional and defaults to the username. **Unique across the relay (owner's decision):** compared case-insensitively after trimming and collapsing whitespace. It may not equal any other account's display name or any other account's username, and a new username may not equal an existing display name. A clash gives `name_taken` on create, sign-up and rename. Lookalike characters (homoglyphs) are left to the builder: at minimum, refuse invisible and bidi control characters.
-  - The password hash.
-  - The creation time, plus `passwordResetBy` / `passwordResetAt` (see Password reset).
-- **Password rules:**
-  - At least 8 characters, at most 128, with no other composition rules.
-  - Hashed with a slow, salted password hash. Use Argon2id or bcrypt, whichever is available on the JVM without native pain; this is the builder's call. Never logged.
+  - The PIN hash.
+  - The creation time, plus `pinResetBy` / `pinResetAt` (see PIN reset).
+- **PIN rules (owner's decision: a 6-digit PIN, chosen to be easy to type, store and still safe):**
+  - Exactly 6 digits. Obvious PINs are refused with `weak_pin`: all the same digit (`000000`, `111111`, …) and straight runs up or down (`123456`, `654321`, `012345`, …).
+  - **Stored safely:** hashed with a slow, salted hash (Argon2id or bcrypt, whichever runs on the JVM without native pain; builder's call) **plus a relay-wide secret "pepper"** kept outside the database. The relay generates it on first start into its data folder, or reads `MJOLNIR_PIN_PEPPER`. A copied database alone then can't be brute-forced through the small PIN space. A PIN is never logged.
+  - **Guessing protection (what makes a 6-digit PIN safe):** per account, 5 wrong PINs lock sign-in for 15 minutes. Each further lockout doubles the wait, up to 24 hours. A correct PIN resets the count. There is also a per-IP limit. A wrong PIN gives the generic `wrong_username_or_pin`. A locked account answers `locked` with the minutes left, shown as `Too many tries. Try again in {m} min.`
+  - **On the device:** after sign-in the device keeps its token as today, so the PIN is only typed when adding a new device, after a reset, or to change it.
 - **Endpoints:**
-  - **Create account:** the request carries username, password, display name, and this device's name and kind. It creates the account and the device and returns the device token. The response is the same shape as today's register, plus the account.
-  - **Sign in:** username, password, device name and kind. On success it creates a new device under the account and returns its token. Wrong username or password gives one generic error, `wrong_username_or_password`, so it never says which part was wrong.
+  - **Create account:** the request carries username, PIN, display name, and this device's name and kind. It creates the account and the device and returns the device token. The response is the same shape as today's register, plus the account.
+  - **Sign in:** username, PIN, device name and kind. On success it creates a new device under the account and returns its token. A wrong username or PIN gives one generic error, `wrong_username_or_pin`, so it never says which part was wrong.
   - **Sign out this device:** deletes the device and its token.
   - **Sign out another of my devices:** from your device list. The use is "my phone was lost".
-  - **Change password:** needs the current password. Your other devices stay signed in.
+  - **Change PIN:** needs the current PIN. Your other devices stay signed in.
 - **Rate limits:**
-  - Failed sign-ins are rate-limited per username (for example 10 per 15 minutes) and per IP.
+  - Failed sign-ins: the per-account lockout above, plus a per-IP limit.
   - Creating an account uses today's registration limit (5 per hour per IP).
 - **Tokens and identity:** device tokens work as today. A device's principal now carries `accountId` as well as `deviceId`. A device that isn't signed in can do nothing except create an account or sign in. That is the only exception, plus during the move-over (below).
 - **Guests:** the guest room is unchanged. Guest devices have no account.
 
-### Password reset by a space admin
+### PIN reset by a space admin
 
-- **Who and when (owner's decision):** only the admin of a space, and only for people who are members of that space. *Reset password…* is on the member card in that admin's space. No one else can reset a password.
+- **Who and when (owner's decision):** only the admin of a space, and only for people who are members of that space. *Reset PIN…* is on the member card in that admin's space. No one else can reset a PIN.
 - **What it does:**
   - signs out **all** of that person's devices;
-  - sets the temporary password;
-  - marks the account as "must change password at next sign-in";
+  - sets a temporary 6-digit PIN the admin chooses (the same weak-PIN rules apply);
+  - marks the account as "must change PIN at next sign-in";
   - records who reset it and when.
-- **What the person sees on next sign-in:** `Your password was reset by {admin name}`. They must then choose a new password before using the app.
-- **Who else sees it (owner's decision):** only the space where the reset was done. That space's card shows `{admin} reset {person}'s password` for 7 days. Other spaces the person is in are not told. The owner accepted this: an admin who resets a password could use the account elsewhere without the other spaces being told, but the real person always finds out at their next sign-in.
+- **What the person sees on next sign-in:** `Your PIN was reset by {admin name}`. They must then choose a new PIN before using the app.
+- **Who else sees it (owner's decision):** only the space where the reset was done. That space's card shows `{admin} reset {person}'s PIN` for 7 days. Other spaces the person is in are not told. The owner accepted this: an admin who resets a PIN could use the account elsewhere without the other spaces being told, but the real person always finds out at their next sign-in.
 - **Limits:**
-  - An admin can't reset their own password this way; they use Change password.
+  - An admin can't reset their own PIN this way; they use Change PIN.
   - A reset is rate-limited per admin.
 
 ### Identity everywhere: devices become people
@@ -137,15 +140,15 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
 ### Screens (both apps)
 
 - **Welcome:** shown when the device isn't signed in. It has *Create account* and *Sign in*, plus the relay address (moved here from first-run setup).
-  - **Create account:** username, display name, password, confirm password.
-  - **Sign in:** username, password.
+  - **Create account:** username, display name, PIN and confirm PIN (six digit boxes each; a numeric keypad on the phone).
+  - **Sign in:** username and PIN.
 - **Account (in Settings):**
   - display name (editable) and username (read-only);
-  - *Change password*;
+  - *Change PIN*;
   - *My devices*, each with *Sign out*;
   - *Sign out of this device*.
-- **Must change password:** shown after a reset. It shows the notice `Your password was reset by {admin}` and then asks for a new password.
-- **Space member card (admin only):** gains *Reset password…*, with a confirmation that explains it signs the person out everywhere and tells them who did it.
+- **Must change PIN:** shown after a reset. It shows the notice `Your PIN was reset by {admin}` and then asks for a new PIN.
+- **Space member card (admin only):** gains *Reset PIN…*, with a confirmation that explains it signs the person out everywhere and tells them who did it.
 - **Join requests and invites** show the display name and username.
 - **Pairing screens:** removed. *My devices* explains: "Sign in with your account on another device to add it here."
 
@@ -158,7 +161,7 @@ The groups are small (friends and family on a self-hosted relay), so the goal is
 
 ## Left to the builder / open
 
-- **Password hashing:** Argon2id or bcrypt, and its parameters. Builder's call, documented in the README.
+- **PIN hashing:** Argon2id or bcrypt, its parameters, and how the pepper is stored. Builder's call, documented in the README.
 - **Session lifetime:** device tokens don't expire, as today. A reset or sign-out revokes them. This is the builder's call; the owner may revisit.
 - How the move-over identifies the old device, how stored ids inside message bodies and events are rewritten, merges that hit limits, and local caches and nicknames keyed by device id.
 - Lockout handling for the per-username sign-in limit.
