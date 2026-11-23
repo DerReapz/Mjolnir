@@ -31,7 +31,7 @@ class RelayClientTest {
 
     @Test fun chatFileRequestPointsAtTheRelayWithTheBearer() {
         var token: String? = "tok-9"
-        val client = RelayClient.create("https://relay.example/") { token }
+        val client = RelayClient.create("https://relay.example/", "1.0.0") { token }
         client.use {
             assertEquals(FileRequest("https://relay.example/v1/files/f1", mapOf("Authorization" to "Bearer tok-9")), it.chatFileRequest("f1"))
             token = null // read live: no token, no header
@@ -40,6 +40,6 @@ class RelayClientTest {
     }
 
     @Test fun unreachableRelayIsNetworkError() = runTest {
-        assertKind(RelayErrorKind.NETWORK) { RelayClient.create("http://127.0.0.1:1") { null }.register("x", DeviceKind.PC) }
+        assertKind(RelayErrorKind.NETWORK) { RelayClient.create("http://127.0.0.1:1", "1.0.0") { null }.register("x", DeviceKind.PC) }
     }
 }

@@ -257,7 +257,7 @@ class AppContainer(context: Context) {
         if (existing != null && cachedUrl != null) return existing
         val url = config.read().relayUrl
         existing?.close()
-        RelayClient.create(url) { config.read().token }.also { client = it; cachedUrl = url }
+        RelayClient.create(url, BuildConfig.VERSION_NAME) { config.read().token }.also { client = it; cachedUrl = url }
     }
 
     // Last, so everything the relay client needs exists before the restore runs on its own thread.

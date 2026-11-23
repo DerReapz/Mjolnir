@@ -1,6 +1,8 @@
 package app.mjolnir.client
 
 import app.mjolnir.protocol.DeviceKind
+import app.mjolnir.server.RelayDeps
+import app.mjolnir.server.Store
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.Tab
 import kotlinx.coroutines.channels.Channel
@@ -33,6 +35,13 @@ class RelayEventsTest {
         assertEquals("https://a.com", (withTimeout(5_000) { events.receive() } as RelayEvent.DeliveryArrived).delivery.tabs.single().url)
         job.cancel()
     }
+
+    @Test fun appVersionHeaderReachesRelayAndOlderAppGetsUpdateAvailable() =
+        clientTest(RelayDeps(store = Store("jdbc:sqlite::memory:"), version = "1.0.5")) {
+            val pc = newDevice("PC", DeviceKind.PC)
+            val events = withTimeout(5_000) { pc.api.events().take(2).toList() }
+            assertEquals(listOf(RelayEvent.Connected, RelayEvent.UpdateAvailable("1.0.5")), events)
+        }
 
     @Test fun dropEmitsDisconnectedThenReconnectsAndEmitsConnectedAgain() = fakeWsTest { client ->
         assertEquals(

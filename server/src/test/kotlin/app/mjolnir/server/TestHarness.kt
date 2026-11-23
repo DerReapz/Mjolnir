@@ -211,11 +211,12 @@ fun relayTest(
     push: PushSender = NoopPushSender,
     heartbeatMs: Long = 30_000,
     roomSweepMs: Long = 15_000,
+    version: String = "1.0.0",
     block: suspend RelayTestScope.() -> Unit,
 ) = testApplication {
     val deps = RelayDeps(
         store = Store("jdbc:sqlite::memory:"), clock = clock, limits = limits, files = files, push = push,
-        heartbeatMs = heartbeatMs, roomSweepMs = roomSweepMs,
+        heartbeatMs = heartbeatMs, roomSweepMs = roomSweepMs, version = version,
     )
     var app: Application? = null
     application { relayModule(deps); app = this }

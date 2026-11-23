@@ -1,5 +1,11 @@
 package app.mjolnir.protocol
 
+/** Sent by every app request; the relay compares it with its own version. */
+const val APP_VERSION_HEADER = "Mjolnir-App-Version"
+
+/** Carried by every relay response. */
+const val RELAY_VERSION_HEADER = "Mjolnir-Relay-Version"
+
 object Limits {
     const val MAX_TABS_PER_SEND = 100
     const val MAX_URL_LENGTH = 8192

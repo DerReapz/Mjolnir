@@ -7,6 +7,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.call
 import io.ktor.server.request.header
 import io.ktor.server.application.install
 import io.ktor.server.auth.Authentication
@@ -27,6 +28,9 @@ import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.pingPeriod
 import app.mjolnir.protocol.Limits
+import app.mjolnir.protocol.RELAY_VERSION_HEADER
+import io.ktor.http.ContentType
+import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.ApplicationStopping
 import io.ktor.server.application.log
 import kotlinx.coroutines.CancellationException
@@ -78,7 +82,15 @@ data class RelayDeps(
     /** How often expired guest rooms are ended (their guest removed and its sockets closed). */
     val roomSweepMs: Long = 15_000,
     val tickets: DownloadTickets = DownloadTickets(),
+    /** The relay's release version, `1.0.N`; read from the generated `version.properties`. */
+    val version: String = readRelayVersion(),
 )
+
+internal fun readRelayVersion(): String {
+    val props = java.util.Properties()
+    RelayDeps::class.java.getResourceAsStream("/version.properties")?.use { props.load(it) }
+    return props.getProperty("version", "1.0.0").trim()
+}
 
 /** The registration rate-limit key: Fly's own `Fly-Client-IP` when present, else the last proxy hop. */
 internal fun clientIp(call: ApplicationCall): String =
@@ -93,6 +105,7 @@ val ChatMessageLimit = RateLimitName("chat-message")
 
 fun Application.relayModule(deps: RelayDeps) {
     install(ContentNegotiation) { json(MjolnirJson) }
+    intercept(ApplicationCallPipeline.Plugins) { call.response.headers.append(RELAY_VERSION_HEADER, deps.version) }
     install(GuestGuard) { this.deps = deps }
     // Only the last X-Forwarded-For hop is added by our own proxy; earlier entries are whatever the client sent.
     install(XForwardedHeaders) { useLastProxy() }
@@ -183,6 +196,7 @@ fun Application.relayModule(deps: RelayDeps) {
     monitor.subscribe(ApplicationStopping) { purgeScope.cancel(); deps.asyncScope.cancel() }
     routing {
         get("/health") { call.respondText("ok") }
+        get("/version") { call.respondText("""{"version":"${deps.version}"}""", ContentType.Application.Json) }
         deviceRoutes(deps)
         pairingRoutes(deps)
         spaceRoutes(deps)

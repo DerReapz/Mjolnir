@@ -28,7 +28,7 @@ class ClientTestScope(private val builder: ApplicationTestBuilder, val deps: Rel
 
     // No transfer socket timeout here: Ktor 3.3.0's test host races on it (its socket-timeout watchdog reads a
     // closed response channel and fails the test with ClosedWriteChannelException). Production keeps the timeout.
-    private fun client(token: () -> String?) = RelayClient(http(), "http://localhost", transferSocketTimeoutMs = null, token = token)
+    private fun client(token: () -> String?) = RelayClient(http(), "http://localhost", "1.0.0", transferSocketTimeoutMs = null, token = token)
 
     val anonymousApi: RelayClient = client { null }
 
@@ -65,7 +65,7 @@ fun fakeWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
         }
     }
     val http = createClient { installMjolnirDefaults() }
-    RelayClient(http, "http://localhost", reconnectDelayMs = { 10L }) { "t" }.use { block(it) }
+    RelayClient(http, "http://localhost", "1.0.0", reconnectDelayMs = { 10L }) { "t" }.use { block(it) }
 }
 
 fun heartbeatOnlyWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
@@ -78,7 +78,7 @@ fun heartbeatOnlyWsTest(block: suspend (RelayClient) -> Unit) = testApplication 
         }
     }
     val http = createClient { installMjolnirDefaults() }
-    RelayClient(http, "http://localhost", reconnectDelayMs = { 10L }, idleTimeoutMs = 200) { "t" }.use { block(it) }
+    RelayClient(http, "http://localhost", "1.0.0", reconnectDelayMs = { 10L }, idleTimeoutMs = 200) { "t" }.use { block(it) }
 }
 
 fun silentWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
@@ -92,7 +92,7 @@ fun silentWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
         }
     }
     val http = createClient { installMjolnirDefaults() }
-    RelayClient(http, "http://localhost", reconnectDelayMs = { 10L }, idleTimeoutMs = 200) { "t" }.use { block(it) }
+    RelayClient(http, "http://localhost", "1.0.0", reconnectDelayMs = { 10L }, idleTimeoutMs = 200) { "t" }.use { block(it) }
 }
 
 fun clientTest(

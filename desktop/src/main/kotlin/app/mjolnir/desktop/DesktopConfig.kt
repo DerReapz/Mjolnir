@@ -33,6 +33,13 @@ fun DesktopConfig.saveDirPath(home: String = defaultHome()): File =
 
 private fun defaultHome(): String = System.getenv("USERPROFILE") ?: System.getProperty("user.home")
 
+/** This build's release version, `1.0.N`, from the generated `app-version.properties` resource. */
+fun appVersion(): String {
+    val props = Properties()
+    DesktopConfig::class.java.getResourceAsStream("/app-version.properties")?.use { props.load(it) }
+    return props.getProperty("version", "1.0.0").trim()
+}
+
 fun defaultDesktopConfig(): DesktopConfig {
     val props = Properties()
     DesktopConfig::class.java.getResourceAsStream("/mjolnir.properties")?.use { props.load(it) }

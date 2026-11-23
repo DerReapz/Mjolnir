@@ -13,8 +13,9 @@ android {
         applicationId = "app.mjolnir"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        val build = rootProject.extra["mjolnirBuild"] as Int
+        versionCode = maxOf(build, 1)
+        versionName = rootProject.extra["mjolnirVersion"] as String
         val relayUrl = (findProperty("mjolnir.relayUrl") ?: "").toString().replace("\\", "\\\\").replace("\"", "\\\"")
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
     }

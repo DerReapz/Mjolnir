@@ -30,4 +30,17 @@ dependencies {
     testImplementation(kotlin("test"))
 }
 
+// The relay reports its own version from this resource.
+val generateVersion by tasks.registering {
+    val version = rootProject.extra["mjolnirVersion"] as String
+    val out = layout.buildDirectory.dir("generated/version")
+    inputs.property("version", version)
+    outputs.dir(out)
+    doLast {
+        out.get().asFile.mkdirs()
+        out.get().file("version.properties").asFile.writeText("version=$version\n")
+    }
+}
+sourceSets.main { resources.srcDir(generateVersion) }
+
 tasks.test { useJUnitPlatform() }

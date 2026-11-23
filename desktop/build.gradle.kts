@@ -39,6 +39,19 @@ dependencies {
     testImplementation(compose.uiTest)
 }
 
+// The running app reads its own version from this resource (sent to the relay as Mjolnir-App-Version).
+val generateAppVersion by tasks.registering {
+    val version = rootProject.extra["mjolnirVersion"] as String
+    val out = layout.buildDirectory.dir("generated/appVersion")
+    inputs.property("version", version)
+    outputs.dir(out)
+    doLast {
+        out.get().asFile.mkdirs()
+        out.get().file("app-version.properties").asFile.writeText("version=$version\n")
+    }
+}
+sourceSets.main { resources.srcDir(generateAppVersion) }
+
 tasks.processResources {
     val relayUrl = (findProperty("mjolnir.relayUrl") as String?) ?: ""
     inputs.property("relayUrl", relayUrl)
@@ -53,7 +66,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi)
             packageName = "Mjolnir"
-            packageVersion = "1.0.0"
+            packageVersion = rootProject.extra["mjolnirVersion"] as String
             description = "Send tabs and files between your phone and this PC"
             vendor = "Mjolnir"
             // From suggestRuntimeModules, plus jdk.crypto.ec, which TLS (ECDHE) needs on JDK 21 but jdeps cannot see.

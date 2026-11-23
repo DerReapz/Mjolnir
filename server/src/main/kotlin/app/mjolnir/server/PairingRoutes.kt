@@ -3,7 +3,10 @@ package app.mjolnir.server
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
+import app.mjolnir.protocol.APP_VERSION_HEADER
 import app.mjolnir.protocol.DeviceKind
+import app.mjolnir.protocol.MjolnirJson
+import app.mjolnir.protocol.Versions
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import app.mjolnir.protocol.ClaimRequest
@@ -165,6 +168,9 @@ fun Route.pairingRoutes(deps: RelayDeps) {
             val me = call.me()
             val sink = WebSocketSink(this)
             hub.add(me.deviceId, sink)
+            // An app older than this relay learns it once on connect; no header (the guest page) means nothing.
+            call.request.headers[APP_VERSION_HEADER]?.takeIf { Versions.isNewer(deps.version, it) }
+                ?.let { send(Frame.Text(MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.UpdateAvailable(deps.version)))) }
             val heartbeat = launch {
                 while (true) {
                     delay(deps.heartbeatMs)

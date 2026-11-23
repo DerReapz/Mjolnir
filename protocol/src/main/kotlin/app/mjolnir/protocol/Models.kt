@@ -226,6 +226,9 @@ sealed interface RelayEvent {
     /** Sent to the sender when the guest has been served the last byte of these files of [deliveryId]. */
     @Serializable @SerialName("downloaded") data class Downloaded(val deliveryId: String, val fileIds: List<String>) : RelayEvent
 
+    /** Sent once on connect when the app's version is older than the relay's; [version] is the relay's. */
+    @Serializable @SerialName("update_available") data class UpdateAvailable(val version: String) : RelayEvent
+
     /** Emitted by RelayClient after every (re)connect; the server never sends it. */
     @Serializable @SerialName("connected") data object Connected : RelayEvent
 

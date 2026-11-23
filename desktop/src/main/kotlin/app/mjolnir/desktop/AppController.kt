@@ -109,7 +109,7 @@ class AppController(
     private val markDownloaded: (File) -> Unit = ::markOfTheWeb,
     /** The temp folder of copies opened in the system video player: deleted at start and when the chats are cleared. */
     private val playerCopies: File = playerCopiesDir(),
-    private val apiFactory: (url: String, token: () -> String?) -> RelayApi = { url, token -> RelayClient.create(url, token) },
+    private val apiFactory: (url: String, token: () -> String?) -> RelayApi = { url, token -> RelayClient.create(url, appVersion(), token) },
 ) {
 
     private val store = JsonFileStore(File(dataDir, "config.json"), DesktopConfig.serializer(), ::defaultDesktopConfig)

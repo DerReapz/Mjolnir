@@ -61,6 +61,8 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.HttpRequestPipeline
+import app.mjolnir.protocol.APP_VERSION_HEADER
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -137,6 +139,8 @@ internal fun backoffMs(attempt: Int): Long = min(30_000L, 1_000L shl attempt.coe
 class RelayClient(
     private val http: HttpClient,
     baseUrl: String,
+    /** This app's release version, `1.0.N`; sent as `Mjolnir-App-Version` on every request and on the WebSocket. */
+    appVersion: String,
     private val reconnectDelayMs: (Int) -> Long = ::backoffMs,
     private val idleTimeoutMs: Long = 75_000,
     private val stableAfterMs: Long = 30_000,
@@ -147,6 +151,10 @@ class RelayClient(
     private val base = baseUrl.trimEnd('/')
     private val closed = Job()
 
+    init {
+        http.requestPipeline.intercept(HttpRequestPipeline.State) { context.headers[APP_VERSION_HEADER] = appVersion }
+    }
+
     /** Closes the HTTP client and ends any active [events] flow cleanly. */
     override fun close() {
         closed.complete()
@@ -154,10 +162,11 @@ class RelayClient(
     }
 
     companion object {
-        fun create(baseUrl: String, token: () -> String?): RelayClient =
+        fun create(baseUrl: String, appVersion: String, token: () -> String?): RelayClient =
             RelayClient(
                 newMjolnirHttpClient(),
                 baseUrl,
+                appVersion,
                 token = token,
             )
     }

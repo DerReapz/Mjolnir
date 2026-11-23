@@ -48,6 +48,7 @@ class CatchService(
                 // The guest joining or the room ending also changes the peer list (the guest peer comes and goes).
                 is RelayEvent.GuestJoined, is RelayEvent.RoomEnded -> { onGuestRoomEvent(event); onPeersChanged() }
                 is RelayEvent.Downloaded -> onGuestRoomEvent(event)
+                is RelayEvent.UpdateAvailable -> Unit // the updater (a later task) reacts to this
                 is RelayEvent.ChatChanged, is RelayEvent.ChatDeleted, is RelayEvent.ChatInvitesChanged -> onChatEvent(event)
             }
         }
