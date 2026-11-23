@@ -54,6 +54,7 @@ import app.mjolnir.android.ui.DevicesScreen
 import app.mjolnir.android.ui.DevicesViewModel
 import app.mjolnir.android.ui.GuestRoomViewModel
 import app.mjolnir.android.ui.MjolnirNav
+import app.mjolnir.android.ui.UpdateBanner
 import app.mjolnir.android.ui.PairingViewModel
 import app.mjolnir.android.ui.Screen
 import app.mjolnir.android.ui.SettingsScreen
@@ -159,8 +160,10 @@ class MainActivity : ComponentActivity() {
                     container.chatsVisible.value = screen == Screen.CHATS
                     onDispose { container.chatsVisible.value = false }
                 }
+                val updateBanner by container.updateFlow.banner.collectAsState()
                 Scaffold(
                     containerColor = Forge.Background,
+                    topBar = { UpdateBanner(updateBanner, onInstall = { container.updateFlow.install() }) },
                     // A conversation takes the whole screen, as in the mockup.
                     bottomBar = { if (!(screen == Screen.CHATS && chatOpen != null)) MjolnirNav(screen, onSelect = { screen = it }, chatsBadge = chatUnread.values.sum()) },
                 ) { padding ->

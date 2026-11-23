@@ -58,6 +58,10 @@ object Messages {
     fun updateAvailable(version: String) = "Update available: $version"
     fun downloadingUpdate(percent: Int) = "Downloading update… $percent%"
     fun updateFailed(reason: String) = "Update failed: $reason. Try again."
+    /** Phone only: Android refused an APK signed with another key; trying again can't help. */
+    const val UPDATE_SIGNED_DIFFERENTLY = "Update failed: the update is signed differently. Reinstall once from the release page."
+    /** Phone only: the app may not install packages yet; the system's setting for it has just been opened. */
+    const val ALLOW_INSTALLS = "Allow Mjolnir to install updates, then tap Install again."
 
     // ---- Chats ----
     const val APPROVE = "Approve"

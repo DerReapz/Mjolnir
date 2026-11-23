@@ -1,6 +1,17 @@
 package app.mjolnir.android.ui
 
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.Alignment
+import app.mjolnir.android.update.UpdateBannerUi
+import app.mjolnir.client.Messages
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
@@ -73,5 +84,24 @@ fun MjolnirNav(current: Screen, onSelect: (Screen) -> Unit, modifier: Modifier =
                 ),
             )
         }
+    }
+}
+
+/**
+ * The strip above the screens: an app update (with *Install*) or a relay too old for this app. Nothing when [banner] is
+ * null; it pads for the status bar itself (it is the Scaffold's top bar).
+ */
+@Composable
+fun UpdateBanner(banner: UpdateBannerUi?, onInstall: () -> Unit) {
+    banner ?: return
+    Row(
+        Modifier.fillMaxWidth().background(Forge.Surface)
+            .drawBehind { drawLine(Forge.Border, Offset(0f, size.height), Offset(size.width, size.height), 1.dp.toPx()) }
+            .statusBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(banner.text, style = MaterialTheme.typography.bodyMedium, color = Forge.Text, modifier = Modifier.weight(1f))
+        if (banner.install) Button(onClick = onInstall, shape = ButtonShape) { Text(Messages.INSTALL) }
     }
 }

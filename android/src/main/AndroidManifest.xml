@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- In-app updates: the app is distributed outside Play (GitHub releases), so it installs its own verified APK. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name="app.mjolnir.android.MjolnirApp"
@@ -51,6 +53,11 @@
 
         <receiver
             android:name="app.mjolnir.android.receive.DownloadNowReceiver"
+            android:exported="false" />
+
+        <!-- An update's install session status (the system's PendingIntent); never reachable by other apps. -->
+        <receiver
+            android:name="app.mjolnir.android.update.InstallStatusReceiver"
             android:exported="false" />
 
         <!-- A Caught notification's "Open all links": invisible, gone as soon as the links are opened. -->

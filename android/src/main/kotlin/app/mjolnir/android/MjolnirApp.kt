@@ -41,6 +41,14 @@ import app.mjolnir.client.Outbox
 import app.mjolnir.client.OutgoingFiles
 import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayClient
+import app.mjolnir.client.Platform
+import app.mjolnir.client.Updater
+import app.mjolnir.client.newMjolnirHttpClient
+import app.mjolnir.android.update.ApkInstaller
+import app.mjolnir.android.update.UpdateFlow
+import app.mjolnir.android.update.UpdateWatcher
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.filterNotNull
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -72,6 +80,10 @@ class MjolnirApp : Application() {
         schedulePeriodicInboxDrain(this)
         syncPushToken(this)
         resumeChatSendsOnNetwork()
+        appScope.launch {
+            container.updater.cleanOld() // an APK left by an earlier run (the update it installed, or one never installed)
+            container.updater.start() // checks now and every 6 hours; installs only when the user taps Install
+        }
         // Throws still in the outbox (e.g. after a force-stop or reboot) get their work back; KEEP leaves running
         // or waiting work alone.
         Thread {
@@ -123,6 +135,19 @@ class AppContainer(context: Context) {
     /** Held by every inbox drain, so two workers never receive the same delivery at once. */
     val inboxLock = Mutex()
 
+    private val updateScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * App updates from the project's GitHub releases. Its HTTP client is its own, never a relay client's, so the relay's
+     * bearer token and the app/relay version headers never reach GitHub. Before [api]: every relay client feeds it.
+     */
+    val updater = Updater(
+        newMjolnirHttpClient(), Platform.ANDROID_APK, BuildConfig.VERSION_NAME, File(appContext.cacheDir, "updates"), updateScope,
+    )
+
+    /** The update banner and its Install button. */
+    val updateFlow = UpdateFlow(updater, ApkInstaller.forApp(appContext), updateScope)
+
     /** Talks to the relay at the current `relayUrl`; the client is rebuilt when the URL changes and reads the token live. */
     val api: RelayApi = SwitchingRelayApi(::currentClient)
 
@@ -173,6 +198,11 @@ class AppContainer(context: Context) {
 
     /** True while the Chats tab is the screen shown. */
     val chatsVisible = MutableStateFlow(false)
+
+    /** The relay's `UpdateAvailable` push reaches the updater whenever the app is in the foreground. */
+    val updateWatcher = UpdateWatcher(
+        events = { api.events() }, scope = updateScope, active = appForeground, onUpdateAvailable = updater::onUpdateAvailable,
+    )
 
     /** Live chat updates while the Chats tab is on screen. */
     val chatWatcher = ChatWatcher(
@@ -250,6 +280,7 @@ class AppContainer(context: Context) {
     private val clientLock = Any()
     private var cachedUrl: String? = null
     private var client: RelayClient? = null
+    private var relayVersionJob: Job? = null
 
     /** Cached so calls never read config.json; rebuilt (old client closed) after [invalidateRelayClient]. */
     private fun currentClient(): RelayApi = synchronized(clientLock) {
@@ -257,7 +288,13 @@ class AppContainer(context: Context) {
         if (existing != null && cachedUrl != null) return existing
         val url = config.read().relayUrl
         existing?.close()
-        RelayClient.create(url, BuildConfig.VERSION_NAME) { config.read().token }.also { client = it; cachedUrl = url }
+        RelayClient.create(url, BuildConfig.VERSION_NAME) { config.read().token }.also { c ->
+            client = c
+            cachedUrl = url
+            // The relay's version header (any response) tells the updater whether this relay is older than the app.
+            relayVersionJob?.cancel()
+            relayVersionJob = updateScope.launch { c.relayVersion.filterNotNull().collect(updater::onRelayVersion) }
+        }
     }
 
     // Last, so everything the relay client needs exists before the restore runs on its own thread.

@@ -123,7 +123,7 @@ class SettingsViewModel(
                 resetQuietly(session)
                 _state.update { it.copy(notice = Messages.RESET) }
             } else {
-                _state.update { it.copy(notice = "$failure: ${Messages.failureReason(e.kind, "the relay")}.") }
+                _state.update { it.copy(notice = "$failure: ${Messages.failureReason(e, "the relay")}.") }
             }
         } catch (e: IOException) {
             _state.update { it.copy(notice = "$failure.") }

@@ -86,7 +86,7 @@ class DevicesViewModel(private val api: RelayApi, private val session: PhoneSess
                     resetQuietly(session)
                     _state.value = DevicesUi(nicknames = nicknames.changes.value, notice = Messages.RESET)
                 } else {
-                    _state.value = _state.value.copy(notice = "$failure: ${Messages.failureReason(e.kind, "the other device")}.")
+                    _state.value = _state.value.copy(notice = "$failure: ${Messages.failureReason(e, "the other device")}.")
                 }
             } catch (e: IOException) { // the phone's own config couldn't be read or written
                 _state.value = _state.value.copy(notice = "$failure.")

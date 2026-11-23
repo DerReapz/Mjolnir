@@ -342,7 +342,7 @@ class ThrowViewModel(
                         // Registering again failed; the app registers on its next start.
                     }
                 } else {
-                    parts += Messages.notThrown(Messages.failureReason(error.kind, shown))
+                    parts += Messages.notThrown(Messages.failureReason(error, shown))
                 }
             }
         }

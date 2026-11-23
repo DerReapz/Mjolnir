@@ -61,6 +61,7 @@ dependencies {
     testImplementation(kotlin("test"))
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(testFixtures(project(":relay-client")))
+    testImplementation(libs.ktor.client.mock)
 }
 
 if (file("google-services.json").exists()) apply(plugin = "com.google.gms.google-services")
