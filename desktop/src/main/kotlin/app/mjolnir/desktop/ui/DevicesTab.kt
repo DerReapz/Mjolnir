@@ -219,7 +219,7 @@ private fun PairPanel(c: AppController, onClose: () -> Unit) {
             remaining = Limits.PAIRING_TTL_MS
             code = r.code
         } catch (e: RelayException) {
-            error = couldntGetCode(Messages.failureReason(e.kind, self))
+            error = couldntGetCode(Messages.failureReason(e, self))
         }
     }
     LaunchedEffect(code) {

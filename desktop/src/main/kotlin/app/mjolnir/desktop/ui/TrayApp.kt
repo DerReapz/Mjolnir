@@ -1,6 +1,7 @@
 package app.mjolnir.desktop.ui
 
 import app.mjolnir.client.RelayUrls
+import app.mjolnir.client.UpdateState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -50,6 +51,7 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     val nicknames by c.nicknames.changes.collectAsState()
     val tooltip by c.tooltip.collectAsState()
     val pairRequest by c.pairRequest.collectAsState()
+    val update by c.updateState.collectAsState()
     val icon = remember { loadIcon() }
 
     // First run without a relay address: open straight on Settings. A Start menu launch shows the window; sign-in ([background]) stays in the tray.
@@ -71,6 +73,10 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     }
 
     Tray(icon = icon, state = trayState, tooltip = tooltip, onAction = { c.openWindow(mainTab) }, menu = {
+        trayUpdateLabel(update)?.let { label ->
+            Item(label, onClick = { c.openWindow(mainTab); c.installUpdate() }) // the window shows the download's progress
+            Separator()
+        }
         Item("Open Mjolnir", onClick = { c.openWindow(mainTab) }) // the last tab shown
         Item("Send to device…", onClick = { c.openWindow(MainTab.SEND) })
         val lastPhoneId = config.lastPhoneId
@@ -93,6 +99,9 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     }
     pairRequest?.let { PairRequestDialog(c, it, icon) }
 }
+
+/** The tray's `Update to {version}` item, shown only while an update is available (not once it is downloading). */
+internal fun trayUpdateLabel(state: UpdateState): String? = (state as? UpdateState.Available)?.let { "Update to ${it.version}" }
 
 /** `Pair with {name}?`, or `{device} wants to join {space}` for a space invite. */
 internal fun pairRequestTitle(request: RelayEvent.PairRequested): String =

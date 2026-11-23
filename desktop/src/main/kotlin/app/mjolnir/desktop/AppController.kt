@@ -31,6 +31,10 @@ import app.mjolnir.client.RelayClient
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
 import app.mjolnir.client.RelayUrls
+import app.mjolnir.client.Platform
+import app.mjolnir.client.UpdateState
+import app.mjolnir.client.Updater
+import app.mjolnir.client.newMjolnirHttpClient
 import app.mjolnir.client.cleanStaging
 import app.mjolnir.client.guestRoomSecretStore
 import app.mjolnir.client.sendInBatches
@@ -50,6 +54,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
 import java.util.UUID
+import kotlin.system.exitProcess
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -68,6 +73,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import app.mjolnir.client.ClaimOutcome
@@ -109,8 +115,25 @@ class AppController(
     private val markDownloaded: (File) -> Unit = ::markOfTheWeb,
     /** The temp folder of copies opened in the system video player: deleted at start and when the chats are cleared. */
     private val playerCopies: File = playerCopiesDir(),
+    /**
+     * Builds the app updater. Its HTTP client is its own, never a relay client's, so the relay's bearer token and app
+     * headers are not sent to GitHub. Downloads go to `<app data>/updates`.
+     */
+    newUpdater: (CoroutineScope) -> Updater = { s -> Updater(newMjolnirHttpClient(), Platform.WINDOWS_MSI, appVersion(), File(dataDir, "updates"), s) },
+    /** Starts the downloaded MSI ([MsiInstaller]); tests inject a fake. */
+    private val installer: InstallerLauncher = MsiInstaller(),
+    /** Ends the app once the installer runs; null means [shutdown] and exit the process (the shutdown hook frees the instance lock). */
+    exitApp: (() -> Unit)? = null,
     private val apiFactory: (url: String, token: () -> String?) -> RelayApi = { url, token -> RelayClient.create(url, appVersion(), token) },
 ) {
+    private val exitApp: () -> Unit = exitApp ?: { shutdown(); exitProcess(0) }
+
+    private val updater: Updater = newUpdater(scope)
+    /** The app update: available, downloading, failed, or ready (handed to the installer). */
+    val updateState: StateFlow<UpdateState> = updater.state
+    /** The relay is older than this app: the banner says it needs a newer relay. */
+    val relayTooOld: StateFlow<Boolean> = updater.relayTooOld
+    private var relayVersionJob: Job? = null
 
     private val store = JsonFileStore(File(dataDir, "config.json"), DesktopConfig.serializer(), ::defaultDesktopConfig)
     val nicknames = Nicknames(JsonFileStore(File(dataDir, "nicknames.json"), MapSerializer(String.serializer(), String.serializer())) { emptyMap() })
@@ -367,6 +390,11 @@ class AppController(
             (client as? AutoCloseable)?.close()
             client = apiFactory(url) { store.read().token }
             clientUrl = url
+            // The relay's version header (any response) tells the updater whether this relay is older than the app.
+            relayVersionJob?.cancel()
+            relayVersionJob = (client as? RelayClient)?.let { c ->
+                scope.launch { c.relayVersion.filterNotNull().collect(updater::onRelayVersion) }
+            }
         }
         client
     }
@@ -378,6 +406,37 @@ class AppController(
 
     fun start() {
         scope.launch { restartService() }
+        scope.launch {
+            updater.cleanOld() // installers left by an earlier run (the update it installed, or one never installed)
+            updater.start()
+        }
+    }
+
+    private val installing = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Install (banner or tray): downloads the update (from `Available`, or `Failed` to try again); once it is `Ready`,
+     * starts the installer and exits the app. An installer that won't start leaves `Failed` with the reason. A second
+     * tap while this runs does nothing.
+     */
+    fun installUpdate(): Job = scope.launch {
+        if (!installing.compareAndSet(false, true)) return@launch
+        try {
+            val s = updater.state.value
+            if (s is UpdateState.Available || s is UpdateState.Failed) updater.download()
+            val ready = updater.state.value as? UpdateState.Ready ?: return@launch
+            try {
+                withContext(Dispatchers.IO) { installer.launch(ready.file) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                updater.installFailed(INSTALLER_DIDNT_START)
+                return@launch
+            }
+            exitApp()
+        } finally {
+            installing.set(false)
+        }
     }
 
     private suspend fun restartService() = serviceSwitch.withLock {
@@ -409,6 +468,7 @@ class AppController(
                     onChatEvent = chats::onEvent,
                     onSpaceDeleted = { onSpaceDeleted(it.space) },
                     onGuestRoomEvent = ::onGuestRoomEvent,
+                    onUpdateAvailable = updater::onUpdateAvailable,
                 ).run()
                 delay(RETRY_DELAY_MS) // the events flow ended (client closed): start over
             } catch (e: CancellationException) {
@@ -693,7 +753,7 @@ class AppController(
             kickOutbox()
         }
         if (error != null) {
-            parts += Messages.notSent(Messages.failureReason(error.kind, shown))
+            parts += Messages.notSent(Messages.failureReason(error, shown))
             if (error.kind == RelayErrorKind.UNAUTHORIZED) scope.launch { recoverUnauthorized(token) }
         }
         // A guest is not a device to come back to: it never becomes the last-used (default) target.
@@ -799,7 +859,7 @@ class AppController(
         } catch (e: RelayException) {
             // The dialog is gone, so a failed accept can't be retried; the claim used the code up.
             if (accept && e.kind != RelayErrorKind.UNAUTHORIZED) codeUsedUp(request)
-            notify(spaceErrorCopy(e) ?: couldntAnswer(Messages.failureReason(e.kind, request.from.name)))
+            notify(spaceErrorCopy(e) ?: couldntAnswer(Messages.failureReason(e, request.from.name)))
             return
         }
         request.space?.let { space ->
@@ -842,7 +902,7 @@ class AppController(
         } catch (e: CancellationException) {
             throw e
         } catch (e: RelayException) {
-            notify(Messages.failureReason(e.kind, nicknames.displayName(peer)))
+            notify(Messages.failureReason(e, nicknames.displayName(peer)))
         }
         // The refreshed list shows whether a shared space still links the device: /v1/peers lists it once, as paired, while both hold.
         refreshAfterSpaceChange()
@@ -876,7 +936,7 @@ class AppController(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: RelayException) {
-                return Messages.failureReason(e.kind, trimmed)
+                return Messages.failureReason(e, trimmed)
             }
         }
         updateConfig { it.copy(deviceName = trimmed) }

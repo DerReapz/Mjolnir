@@ -24,6 +24,8 @@ class CatchService(
     private val onChatEvent: (RelayEvent) -> Unit = {},
     /** Runs for the guest room's events (guest joined, room ended, files downloaded by the guest). */
     private val onGuestRoomEvent: (RelayEvent) -> Unit = {},
+    /** Runs when the relay says a newer app version exists (sent once per connect when this app is older). */
+    private val onUpdateAvailable: (version: String) -> Unit = {},
 ) {
     /** Collects relay events until cancelled; RelayException(UNAUTHORIZED) and any drain failure propagate. */
     suspend fun run() {
@@ -48,7 +50,7 @@ class CatchService(
                 // The guest joining or the room ending also changes the peer list (the guest peer comes and goes).
                 is RelayEvent.GuestJoined, is RelayEvent.RoomEnded -> { onGuestRoomEvent(event); onPeersChanged() }
                 is RelayEvent.Downloaded -> onGuestRoomEvent(event)
-                is RelayEvent.UpdateAvailable -> Unit // the updater (a later task) reacts to this
+                is RelayEvent.UpdateAvailable -> onUpdateAvailable(event.version)
                 is RelayEvent.ChatChanged, is RelayEvent.ChatDeleted, is RelayEvent.ChatInvitesChanged -> onChatEvent(event)
             }
         }

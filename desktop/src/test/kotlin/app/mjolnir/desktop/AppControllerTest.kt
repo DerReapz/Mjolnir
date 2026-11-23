@@ -30,7 +30,7 @@ class AppControllerTest {
     ): Pair<AppController, CoroutineScope> {
         File(dir, "config.json").writeText(config)
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-        return AppController(dir, scope, launchAtLoginSetter = launchAtLogin, sendToSetter = sendTo) { url, _ -> urls += url; api } to scope
+        return AppController(dir, scope, launchAtLoginSetter = launchAtLogin, sendToSetter = sendTo, newUpdater = { offlineUpdater(dir, it) }) { url, _ -> urls += url; api } to scope
     }
 
     private fun TestScope.notes(c: AppController): MutableList<String> {
@@ -157,7 +157,7 @@ class AppControllerTest {
         )
         val urls = mutableListOf<String>()
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-        val c = AppController(dir, scope) { url, _ -> urls += url; FakeRelayApi() }
+        val c = AppController(dir, scope, newUpdater = { offlineUpdater(dir, it) }) { url, _ -> urls += url; FakeRelayApi() }
         assertNull(c.api())
         c.start(); runCurrent()
         assertTrue(urls.isEmpty())

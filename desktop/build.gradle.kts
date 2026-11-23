@@ -32,6 +32,7 @@ dependencies {
     }
 
     testImplementation(testFixtures(project(":relay-client")))
+    testImplementation(libs.ktor.client.mock)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(kotlin("test"))
     testImplementation(compose.desktop.uiTestJUnit4)

@@ -63,6 +63,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.rememberWindowState
 import app.mjolnir.client.GuestRoomUi
+import app.mjolnir.client.Messages
+import app.mjolnir.client.UpdateState
 import app.mjolnir.desktop.AppController
 import app.mjolnir.desktop.ItemPreview
 import app.mjolnir.desktop.MainTab
@@ -99,6 +101,8 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
     val guestUi by c.guestRoom.state.collectAsState()
     val exchanged by c.guestRoom.exchanged.collectAsState()
     val guestLeft = rememberRoomCountdown(guestUi)
+    val update by c.updateState.collectAsState()
+    val relayTooOld by c.relayTooOld.collectAsState()
     var pairOnOpen by remember { mutableStateOf(false) } // the Send tab's *Pair a device* opens Devices with pairing started
     val scope = rememberCoroutineScope()
     val previews = remember { mutableStateMapOf<String, ItemPreview>() }
@@ -171,56 +175,89 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
         }
         LaunchedEffect(Unit) { c.openRequests.collect { bringToFront(awtWindow) } } // Explorer's *Send to*, tray: come to the front
         MjolnirTheme {
-            Row(Modifier.fillMaxSize().dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget)) {
-                Sidebar(selected = tab, relayStatus = relayStatus.label, guestBadge = guestLeft, onSelect = onTab, chatsBadge = chatUnread.values.sum())
-                Box(Modifier.weight(1f).fillMaxHeight()) {
-                    when (tab) {
-                        MainTab.SEND -> SendTabContent(
-                            state = send,
-                            nicknameOf = { peer -> if (peer.kind == DeviceKind.GUEST) "Guest" else nicknames.nicknameOr(peer.deviceId, peer.name) }, // reads the flow so renames recompose
-                            previews = previews,
-                            sending = send.sending,
-                            onUpdate = c::updateSend,
-                            onAddFiles = {
-                                val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
-                                dialog.isVisible = true
-                                addFiles(dialog.files.toList())
-                            },
-                            onAddFolder = {
-                                val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
-                                if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) addFiles(listOf(chooser.selectedFile))
-                            },
-                            onPair = { pairOnOpen = true; onTab(MainTab.DEVICES) },
-                            onSend = { c.sendSelected() }, // runs in the controller's scope, so closing this window cannot cancel it
-                            onOpen = ::openPreview,
-                            onShowInFolder = ::showPreviewInFolder,
-                            guestLeft = guestLeft,
-                        )
-                        MainTab.CHATS -> ChatsTab(c, parent = awtWindow)
-                        MainTab.RECEIVED -> ReceivedTab(c)
-                        MainTab.DEVICES -> DevicesTab(c, openPairing = pairOnOpen, onPairingOpened = { pairOnOpen = false })
-                        MainTab.SETTINGS -> SettingsTab(c, parent = awtWindow)
-                        MainTab.GUEST -> GuestTabContent(
-                            ui = guestUi, exchanged = exchanged,
-                            onOpen = c.guestRoom::open,
-                            onEnd = c.guestRoom::end,
-                            onCopy = { (guestUi as? GuestRoomUi.Open)?.link?.takeIf { it.isNotBlank() }?.let(::copyToClipboard) },
-                            onAddFiles = {
-                                val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
-                                dialog.isVisible = true
-                                c.sendToGuest(dialog.files.toList())
-                            },
-                            onAddFolder = {
-                                val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
-                                if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) c.sendToGuest(listOf(chooser.selectedFile))
-                            },
-                            onDrop = c::sendToGuest,
-                            onOpenFolder = { path -> File(path).let { f -> if (f.isDirectory) openFile(f) else revealInFolder(f) } },
-                        )
+            Column(Modifier.fillMaxSize()) {
+                UpdateBanner(update, relayTooOld, onInstall = { c.installUpdate() }) // runs in the controller's scope
+                Row(Modifier.fillMaxWidth().weight(1f).dragAndDropTarget(shouldStartDragAndDrop = { true }, target = dropTarget)) {
+                    Sidebar(selected = tab, relayStatus = relayStatus.label, guestBadge = guestLeft, onSelect = onTab, chatsBadge = chatUnread.values.sum())
+                    Box(Modifier.weight(1f).fillMaxHeight()) {
+                        when (tab) {
+                            MainTab.SEND -> SendTabContent(
+                                state = send,
+                                nicknameOf = { peer -> if (peer.kind == DeviceKind.GUEST) "Guest" else nicknames.nicknameOr(peer.deviceId, peer.name) }, // reads the flow so renames recompose
+                                previews = previews,
+                                sending = send.sending,
+                                onUpdate = c::updateSend,
+                                onAddFiles = {
+                                    val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
+                                    dialog.isVisible = true
+                                    addFiles(dialog.files.toList())
+                                },
+                                onAddFolder = {
+                                    val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+                                    if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) addFiles(listOf(chooser.selectedFile))
+                                },
+                                onPair = { pairOnOpen = true; onTab(MainTab.DEVICES) },
+                                onSend = { c.sendSelected() }, // runs in the controller's scope, so closing this window cannot cancel it
+                                onOpen = ::openPreview,
+                                onShowInFolder = ::showPreviewInFolder,
+                                guestLeft = guestLeft,
+                            )
+                            MainTab.CHATS -> ChatsTab(c, parent = awtWindow)
+                            MainTab.RECEIVED -> ReceivedTab(c)
+                            MainTab.DEVICES -> DevicesTab(c, openPairing = pairOnOpen, onPairingOpened = { pairOnOpen = false })
+                            MainTab.SETTINGS -> SettingsTab(c, parent = awtWindow)
+                            MainTab.GUEST -> GuestTabContent(
+                                ui = guestUi, exchanged = exchanged,
+                                onOpen = c.guestRoom::open,
+                                onEnd = c.guestRoom::end,
+                                onCopy = { (guestUi as? GuestRoomUi.Open)?.link?.takeIf { it.isNotBlank() }?.let(::copyToClipboard) },
+                                onAddFiles = {
+                                    val dialog = FileDialog(awtWindow as Frame, "Add files…", FileDialog.LOAD).apply { isMultipleMode = true }
+                                    dialog.isVisible = true
+                                    c.sendToGuest(dialog.files.toList())
+                                },
+                                onAddFolder = {
+                                    val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+                                    if (chooser.showOpenDialog(awtWindow) == JFileChooser.APPROVE_OPTION) c.sendToGuest(listOf(chooser.selectedFile))
+                                },
+                                onDrop = c::sendToGuest,
+                                onOpenFolder = { path -> File(path).let { f -> if (f.isDirectory) openFile(f) else revealInFolder(f) } },
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * The update banner's text and whether it offers *Install*; null when there is nothing to show. A relay older than this
+ * app takes the slot ([Messages.RELAY_TOO_OLD]) unless the user already started an update (downloading, failed, installing).
+ */
+internal fun updateBanner(state: UpdateState, relayTooOld: Boolean): Pair<String, Boolean>? = when (state) {
+    is UpdateState.Downloading -> Messages.downloadingUpdate(state.percent) to false
+    is UpdateState.Failed -> Messages.updateFailed(state.reason) to true
+    is UpdateState.Ready -> Messages.INSTALLING to false
+    else -> when {
+        relayTooOld -> Messages.RELAY_TOO_OLD to false
+        state is UpdateState.Available -> Messages.updateAvailable(state.version) to true
+        else -> null
+    }
+}
+
+/** The strip at the top of the main window: an app update (with *Install*) or a relay too old for this app. */
+@Composable
+fun UpdateBanner(state: UpdateState, relayTooOld: Boolean, onInstall: () -> Unit) {
+    val (text, install) = updateBanner(state, relayTooOld) ?: return
+    Row(
+        Modifier.fillMaxWidth().background(Forge.surface)
+            .drawBehind { drawLine(Forge.border, Offset(0f, size.height), Offset(size.width, size.height), 1.dp.toPx()) }
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(text, style = TextStyle(fontFamily = ForgeFonts.inter400, fontSize = 13.sp, color = Forge.text), modifier = Modifier.weight(1f))
+        if (install) ForgePrimaryButton(Messages.INSTALL, onClick = onInstall)
     }
 }
 
