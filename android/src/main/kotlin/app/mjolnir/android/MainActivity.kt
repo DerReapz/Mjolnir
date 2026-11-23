@@ -205,6 +205,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         container.appForeground.value = true
+        container.updateFlow.onForeground() // an install session dropped while away is let go
         container.chatController.resumeSends() // ruling CM-R2: sends with files go on when the app comes back
         lifecycleScope.launch {
             try {

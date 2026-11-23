@@ -46,7 +46,8 @@ import app.mjolnir.client.Updater
 import app.mjolnir.client.newMjolnirHttpClient
 import app.mjolnir.android.update.ApkInstaller
 import app.mjolnir.android.update.UpdateFlow
-import app.mjolnir.android.update.UpdateWatcher
+import app.mjolnir.android.update.forwardRelayVersion
+import app.mjolnir.android.update.forwardingUpdates
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.filterNotNull
 import java.io.File
@@ -145,9 +146,6 @@ class AppContainer(context: Context) {
         newMjolnirHttpClient(), Platform.ANDROID_APK, BuildConfig.VERSION_NAME, File(appContext.cacheDir, "updates"), updateScope,
     )
 
-    /** The update banner and its Install button. */
-    val updateFlow = UpdateFlow(updater, ApkInstaller.forApp(appContext), updateScope)
-
     /** Talks to the relay at the current `relayUrl`; the client is rebuilt when the URL changes and reads the token live. */
     val api: RelayApi = SwitchingRelayApi(::currentClient)
 
@@ -199,14 +197,12 @@ class AppContainer(context: Context) {
     /** True while the Chats tab is the screen shown. */
     val chatsVisible = MutableStateFlow(false)
 
-    /** The relay's `UpdateAvailable` push reaches the updater whenever the app is in the foreground. */
-    val updateWatcher = UpdateWatcher(
-        events = { api.events() }, scope = updateScope, active = appForeground, onUpdateAvailable = updater::onUpdateAvailable,
-    )
+    /** The update banner and its Install button; the install prompt opens only while the app is in the foreground. */
+    val updateFlow = UpdateFlow(updater, ApkInstaller.forApp(appContext), updateScope, appForeground)
 
     /** Live chat updates while the Chats tab is on screen. */
     val chatWatcher = ChatWatcher(
-        chatController, events = { api.events() }, scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        chatController, events = { api.events().forwardingUpdates(updater) }, scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
         active = combine(appForeground, chatsVisible) { fg, shown -> fg && shown },
     )
 
@@ -235,7 +231,7 @@ class AppContainer(context: Context) {
 
     /** Listens to the relay while a room is open, on any screen: marks downloads and notifies when the guest joins. */
     val guestRoomWatcher = GuestRoomWatcher(
-        guestRoom, events = { api.events() }, scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        guestRoom, events = { api.events().forwardingUpdates(updater) }, scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
         onGuestJoined = { postGuestJoinedNotification(appContext) },
     )
 
@@ -291,9 +287,12 @@ class AppContainer(context: Context) {
         RelayClient.create(url, BuildConfig.VERSION_NAME) { config.read().token }.also { c ->
             client = c
             cachedUrl = url
-            // The relay's version header (any response) tells the updater whether this relay is older than the app.
+            // The relay's version header (any response): a relay older than the app is flagged, a newer one means an
+            // update is out (ruling UP-R3: no socket of its own for the relay's UpdateAvailable push).
             relayVersionJob?.cancel()
-            relayVersionJob = updateScope.launch { c.relayVersion.filterNotNull().collect(updater::onRelayVersion) }
+            relayVersionJob = updateScope.launch {
+                c.relayVersion.filterNotNull().collect { forwardRelayVersion(updater, BuildConfig.VERSION_NAME, it) }
+            }
         }
     }
 

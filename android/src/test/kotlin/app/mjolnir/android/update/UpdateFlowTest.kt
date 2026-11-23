@@ -1,7 +1,8 @@
 package app.mjolnir.android.update
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.content.pm.PackageInstaller
-import app.mjolnir.client.FakeRelayApi
 import app.mjolnir.client.Messages
 import app.mjolnir.client.Platform
 import app.mjolnir.client.UpdateState
@@ -30,10 +31,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.advanceUntilIdle
-import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import org.junit.Rule
 import org.junit.Test
@@ -74,25 +74,36 @@ class UpdateFlowTest {
 
     @AfterTest fun tearDown() = scope.cancel()
 
-    /** An installer whose permission check, settings screen and session commit are recorded instead of run. */
-    private class FakeInstall(var allowed: Boolean = true, var fail: Boolean = false) {
+    /** An installer whose permission check, settings screen, sessions and prompts are recorded instead of run. */
+    private class FakeInstall(var allowed: Boolean = true, var fail: Boolean = false, var promptFails: Boolean = false) {
         val settingsOpened = mutableListOf<Unit>()
+        private val prepared = mutableListOf<File>()
         val committed = mutableListOf<File>()
+        val sessionIds = mutableListOf<Int>()
+        val abandoned = mutableListOf<Int>()
+        val dead = mutableSetOf<Int>()
+        val prompts = mutableListOf<Intent>()
         val installer = ApkInstaller(
             canRequestInstalls = { allowed },
             openInstallSettings = { settingsOpened += Unit },
-            commit = { f -> if (fail) throw IOException("no session"); committed += f },
+            prepare = { f -> if (fail) throw IOException("no session"); prepared += f; prepared.size },
+            commit = { id -> sessionIds += id; committed += prepared[id - 1] },
+            abandon = { id -> abandoned += id; dead += id },
+            isLive = { id -> id !in dead },
+            launchConfirm = { i -> if (promptFails) throw ActivityNotFoundException(); prompts += i },
         )
     }
 
     private fun <T> await(block: suspend () -> T): T = runBlocking { withTimeout(10_000) { block() } }
 
     /** A flow on a real updater that has found release 1.0.9 (the app is 1.0.5). */
-    private fun flowWithRelease(install: FakeInstall, releases: FakeReleases = FakeReleases()): Pair<Updater, UpdateFlow> {
+    private fun flowWithRelease(
+        install: FakeInstall, releases: FakeReleases = FakeReleases(), foreground: MutableStateFlow<Boolean> = MutableStateFlow(true),
+    ): Pair<Updater, UpdateFlow> {
         val updater = Updater(releases.client(), Platform.ANDROID_APK, "1.0.5", File(temp.root, "updates"), scope)
         updater.start()
         await { updater.state.first { it is UpdateState.Available } }
-        return updater to UpdateFlow(updater, install.installer, scope)
+        return updater to UpdateFlow(updater, install.installer, scope, foreground)
     }
 
     @Test fun bannerShowsAvailableAndProgress() {
@@ -140,7 +151,7 @@ class UpdateFlowTest {
         val install = FakeInstall()
         val (updater, flow) = flowWithRelease(install)
         await { flow.install().join() }
-        flow.onInstallStatus(PackageInstaller.STATUS_FAILURE_CONFLICT, "INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match")
+        flow.onInstallStatus(1, PackageInstaller.STATUS_FAILURE_CONFLICT, "INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match")
         assertTrue(updater.state.value is UpdateState.Failed)
         assertEquals(UpdateBannerUi(hint, install = false), await { flow.banner.first { it?.text == hint } })
     }
@@ -152,9 +163,13 @@ class UpdateFlowTest {
         val install = FakeInstall()
         val (updater, flow) = flowWithRelease(install)
         await { flow.install().join() }
-        flow.onInstallStatus(PackageInstaller.STATUS_PENDING_USER_ACTION, null)
+        val prompt = Intent()
+        flow.onConfirmationNeeded(1, prompt)
+        flow.onInstallStatus(1, PackageInstaller.STATUS_PENDING_USER_ACTION, null)
         assertTrue(updater.state.value is UpdateState.Ready)
-        assertEquals(UpdateBannerUi("Installing…", install = false), await { flow.banner.first { it?.text == Messages.INSTALLING } })
+        assertEquals(listOf(prompt), install.prompts) // in the foreground: the system's prompt opens at once
+        // Until the session ends, Install reopens that prompt (some prompts send nothing when dismissed).
+        assertEquals(UpdateBannerUi("Update available: 1.0.9", install = true), await { flow.banner.first { it?.install == true } })
 
         // A session that can't even be written fails the install; Install then fetches it again.
         val broken = FakeInstall(fail = true)
@@ -193,22 +208,99 @@ class UpdateFlowTest {
         assertEquals(1, install.committed.size)
     }
 
-    @Test fun updateAvailableEventReachesTheUpdaterInTheForeground() = runTest {
-        val dispatcher = StandardTestDispatcher(testScheduler)
-        val api = FakeRelayApi()
-        val foreground = MutableStateFlow(false)
-        val pushed = mutableListOf<String>()
-        UpdateWatcher({ api.events() }, CoroutineScope(dispatcher), foreground, onUpdateAvailable = { pushed += it }, retryDelayMs = 10)
-        advanceUntilIdle()
-        assertEquals(0, api.events.subscriptionCount.value)
+    @Test fun pendingWhileBackgroundedOffersInstallThatOpensThePrompt() {
+        val install = FakeInstall()
+        val foreground = MutableStateFlow(true)
+        val (updater, flow) = flowWithRelease(install, foreground = foreground)
+        await { flow.install().join() }
+        foreground.value = false // the user left before the session asked for confirmation
+        val prompt = Intent()
+        flow.onConfirmationNeeded(1, prompt)
+        assertTrue(install.prompts.isEmpty()) // never started from the background, where it would be dropped silently
+        assertTrue(updater.state.value is UpdateState.Ready)
+        val offer = UpdateBannerUi("Update available: 1.0.9", install = true)
+        assertEquals(offer, await { flow.banner.first { it == offer } })
 
-        foreground.value = true; advanceUntilIdle()
-        assertEquals(1, api.events.subscriptionCount.value)
-        api.events.emit(RelayEvent.Connected)
-        api.events.emit(RelayEvent.UpdateAvailable("1.0.9")); advanceUntilIdle()
-        assertEquals(listOf("1.0.9"), pushed)
+        foreground.value = true
+        await { flow.install().join() }
+        assertEquals(listOf(prompt), install.prompts)
+        assertEquals(listOf(1), install.sessionIds) // the waiting session's prompt, not a second session
+    }
 
-        foreground.value = false; advanceUntilIdle()
-        assertEquals(0, api.events.subscriptionCount.value)
+    @Test fun staleSessionStatusIsIgnored() {
+        val install = FakeInstall()
+        val (updater, flow) = flowWithRelease(install)
+        await { flow.install().join() }
+        flow.onInstallStatus(1, PackageInstaller.STATUS_FAILURE_ABORTED, null)
+        assertEquals(UpdateState.Failed("1.0.9", "the install was cancelled"), updater.state.value)
+        await { flow.install().join() } // downloads again and hands over session 2
+        assertEquals(listOf(1, 2), install.sessionIds)
+        assertTrue(updater.state.value is UpdateState.Ready)
+
+        flow.onInstallStatus(1, PackageInstaller.STATUS_FAILURE_ABORTED, null) // session 1's late answer
+        flow.onConfirmationNeeded(1, Intent())
+        assertTrue(updater.state.value is UpdateState.Ready)
+        assertTrue(install.prompts.isEmpty())
+        flow.onInstallStatus(-1, PackageInstaller.STATUS_FAILURE, null) // no session id at all
+        assertTrue(updater.state.value is UpdateState.Ready)
+
+        flow.onInstallStatus(2, PackageInstaller.STATUS_FAILURE_CONFLICT, null)
+        assertTrue(updater.state.value is UpdateState.Failed)
+    }
+
+    @Test fun secondTapAfterHandOffCommitsNothing() {
+        val install = FakeInstall()
+        val (_, flow) = flowWithRelease(install)
+        await { flow.install().join() }
+        assertEquals(UpdateBannerUi("Installing…", install = false), await { flow.banner.first { it?.text == Messages.INSTALLING } })
+        await { flow.install().join() } // e.g. a tap that raced the banner
+        assertEquals(listOf(1), install.sessionIds)
+    }
+
+    @Test fun promptThatCannotOpenAbandonsTheSession() {
+        val install = FakeInstall(promptFails = true)
+        val (updater, flow) = flowWithRelease(install)
+        await { flow.install().join() }
+        flow.onConfirmationNeeded(1, Intent())
+        assertEquals(listOf(1), install.abandoned)
+        assertEquals(UpdateState.Failed("1.0.9", "the installer didn't finish"), updater.state.value)
+
+        // A pending status without a prompt to open is no better.
+        val noPrompt = FakeInstall()
+        val (updater2, flow2) = flowWithRelease(noPrompt)
+        await { flow2.install().join() }
+        flow2.onConfirmationNeeded(1, null)
+        assertEquals(listOf(1), noPrompt.abandoned)
+        assertTrue(updater2.state.value is UpdateState.Failed)
+    }
+
+    @Test fun sessionDroppedSilentlyIsLetGoOnReturn() {
+        val install = FakeInstall()
+        val (_, flow) = flowWithRelease(install)
+        await { flow.install().join() }
+        install.dead += 1 // the system dropped it without a status
+        flow.onForeground()
+        val offer = UpdateBannerUi("Update available: 1.0.9", install = true)
+        assertEquals(offer, await { flow.banner.first { it == offer } })
+        await { flow.install().join() }
+        assertEquals(listOf(1, 2), install.sessionIds)
+    }
+
+    @Test fun relayNewerThanTheAppTriggersACheck() {
+        val releases = FakeReleases()
+        val updater = Updater(releases.client(), Platform.ANDROID_APK, "1.0.5", File(temp.root, "updates"), scope)
+        forwardRelayVersion(updater, "1.0.5", "1.0.5")
+        forwardRelayVersion(updater, "1.0.5", "1.0.3")
+        assertTrue(releases.requests.isEmpty()) // a relay as old as (or older than) the app means no new release
+        assertTrue(updater.relayTooOld.value)
+        forwardRelayVersion(updater, "1.0.5", "1.0.9")
+        assertEquals(UpdateState.Available("1.0.9"), await { updater.state.first { it is UpdateState.Available } })
+    }
+
+    @Test fun updateAvailableFromAnEventStreamReachesTheUpdater() {
+        val updater = Updater(FakeReleases().client(), Platform.ANDROID_APK, "1.0.5", File(temp.root, "updates"), scope)
+        val passed = await { flowOf(RelayEvent.Connected, RelayEvent.UpdateAvailable("1.0.9")).forwardingUpdates(updater).toList() }
+        assertEquals(2, passed.size) // the stream itself is unchanged
+        assertEquals(UpdateState.Available("1.0.9"), await { updater.state.first { it is UpdateState.Available } })
     }
 }
