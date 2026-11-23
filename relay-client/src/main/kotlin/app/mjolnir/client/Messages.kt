@@ -47,6 +47,18 @@ object Messages {
     fun leftOut(n: Int) = if (n == 1) "1 file over 100 MB was left out" else "$n files over 100 MB were left out"
     fun notSent(reason: String) = "Not sent: $reason."
 
+    // ---- Updates ----
+    const val INSTALL = "Install"
+    const val INSTALLING = "Installing…"
+    /** A request the relay doesn't know (an older relay), or a relay older than this app: replaces the generic error. */
+    const val RELAY_OUTDATED = "The relay needs updating. Ask whoever runs it to update."
+    /** The banner while [Updater.relayTooOld]. */
+    const val RELAY_TOO_OLD = "This version needs a newer relay."
+
+    fun updateAvailable(version: String) = "Update available: $version"
+    fun downloadingUpdate(percent: Int) = "Downloading update… $percent%"
+    fun updateFailed(reason: String) = "Update failed: $reason. Try again."
+
     // ---- Chats ----
     const val APPROVE = "Approve"
     const val DENY = "Deny"
@@ -137,7 +149,7 @@ object Messages {
         if (names.size == 1) "${names[0]} is too big for the relay" else "${names.joinToString(", ")} are too big for the relay"
 
     /** Why a send with attachments failed for good, as the failed bubble shows it. */
-    fun mediaNotSent(e: RelayException): String = notSent(
+    fun mediaNotSent(e: RelayException): String = if (e.kind == RelayErrorKind.RELAY_OUTDATED) RELAY_OUTDATED else notSent(
         e.userMessage?.replaceFirstChar(Char::lowercaseChar) ?: when {
             e.kind == RelayErrorKind.TOO_LARGE -> "a file is too big for the relay"
             e.kind == RelayErrorKind.STORAGE_FULL -> failureReason(e.kind, "")
@@ -170,6 +182,7 @@ object Messages {
 
     /** A refused chat action as a sentence; the relay's code is the exception's message. */
     fun chatError(e: RelayException): String = when {
+        e.kind == RelayErrorKind.RELAY_OUTDATED -> RELAY_OUTDATED
         e.message == "too_many_files" -> e.userMessage ?: "That folder has too many files (max 1000)."
         e.kind == RelayErrorKind.NETWORK -> "Can't reach the relay. Check your connection."
         e.kind == RelayErrorKind.RATE_LIMITED -> "Too many messages. Wait a moment."
@@ -192,6 +205,7 @@ object Messages {
         RelayErrorKind.UNAUTHORIZED -> "this device was reset on the relay"
         RelayErrorKind.TOO_LARGE -> "a file is too big for the relay"
         RelayErrorKind.STORAGE_FULL -> "the relay is out of space"
+        RelayErrorKind.RELAY_OUTDATED -> "the relay needs updating"
         else -> "the relay had a problem"
     }
 }

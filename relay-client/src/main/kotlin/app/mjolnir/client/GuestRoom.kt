@@ -108,7 +108,7 @@ class GuestRoomController(
                 fail("Couldn't read the saved guest room link") // an unreadable store says nothing about the room, so none is ended
             } catch (e: RelayException) {
                 if (e.kind == RelayErrorKind.ALREADY_SENT && _state.value is GuestRoomUi.Open) return@launch // adopted above
-                fail(e.userMessage ?: "Couldn't open the guest room")
+                fail(e.userMessage ?: outdatedOr(e, "Couldn't open the guest room"))
             }
         }
     }
@@ -126,7 +126,7 @@ class GuestRoomController(
             } catch (e: RelayException) {
                 // Already gone is as good as ended.
                 if (e.kind == RelayErrorKind.NOT_FOUND) close()
-                else _state.update { s -> if (s is GuestRoomUi.Open) s.copy(error = e.userMessage ?: "Couldn't end the guest room") else s }
+                else _state.update { s -> if (s is GuestRoomUi.Open) s.copy(error = e.userMessage ?: outdatedOr(e, "Couldn't end the guest room")) else s }
             }
         }
     }
@@ -249,6 +249,8 @@ class GuestRoomController(
     }
 
     private fun fail(message: String) { _state.value = GuestRoomUi.Failed(message) }
+
+    private fun outdatedOr(e: RelayException, generic: String) = if (e.kind == RelayErrorKind.RELAY_OUTDATED) Messages.RELAY_OUTDATED else generic
 }
 
 /** The store of the room's secret on the owner's device (roomId to secret), e.g. `guest-room.json` in the app's data folder. */

@@ -63,6 +63,12 @@ import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.HttpRequestPipeline
 import app.mjolnir.protocol.APP_VERSION_HEADER
+import app.mjolnir.protocol.RELAY_VERSION_HEADER
+import io.ktor.client.plugins.HttpSend
+import io.ktor.client.plugins.plugin
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -150,9 +156,19 @@ class RelayClient(
 ) : RelayApi, AutoCloseable {
     private val base = baseUrl.trimEnd('/')
     private val closed = Job()
+    private val _relayVersion = MutableStateFlow<String?>(null)
+
+    /**
+     * The relay's `Mjolnir-Relay-Version` from the latest response that carried it (any status, the WebSocket handshake
+     * included); null until one has. The apps forward it to [Updater.onRelayVersion].
+     */
+    val relayVersion: StateFlow<String?> = _relayVersion.asStateFlow()
 
     init {
         http.requestPipeline.intercept(HttpRequestPipeline.State) { context.headers[APP_VERSION_HEADER] = appVersion }
+        http.plugin(HttpSend).intercept { request ->
+            execute(request).also { call -> call.response.headers[RELAY_VERSION_HEADER]?.let { _relayVersion.value = it } }
+        }
     }
 
     /** Closes the HTTP client and ends any active [events] flow cleanly. */
@@ -198,7 +214,8 @@ class RelayClient(
             401 -> RelayErrorKind.UNAUTHORIZED
             403 -> RelayErrorKind.NOT_PAIRED
             400 -> RelayErrorKind.INVALID
-            404 -> RelayErrorKind.NOT_FOUND
+            // The relay answers every 404 of its own with an ErrorResponse; a bare one is a route an older relay lacks.
+            404 -> if (parsed == null) RelayErrorKind.RELAY_OUTDATED else RelayErrorKind.NOT_FOUND
             409 -> RelayErrorKind.ALREADY_SENT
             413 -> RelayErrorKind.TOO_LARGE
             429 -> RelayErrorKind.RATE_LIMITED

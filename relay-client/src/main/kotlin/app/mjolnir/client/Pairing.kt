@@ -39,8 +39,9 @@ private val CLAIM_ERRORS = mapOf(
     "space_limit" to LIMIT_ERRORS.getValue("space_limit"),
 )
 
-/** Copy for the relay's space-limit errors (create, claim or accept), or null for any other failure. */
-fun spaceErrorCopy(e: RelayException): String? = LIMIT_ERRORS[e.message]
+/** Copy for the relay's space-limit errors (create, claim or accept) and an outdated relay, or null for any other failure. */
+fun spaceErrorCopy(e: RelayException): String? =
+    if (e.kind == RelayErrorKind.RELAY_OUTDATED) Messages.RELAY_OUTDATED else LIMIT_ERRORS[e.message]
 
 /**
  * Claims a pairing code typed on this device, then waits for the code's owner to accept. Shared by Android and desktop.
@@ -61,6 +62,7 @@ suspend fun claimAndAwait(
         return when (e.kind) {
             RelayErrorKind.UNAUTHORIZED -> ClaimOutcome.Failed(Messages.RESET, RelayErrorKind.UNAUTHORIZED)
             RelayErrorKind.NOT_FOUND -> ClaimOutcome.Failed(NOT_FOUND)
+            RelayErrorKind.RELAY_OUTDATED -> ClaimOutcome.Failed(Messages.RELAY_OUTDATED)
             RelayErrorKind.RATE_LIMITED -> ClaimOutcome.Failed("Too many tries. Wait a minute.")
             // Only the relay's named claim errors get their own copy; any other bad request is treated as not found.
             RelayErrorKind.INVALID -> ClaimOutcome.Failed(CLAIM_ERRORS[e.message] ?: NOT_FOUND)
@@ -87,6 +89,7 @@ private suspend fun poll(api: RelayApi, pairingId: String, owner: Peer, pollMs: 
             when (e.kind) {
                 RelayErrorKind.NETWORK, RelayErrorKind.SERVER -> continue
                 RelayErrorKind.NOT_FOUND -> return null
+                RelayErrorKind.RELAY_OUTDATED -> return ClaimOutcome.Failed(Messages.RELAY_OUTDATED)
                 RelayErrorKind.UNAUTHORIZED -> return ClaimOutcome.Failed(Messages.RESET, RelayErrorKind.UNAUTHORIZED)
                 else -> return ClaimOutcome.Failed(GENERIC)
             }

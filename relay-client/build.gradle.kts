@@ -18,6 +18,7 @@ dependencies {
     testImplementation(project(":server"))
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.ktor.client.mock)
     testImplementation(kotlin("test"))
 }
 
