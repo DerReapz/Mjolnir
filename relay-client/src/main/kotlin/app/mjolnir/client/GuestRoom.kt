@@ -250,7 +250,7 @@ class GuestRoomController(
 
     private fun fail(message: String) { _state.value = GuestRoomUi.Failed(message) }
 
-    private fun outdatedOr(e: RelayException, generic: String) = if (e.kind == RelayErrorKind.RELAY_OUTDATED) Messages.RELAY_OUTDATED else generic
+    private fun outdatedOr(e: RelayException, generic: String) = if (e.needsRelayUpdate) Messages.RELAY_OUTDATED else generic
 }
 
 /** The store of the room's secret on the owner's device (roomId to secret), e.g. `guest-room.json` in the app's data folder. */

@@ -64,6 +64,7 @@ import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.HttpRequestPipeline
 import app.mjolnir.protocol.APP_VERSION_HEADER
 import app.mjolnir.protocol.RELAY_VERSION_HEADER
+import app.mjolnir.protocol.Versions
 import io.ktor.client.plugins.HttpSend
 import io.ktor.client.plugins.plugin
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -146,7 +147,7 @@ class RelayClient(
     private val http: HttpClient,
     baseUrl: String,
     /** This app's release version, `1.0.N`; sent as `Mjolnir-App-Version` on every request and on the WebSocket. */
-    appVersion: String,
+    private val appVersion: String,
     private val reconnectDelayMs: (Int) -> Long = ::backoffMs,
     private val idleTimeoutMs: Long = 75_000,
     private val stableAfterMs: Long = 30_000,
@@ -178,6 +179,8 @@ class RelayClient(
     }
 
     companion object {
+        private val UNMARKED_KINDS = setOf(RelayErrorKind.UNAUTHORIZED, RelayErrorKind.RATE_LIMITED, RelayErrorKind.NOT_FOUND)
+
         fun create(baseUrl: String, appVersion: String, token: () -> String?): RelayClient =
             RelayClient(
                 newMjolnirHttpClient(),
@@ -222,7 +225,10 @@ class RelayClient(
             507 -> RelayErrorKind.STORAGE_FULL
             else -> if (code >= 500) RelayErrorKind.SERVER else RelayErrorKind.INVALID
         }
-        return RelayException(kind, message, detail = parsed?.detail)
+        // Answers whose copy stays specific whatever the relay's age (reset, rate limit, the relay's own not-found) aren't marked.
+        val olderRelay = kind !in UNMARKED_KINDS &&
+            response.headers[RELAY_VERSION_HEADER]?.let { Versions.isNewer(appVersion, it) } == true
+        return RelayException(kind, message, detail = parsed?.detail, fromOlderRelay = olderRelay)
     }
 
     /** Runs [block]; 2xx and any status in [okCodes] are returned, everything else becomes a [RelayException]. */

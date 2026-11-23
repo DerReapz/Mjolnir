@@ -36,7 +36,15 @@ class RelayException(
     val userMessage: String? = null,
     /** The relay's `detail` for the error, e.g. the space name for already_member. */
     val detail: String? = null,
+    /**
+     * The answer came from a relay older than this app (its `Mjolnir-Relay-Version` is lower). Copy that would otherwise
+     * be generic says the relay needs updating instead; see [needsRelayUpdate].
+     */
+    val fromOlderRelay: Boolean = false,
 ) : Exception(message, cause)
+
+/** True when this error should show [Messages.RELAY_OUTDATED] in place of a generic error. */
+val RelayException.needsRelayUpdate: Boolean get() = kind == RelayErrorKind.RELAY_OUTDATED || fromOlderRelay
 
 /** How to fetch a file straight from the relay (e.g. for a streaming player): its [url] and the [headers] to send. */
 data class FileRequest(val url: String, val headers: Map<String, String>)

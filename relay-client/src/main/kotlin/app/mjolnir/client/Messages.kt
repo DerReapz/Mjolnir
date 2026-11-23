@@ -149,17 +149,20 @@ object Messages {
         if (names.size == 1) "${names[0]} is too big for the relay" else "${names.joinToString(", ")} are too big for the relay"
 
     /** Why a send with attachments failed for good, as the failed bubble shows it. */
-    fun mediaNotSent(e: RelayException): String = if (e.kind == RelayErrorKind.RELAY_OUTDATED) RELAY_OUTDATED else notSent(
-        e.userMessage?.replaceFirstChar(Char::lowercaseChar) ?: when {
+    fun mediaNotSent(e: RelayException): String {
+        if (e.kind == RelayErrorKind.RELAY_OUTDATED) return RELAY_OUTDATED
+        val reason = e.userMessage?.replaceFirstChar(Char::lowercaseChar) ?: when {
             e.kind == RelayErrorKind.TOO_LARGE -> "a file is too big for the relay"
             e.kind == RelayErrorKind.STORAGE_FULL -> failureReason(e.kind, "")
             e.kind == RelayErrorKind.UNAUTHORIZED -> failureReason(e.kind, "")
             e.message == "invalid_files" -> "a file expired on the relay"
             e.message == "not_member" -> "you're no longer in this chat"
             e.kind == RelayErrorKind.NOT_FOUND -> "that chat is no longer there"
+            e.needsRelayUpdate -> return RELAY_OUTDATED
             else -> "the relay had a problem"
-        },
-    )
+        }
+        return notSent(reason)
+    }
 
     /** The line under your latest message: who has read and who has only seen it; empty while nobody has. */
     fun receiptLine(read: List<String>, seen: List<String>, everyone: Boolean): String = when {
@@ -195,6 +198,7 @@ object Messages {
         e.message == "invalid_mention" -> "Only people in this chat can be mentioned."
         e.message == "deleted" -> "That message was deleted."
         e.kind == RelayErrorKind.NOT_FOUND -> "That chat is no longer there."
+        e.needsRelayUpdate -> RELAY_OUTDATED
         else -> "Something went wrong. Try again."
     }
 
@@ -207,5 +211,11 @@ object Messages {
         RelayErrorKind.STORAGE_FULL -> "the relay is out of space"
         RelayErrorKind.RELAY_OUTDATED -> "the relay needs updating"
         else -> "the relay had a problem"
+    }
+
+    /** [failureReason] for a failed call: an error from a relay older than this app that would read "the relay had a problem" says it needs updating. */
+    fun failureReason(e: RelayException, peerName: String): String {
+        val reason = failureReason(e.kind, peerName)
+        return if (e.fromOlderRelay && reason == failureReason(RelayErrorKind.SERVER, peerName)) failureReason(RelayErrorKind.RELAY_OUTDATED, peerName) else reason
     }
 }

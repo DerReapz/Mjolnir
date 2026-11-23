@@ -312,6 +312,56 @@ class UpdatesTest {
         assertEquals("That chat is no longer there.", Messages.chatError(gone))
     }
 
+    @Test fun errorsFromAnOlderRelaySayItNeedsUpdating() = runTest {
+        fun json(body: String, code: HttpStatusCode, relay: String) =
+            headersOf(HttpHeaders.ContentType to listOf("application/json"), RELAY_VERSION_HEADER to listOf(relay)).let { h -> Triple(body, code, h) }
+        val answers = mapOf(
+            "/v1/spaces/s400/chats" to json("""{"error":"bad_request"}""", HttpStatusCode.BadRequest, "1.0.3"),
+            "/v1/spaces/s500/chats" to json("""{"error":"internal"}""", HttpStatusCode.InternalServerError, "1.0.3"),
+            "/v1/spaces/same/chats" to json("""{"error":"bad_request"}""", HttpStatusCode.BadRequest, "1.0.5"),
+            "/v1/spaces/gone/chats" to json("""{"error":"not_found"}""", HttpStatusCode.NotFound, "1.0.3"),
+            "/v1/spaces/limit/chats" to json("""{"error":"space_limit"}""", HttpStatusCode.BadRequest, "1.0.3"),
+            "/v1/spaces/busy/chats" to json("""{"error":"rate_limited"}""", HttpStatusCode.TooManyRequests, "1.0.3"),
+            "/v1/spaces/reset/chats" to json("""{"error":"unauthorized"}""", HttpStatusCode.Unauthorized, "1.0.3"),
+        )
+        val http = HttpClient(MockEngine) {
+            installMjolnirDefaults()
+            engine { addHandler { req -> answers.getValue(req.url.encodedPath).let { (b, c, h) -> respond(b, c, h) } } }
+        }
+        val client = RelayClient(http, "http://relay.test", "1.0.5", token = { "t" })
+        suspend fun err(space: String) = assertFailsWith<RelayException> { client.chats(space) }
+
+        for (space in listOf("s400", "s500")) {
+            val e = err(space)
+            assertTrue(e.fromOlderRelay, space)
+            assertEquals(Messages.RELAY_OUTDATED, Messages.chatError(e), space)
+            assertEquals(Messages.RELAY_OUTDATED, spaceErrorCopy(e), space)
+            assertEquals(Messages.RELAY_OUTDATED, Messages.mediaNotSent(e), space)
+            assertEquals("the relay needs updating", Messages.failureReason(e, "PC"), space)
+        }
+        assertEquals(RelayErrorKind.SERVER, err("s500").kind) // the kind (and so retrying) is unchanged
+        // The same relay version: generic as before.
+        val same = err("same")
+        assertFalse(same.fromOlderRelay)
+        assertEquals("Something went wrong. Try again.", Messages.chatError(same))
+        assertEquals(null, spaceErrorCopy(same))
+        assertEquals("the relay had a problem", Messages.failureReason(same, "PC"))
+        // Specific copy stays specific on an older relay.
+        assertEquals("That chat is no longer there.", Messages.chatError(err("gone")))
+        assertEquals("You're in the most spaces allowed (50).", spaceErrorCopy(err("limit")))
+        assertEquals("Too many messages. Wait a moment.", Messages.chatError(err("busy")))
+        assertEquals(Messages.RESET, Messages.chatError(err("reset")))
+        assertEquals(null, spaceErrorCopy(err("busy")))
+        // Claims too.
+        val older = RelayException(RelayErrorKind.INVALID, "bad_request", fromOlderRelay = true)
+        assertEquals(ClaimOutcome.Failed(Messages.RELAY_OUTDATED), claimAndAwait(FakeRelayApi().apply { onClaim = { throw older } }, "ABC234", {}))
+        val ownCode = RelayException(RelayErrorKind.INVALID, "own_code", fromOlderRelay = true)
+        assertEquals(
+            ClaimOutcome.Failed("That's this device's own code. Enter it on the other device."),
+            claimAndAwait(FakeRelayApi().apply { onClaim = { throw ownCode } }, "ABC234", {}),
+        )
+    }
+
     @Test fun relayOutdatedCopyInEveryMapper() {
         val e = RelayException(RelayErrorKind.RELAY_OUTDATED, "HTTP 404")
         assertEquals(Messages.RELAY_OUTDATED, Messages.chatError(e))

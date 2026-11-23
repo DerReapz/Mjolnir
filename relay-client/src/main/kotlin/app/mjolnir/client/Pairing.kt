@@ -41,7 +41,10 @@ private val CLAIM_ERRORS = mapOf(
 
 /** Copy for the relay's space-limit errors (create, claim or accept) and an outdated relay, or null for any other failure. */
 fun spaceErrorCopy(e: RelayException): String? =
-    if (e.kind == RelayErrorKind.RELAY_OUTDATED) Messages.RELAY_OUTDATED else LIMIT_ERRORS[e.message]
+    LIMIT_ERRORS[e.message] ?: if (e.needsRelayUpdate) Messages.RELAY_OUTDATED else null
+
+/** [fallback], or the relay-needs-updating copy when [e] came from a relay too old for this app. */
+private fun genericOr(e: RelayException, fallback: String) = if (e.needsRelayUpdate) Messages.RELAY_OUTDATED else fallback
 
 /**
  * Claims a pairing code typed on this device, then waits for the code's owner to accept. Shared by Android and desktop.
@@ -65,13 +68,13 @@ suspend fun claimAndAwait(
             RelayErrorKind.RELAY_OUTDATED -> ClaimOutcome.Failed(Messages.RELAY_OUTDATED)
             RelayErrorKind.RATE_LIMITED -> ClaimOutcome.Failed("Too many tries. Wait a minute.")
             // Only the relay's named claim errors get their own copy; any other bad request is treated as not found.
-            RelayErrorKind.INVALID -> ClaimOutcome.Failed(CLAIM_ERRORS[e.message] ?: NOT_FOUND)
+            RelayErrorKind.INVALID -> ClaimOutcome.Failed(CLAIM_ERRORS[e.message] ?: genericOr(e, NOT_FOUND))
             // 409s arrive as ALREADY_SENT: already_member, member_limit, space_limit.
             RelayErrorKind.ALREADY_SENT -> ClaimOutcome.Failed(
-                if (e.message == ALREADY_MEMBER_ERROR) "This device is already in ${e.detail ?: "that space"}." else CLAIM_ERRORS[e.message] ?: GENERIC,
+                if (e.message == ALREADY_MEMBER_ERROR) "This device is already in ${e.detail ?: "that space"}." else CLAIM_ERRORS[e.message] ?: genericOr(e, GENERIC),
             )
             RelayErrorKind.NETWORK -> ClaimOutcome.Failed("Can't reach the relay. Check your connection.")
-            else -> ClaimOutcome.Failed(GENERIC)
+            else -> ClaimOutcome.Failed(genericOr(e, GENERIC))
         }
     }
     val owner = claim.owner
@@ -91,7 +94,7 @@ private suspend fun poll(api: RelayApi, pairingId: String, owner: Peer, pollMs: 
                 RelayErrorKind.NOT_FOUND -> return null
                 RelayErrorKind.RELAY_OUTDATED -> return ClaimOutcome.Failed(Messages.RELAY_OUTDATED)
                 RelayErrorKind.UNAUTHORIZED -> return ClaimOutcome.Failed(Messages.RESET, RelayErrorKind.UNAUTHORIZED)
-                else -> return ClaimOutcome.Failed(GENERIC)
+                else -> return ClaimOutcome.Failed(genericOr(e, GENERIC))
             }
         }
         when (status.state) {
