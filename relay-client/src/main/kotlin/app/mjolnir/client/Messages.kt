@@ -213,9 +213,19 @@ object Messages {
         else -> "the relay had a problem"
     }
 
-    /** [failureReason] for a failed call: an error from a relay older than this app that would read "the relay had a problem" says it needs updating. */
-    fun failureReason(e: RelayException, peerName: String): String {
-        val reason = failureReason(e.kind, peerName)
-        return if (e.fromOlderRelay && reason == failureReason(RelayErrorKind.SERVER, peerName)) failureReason(RelayErrorKind.RELAY_OUTDATED, peerName) else reason
-    }
+    /** [failureReason] for a failed call: an error from a relay too old for this app says the relay needs updating. */
+    fun failureReason(e: RelayException, peerName: String): String = relayUpdateReason(e) ?: failureReason(e.kind, peerName)
+
+    /** Kinds whose [failureReason] is specific whatever the relay's age. */
+    private val SPECIFIC_FAILURE_KINDS = setOf(
+        RelayErrorKind.NETWORK, RelayErrorKind.NOT_PAIRED, RelayErrorKind.RATE_LIMITED,
+        RelayErrorKind.UNAUTHORIZED, RelayErrorKind.TOO_LARGE, RelayErrorKind.STORAGE_FULL,
+    )
+
+    /**
+     * "the relay needs updating" when [e] needs a newer relay and its kind has no specific [failureReason]
+     * (e.g. INVALID or SERVER from an older relay); else null.
+     */
+    fun relayUpdateReason(e: RelayException): String? =
+        if (e.needsRelayUpdate && e.kind !in SPECIFIC_FAILURE_KINDS) failureReason(RelayErrorKind.RELAY_OUTDATED, "") else null
 }

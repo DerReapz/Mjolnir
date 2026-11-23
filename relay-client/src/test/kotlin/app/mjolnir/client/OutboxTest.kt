@@ -1,6 +1,13 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.RELAY_VERSION_HEADER
 import app.mjolnir.protocol.SendRequest
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
 import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
@@ -67,6 +74,43 @@ class OutboxTest {
         assertTrue(ob.process("o1") is OutboxResult.Done)
         assertEquals(1, api.uploads.size)   // not re-uploaded
         assertTrue(ob.pending().isEmpty()); assertEquals(listOf("a"), cleaned)
+    }
+
+    /** The exception a real [RelayClient] (app 1.0.5) throws for a JSON [code] answer from a relay at [relay]. */
+    private suspend fun relayError(code: HttpStatusCode, relay: String): RelayException {
+        val http = HttpClient(MockEngine) {
+            installMjolnirDefaults()
+            engine {
+                addHandler {
+                    respond("""{"error":"bad_request"}""", code, headersOf(HttpHeaders.ContentType to listOf("application/json"), RELAY_VERSION_HEADER to listOf(relay)))
+                }
+            }
+        }
+        return assertFailsWith<RelayException> { RelayClient(http, "http://relay.test", "1.0.5", token = { "t" }).send("pc1", emptyList()) }
+    }
+
+    @Test fun throwRefusedByAnOlderRelaySaysItNeedsUpdating() = runTest {
+        val refused = relayError(HttpStatusCode.BadRequest, "1.0.3")
+        api.onSend = { throw refused }
+        val ob = outbox(); ob.enqueue(item(upload("a", 5)))
+        val result = ob.process("o1")
+        assertTrue(result is OutboxResult.Failed); assertEquals(RelayErrorKind.INVALID, result.kind)
+        assertEquals("the relay needs updating", result.message)
+        assertEquals("Not sent: the relay needs updating.", Messages.notSent(result.message!!))
+        // A 500 from an older relay is still retried, as any server error.
+        val broken = relayError(HttpStatusCode.InternalServerError, "1.0.3")
+        api.onSend = { throw broken }
+        ob.enqueue(item(upload("b", 5), id = "o2"))
+        assertEquals(OutboxResult.Retry, ob.process("o2"))
+        assertEquals("the relay needs updating", Messages.failureReason(broken, "Desk PC"))
+        // The same refusal from a relay as new as the app keeps the generic reason.
+        val current = relayError(HttpStatusCode.BadRequest, "1.0.5")
+        api.onSend = { throw current }
+        ob.enqueue(item(upload("c", 5), id = "o3"))
+        val plain = ob.process("o3")
+        assertTrue(plain is OutboxResult.Failed); assertEquals(null, plain.message)
+        // Specific reasons stay specific on an older relay.
+        assertEquals("Desk PC is no longer paired", Messages.failureReason(RelayException(RelayErrorKind.NOT_PAIRED, "x", fromOlderRelay = true), "Desk PC"))
     }
 
     @Test fun permanentFailureRemovesAndReturnsItem() = runTest {

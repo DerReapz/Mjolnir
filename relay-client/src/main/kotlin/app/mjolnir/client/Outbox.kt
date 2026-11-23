@@ -118,7 +118,7 @@ class Outbox(
         RelayErrorKind.NETWORK, RelayErrorKind.SERVER, RelayErrorKind.RATE_LIMITED -> OutboxResult.Retry
         else -> {
             remove(item.id)
-            OutboxResult.Failed(item, e.kind, e.userMessage)
+            OutboxResult.Failed(item, e.kind, e.userMessage ?: Messages.relayUpdateReason(e))
         }
     }
 
