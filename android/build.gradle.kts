@@ -5,6 +5,16 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// Release signing, from Gradle properties or the environment (CI decodes the keystore to a temp file).
+// Applied only when all four values are set; otherwise the release APK is left unsigned.
+fun signingValue(name: String): String? =
+    ((findProperty(name) as String?) ?: System.getenv(name))?.takeIf { it.isNotBlank() }
+val releaseKeystore = signingValue("ANDROID_KEYSTORE_FILE")
+val releaseKeystorePassword = signingValue("ANDROID_KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingValue("ANDROID_KEY_ALIAS")
+val releaseKeyPassword = signingValue("ANDROID_KEY_PASSWORD")
+val hasReleaseSigning = listOf(releaseKeystore, releaseKeystorePassword, releaseKeyAlias, releaseKeyPassword).all { it != null }
+
 android {
     namespace = "app.mjolnir"
     compileSdk = 36
@@ -18,6 +28,25 @@ android {
         versionName = rootProject.extra["mjolnirVersion"] as String
         val relayUrl = (findProperty("mjolnir.relayUrl") ?: "").toString().replace("\\", "\\\\").replace("\"", "\\\"")
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseKeystore!!)
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     buildFeatures {

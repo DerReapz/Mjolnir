@@ -112,7 +112,7 @@ The phone app is built from the `:android` module, which needs an Android SDK (p
 ./gradlew :android:assembleDebug     # android/build/outputs/apk/debug/android-debug.apk
 ```
 
-CI builds the same APK and uploads it as the `mjolnir-apk` artifact. To bake a default relay URL into the build, add `-Pmjolnir.relayUrl=https://<app>.fly.dev`. Debug builds also allow plain `http://` to `10.0.2.2`, `localhost` and `127.0.0.1` (for the emulator). Install with `adb install -r android-debug.apk` or copy the file to the phone. The app needs Android 10 (API 29) or newer.
+CI builds the same APK and uploads it as the `mjolnir-apk` artifact (on `main` it is the signed release APK, also attached to the release; see *Updates*). To bake a default relay URL into the build, add `-Pmjolnir.relayUrl=https://<app>.fly.dev`. Debug builds also allow plain `http://` to `10.0.2.2`, `localhost` and `127.0.0.1` (for the emulator). Install with `adb install -r android-debug.apk` or copy the file to the phone. The app needs Android 10 (API 29) or newer.
 
 ## Enable phone notifications (Firebase)
 
@@ -137,7 +137,7 @@ Without `google-services.json` the build still works; items then arrive when the
 
 The PC app is a tray app for Windows 10/11 (x64), packaged as an MSI.
 
-1. Get the MSI: download the `mjolnir-msi` artifact from the latest `windows` CI run, or build it on Windows with `./gradlew :desktop:packageMsi` (output in `desktop/build/compose/binaries/main/msi/`). The MSI bundles a JavaFX-based video player for chat videos, so the installer is larger (about 74 MB). To bake a default relay URL into the build, add `-Pmjolnir.relayUrl=https://<app>.fly.dev`.
+1. Get the MSI: download `Mjolnir-1.0.N.msi` from the latest GitHub release, or the `mjolnir-msi` artifact from the latest `windows` CI run, or build it on Windows with `./gradlew :desktop:packageMsi` (output in `desktop/build/compose/binaries/main/msi/`). The MSI bundles a JavaFX-based video player for chat videos, so the installer is larger (about 74 MB). To bake a default relay URL into the build, add `-Pmjolnir.relayUrl=https://<app>.fly.dev`.
 2. Run the MSI. It installs for the current user only (no admin rights needed) and adds Mjolnir to the Start menu.
 3. On first start Mjolnir asks for the relay URL (`https://…`). The hammer then sits in the system tray. Click it (or double-click), or choose *Open Mjolnir* from its menu, to open the main window.
 4. The tray menu has *Open Mjolnir*, *Send to device…*, *Open received files* and *Quit Mjolnir*; *Send clipboard to {name}* joins it once you have sent to a device. Starting Mjolnir from the Start menu (also when it is already running) opens the main window; signing in to Windows starts it in the tray only.
@@ -176,3 +176,75 @@ Settings and state live in `%APPDATA%\Mjolnir` (`config.json`, `seen.json`, `out
 ```
 
 The hammer icon is supplied by the project owner; `scripts/make-icons.py` generates the tray and app icons from it.
+
+## Updates
+
+Every push to `main` that passes CI publishes a GitHub release `v1.0.N` (N is the CI run number) with the Windows installer `Mjolnir-1.0.N.msi`, the phone app `mjolnir-1.0.N.apk`, the relay `server-all.jar` and a `SHA256SUMS` file, and pushes the relay image `ghcr.io/derreapz/mjolnir-relay:1.0.N` (and `:latest`). Other branches only upload CI artifacts.
+
+How the apps update:
+
+- The PC and phone apps check the latest release on start, every 6 hours, and straight away when they talk to a relay that is newer than they are. When a newer version exists they show `Update available: {version}` with *Install*. Nothing installs without that tap.
+- *Install* downloads the file and checks it against `SHA256SUMS`; a file that doesn't match is deleted and never installed (`Update failed: checksum mismatch. Try again.`).
+- **PC:** the MSI installs in place with a progress window (no admin rights needed) and Mjolnir quits for it; settings in `%APPDATA%\Mjolnir` are kept. Start Mjolnir again afterwards.
+- **Phone:** Android shows its install prompt; tap *Install*. The first time, Android asks you to allow Mjolnir to install apps (`Allow Mjolnir to install updates, then tap Install again.`). Pairings, chats and settings are kept.
+- If the relay is older than the apps they say `This version needs a newer relay.` or `The relay needs updating. Ask whoever runs it to update.` See *Relay host auto-update* below.
+- The apps only look at GitHub's *latest* release, which never includes pre-releases. A release built without the phone signing secrets carries a debug-signed APK and is marked a pre-release, so the in-app updater never offers it. That is intended: a debug-signed APK cannot update a release-signed install.
+
+### One-time phone signing setup
+
+Android only installs an update signed with the same key as the installed app, so CI signs the release APK with your own key. Create it once on your own machine (keytool comes with any JDK); it asks for a password:
+
+```
+keytool -genkeypair -v -keystore mjolnir-release.jks -keyalg RSA -keysize 4096 -validity 36500 -alias mjolnir
+```
+
+Encode it as base64 on one line:
+
+```
+base64 -w0 mjolnir-release.jks > mjolnir-release.jks.b64                       # Linux
+base64 -i mjolnir-release.jks -o mjolnir-release.jks.b64                       # macOS
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\mjolnir-release.jks")) | Set-Content mjolnir-release.jks.b64   # PowerShell
+```
+
+Then on GitHub open the repository's **Settings → Secrets and variables → Actions** and add four repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_B64` | the contents of `mjolnir-release.jks.b64` |
+| `ANDROID_KEYSTORE_PASSWORD` | the keystore password you chose |
+| `ANDROID_KEY_ALIAS` | `mjolnir` |
+| `ANDROID_KEY_PASSWORD` | the key password (the same as the keystore password unless keytool asked for a separate one) |
+
+Type these into GitHub yourself; never commit the keystore or put the passwords anywhere else. Delete the `.b64` file afterwards and keep `mjolnir-release.jks` and its password somewhere safe (a password manager and a backup). Losing the key means every phone has to uninstall and reinstall once more.
+
+With the secrets set, CI builds `:android:assembleRelease` on `main`; without them it falls back to the debug APK, warns in the run summary and marks the release a pre-release. To sign a release build locally, set the same values as Gradle properties or environment variables, with `ANDROID_KEYSTORE_FILE` pointing at the `.jks` file; without all four the release APK is left unsigned.
+
+### The first updatable version needs one last reinstall
+
+Phone apps installed before the signing setup (the `mjolnir-apk` CI artifact or a local debug build) are signed with a different key, so Android won't install the signed APK over them, and an app that tries shows `Update failed: the update is signed differently. Reinstall once from the release page.` Uninstall the old phone app first (its pairings and settings go with it), then install `mjolnir-1.0.N.apk` from the latest release and pair the phone again. From then on updates install in place. The PC app needs no reinstall: the new MSI upgrades the old one.
+
+### Relay host auto-update
+
+Run the relay from the published image on your relay host, keeping its database and files in a host folder mounted at `/data`:
+
+```
+docker run -d --name mjolnir-relay --restart unless-stopped \
+  -p 8080:8080 \
+  -v <host folder>:/data \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/data/secrets/firebase.json \
+  ghcr.io/derreapz/mjolnir-relay:latest
+```
+
+The image already sets `MJOLNIR_DB=/data/mjolnir.db` and `MJOLNIR_FILES=/data/files`. Leave out `GOOGLE_APPLICATION_CREDENTIALS` without Firebase (or put the service-account JSON at `<host folder>/secrets/firebase.json`), and add any other settings from the table in *Run the relay locally* with more `-e` flags. As before, the apps need the relay over `https://`, so keep your reverse proxy or tunnel in front of port 8080.
+
+Then let Watchtower pull a new image every 6 hours and restart the relay with the same settings:
+
+```
+docker run -d --name watchtower --restart unless-stopped \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  containrrr/watchtower --interval 21600 mjolnir-relay
+```
+
+Once the relay is updated, the apps notice the newer relay on their next request and show the update banner.
+
+The image package is private until you make it public once: on GitHub open the `mjolnir-relay` package (the repository's *Packages*), then **Package settings → Change visibility → Public**. Until then the relay host can't pull it without logging in.

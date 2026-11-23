@@ -5,6 +5,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      MJOLNIR_BUILD: ${{ github.run_number }}
+    outputs:
+      apk_signed: ${{ steps.signing.outputs.release }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -13,11 +17,52 @@ jobs:
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew check
-      - run: ./gradlew :android:assembleDebug
+      # A signed release APK only on pushes to main with all four signing secrets; otherwise the debug APK.
+      - name: Decide APK signing
+        id: signing
+        env:
+          IS_MAIN_PUSH: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ "$IS_MAIN_PUSH" = "true" ] && [ -n "$ANDROID_KEYSTORE_B64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] \
+              && [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            if [ "$IS_MAIN_PUSH" = "true" ]; then
+              echo "::warning::Android signing secrets are missing: this release uses the debug APK and is marked a pre-release."
+              {
+                echo "### Debug-signed APK"
+                echo "The Android signing secrets are not set, so this release carries the debug APK and is marked a pre-release."
+                echo "The in-app updater only offers full releases. See README → *One-time phone signing setup*."
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+      - name: Build signed release APK
+        if: steps.signing.outputs.release == 'true'
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/release.jks"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          ANDROID_KEYSTORE_FILE="$RUNNER_TEMP/release.jks" ./gradlew :android:assembleRelease
+          echo "APK_PATH=android/build/outputs/apk/release/android-release.apk" >> "$GITHUB_ENV"
+      - name: Build debug APK
+        if: steps.signing.outputs.release != 'true'
+        run: |
+          ./gradlew :android:assembleDebug
+          echo "APK_PATH=android/build/outputs/apk/debug/android-debug.apk" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
           name: mjolnir-apk
-          path: android/build/outputs/apk/debug/android-debug.apk
+          path: ${{ env.APK_PATH }}
+          if-no-files-found: error
       - run: ./gradlew :server:buildFatJar
       - uses: actions/upload-artifact@v4
         with:
@@ -25,6 +70,8 @@ jobs:
           path: server/build/libs/server-all.jar
   windows:
     runs-on: windows-latest
+    env:
+      MJOLNIR_BUILD: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -37,3 +84,93 @@ jobs:
         with:
           name: mjolnir-msi
           path: desktop/build/compose/binaries/main/msi/*.msi
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [test, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: 1.0.${{ github.run_number }}
+      APK_SIGNED: ${{ needs.test.outputs.apk_signed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mjolnir-msi
+          path: artifacts/msi
+      - uses: actions/download-artifact@v4
+        with:
+          name: mjolnir-apk
+          path: artifacts/apk
+      - uses: actions/download-artifact@v4
+        with:
+          name: mjolnir-relay
+          path: artifacts/relay
+      # Asset names must match the updater (relay-client Updates.assetName) and SHA256SUMS must use `<hash>  <name>`.
+      - name: Prepare release files
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          msi=(artifacts/msi/*.msi)
+          apk=(artifacts/apk/*.apk)
+          if [ "${#msi[@]}" -ne 1 ] || [ "${#apk[@]}" -ne 1 ]; then
+            echo "::error::expected one MSI and one APK, found: ${msi[*]} ${apk[*]}"
+            exit 1
+          fi
+          mkdir -p release server/build/libs
+          cp "${msi[0]}" "release/Mjolnir-$VERSION.msi"
+          cp "${apk[0]}" "release/mjolnir-$VERSION.apk"
+          cp artifacts/relay/server-all.jar release/server-all.jar
+          cp artifacts/relay/server-all.jar server/build/libs/server-all.jar
+          (cd release && sha256sum "Mjolnir-$VERSION.msi" "mjolnir-$VERSION.apk" server-all.jar > SHA256SUMS)
+          cat release/SHA256SUMS
+      - name: Write release notes
+        run: |
+          {
+            echo "Mjolnir $VERSION, built from ${GITHUB_SHA}."
+            echo
+            echo "- Windows: \`Mjolnir-$VERSION.msi\`"
+            echo "- Android: \`mjolnir-$VERSION.apk\`"
+            echo "- Relay: \`server-all.jar\`, or the image \`ghcr.io/derreapz/mjolnir-relay:$VERSION\`"
+            echo "- \`SHA256SUMS\` lists the SHA-256 of each file."
+            if [ "$APK_SIGNED" != "true" ]; then
+              echo
+              echo "**Pre-release:** the Android signing secrets were not set, so this APK is debug-signed."
+              echo "It is marked a pre-release so the in-app updater does not offer it: a debug-signed APK cannot"
+              echo "update a release-signed install."
+            fi
+          } > release-notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Mjolnir ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          body_path: release-notes.md
+          prerelease: ${{ env.APK_SIGNED != 'true' }}
+          make_latest: ${{ env.APK_SIGNED == 'true' }}
+          fail_on_unmatched_files: true
+          files: |
+            release/Mjolnir-${{ env.VERSION }}.msi
+            release/mjolnir-${{ env.VERSION }}.apk
+            release/server-all.jar
+            release/SHA256SUMS
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/derreapz/mjolnir-relay:${{ env.VERSION }}
+            ghcr.io/derreapz/mjolnir-relay:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/DerReapz/Mjolnir
+            org.opencontainers.image.version=${{ env.VERSION }}
