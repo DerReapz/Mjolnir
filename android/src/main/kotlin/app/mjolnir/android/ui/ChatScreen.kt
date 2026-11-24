@@ -1,5 +1,8 @@
 package app.mjolnir.android.ui
 
+import android.view.WindowManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
 import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.Context
@@ -183,7 +186,13 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
     val shownName = { p: Peer -> names[p.deviceId] ?: p.name }
     val latestOwn = remember(messages, self) { latestOwnMessage(messages, self) }
     val nameOf = { id: String -> names[id] ?: members.firstOrNull { it.deviceId == id }?.name ?: messages.firstOrNull { it.author.deviceId == id }?.author?.name ?: "Someone" }
-    Column(modifier.fillMaxSize().imePadding()) {
+    // The keyboard slides over the chat instead of pushing it up: the window stops panning while a chat is open, the
+    // messages keep their place, and only the bar with the message box rides on top of the keyboard.
+    KeepChatUnderKeyboard()
+    var barHeight by remember { mutableIntStateOf(0) }
+    val barHeightDp = with(LocalDensity.current) { barHeight.toDp() }
+    Box(modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize()) {
         val count = members.size
         Header(current.name, "${current.spaceName} · $count ${if (count == 1) "member" else "members"}", onBack, onSettings)
         notice?.let { NoticeBar(it, vm::dismissNotice) }
@@ -216,7 +225,8 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
         }
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(), state = listState,
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 14.dp + barHeightDp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             items(messages, key = { it.id }) { m ->
                 val event = m.event
@@ -232,6 +242,8 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
             }
             items(pending, key = { "pending-${it.id}" }) { p -> PendingSendBubbles(p, onDismiss = { vm.dismissSend(p.id) }) }
         }
+    }
+    Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().imePadding().onSizeChanged { barHeight = it.height }) {
         if (current.member) {
             val query = mentionQuery(draft)
             val candidates = if (query == null) emptyList() else vm.mentionCandidates(query)
@@ -245,6 +257,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
         } else if (isAdmin) {
             AdminBanner(onJoin = { vm.adminJoin(current.id) })
         }
+    }
     }
     sheet?.let { m ->
         MessageSheet(
@@ -274,6 +287,24 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
         )
     }
 }
+
+/**
+ * While a chat is open the window resizes for the keyboard instead of panning, so the chat stays put and the message box
+ * (padded by the keyboard's height) sits on top of the keyboard; the previous mode comes back when the chat closes.
+ */
+@Composable
+private fun KeepChatUnderKeyboard() {
+    val window = LocalActivity.current?.window ?: return
+    DisposableEffect(window) {
+        val previous = window.attributes.softInputMode
+        window.setSoftInputMode(withResize(previous))
+        onDispose { window.setSoftInputMode(previous) }
+    }
+}
+
+/** [mode] with its adjust part set to resize, keeping the visibility part. */
+internal fun withResize(mode: Int): Int =
+    (mode and WindowManager.LayoutParams.SOFT_INPUT_MASK_ADJUST.inv()) or WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
 
 /** The members matching what follows the `@`, above the composer. */
 @Composable

@@ -61,6 +61,7 @@ Needs three devices (any mix of PCs and phones, call them A, B and C) on one rel
 
 ## Chats (text)
 Needs two PCs (A, B) and a phone (C) in one space, with A as the space admin (so A can be the non-member admin in the moderation check). The relay must be the updated one.
+- **Typing on the phone:** tap the message box in a chat. The chat name and messages stay where they are, the keyboard slides over the bottom of the messages, and the message box sits right on top of the keyboard with no gap. Closing the keyboard shows the newest messages again.
 - **Create and invite by the owner:** on B, *Chats* → *New chat…* in the space; *Invite…* C. No approval step: C sees `You're invited to {chat}` and taps *Join*. The chat appears on C's Chats tab.
 - **Invite by a member:** on C, *Invite…* A. B (owner) sees `C wants to add A`; *Approve* then A sees the invite and taps *Join*. Repeat with *Deny* and check A never sees an invite. Check *Decline* on an approved invite. The invitee gets no event or invite before the owner approves. An invite also goes away when the invitee or the inviter leaves the space (it expires after 7 days otherwise).
 - **Send:** each device sends text and a link; the link is clickable. Send an emoji-only message and a message near 4,000 characters; one over the limit shows `That message is too long (4,000 characters at most).`
