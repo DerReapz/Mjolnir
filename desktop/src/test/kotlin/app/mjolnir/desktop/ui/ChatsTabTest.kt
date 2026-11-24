@@ -14,6 +14,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.runComposeUiTest
 import app.mjolnir.protocol.ChatEvent
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
@@ -36,8 +37,8 @@ class ChatsTabTest {
 
     private fun chat(
         id: String = "c1", name: String = "Holiday planning", space: String = "Friends", spaceId: String = "s1",
-        owner: String = "me", member: Boolean = true, last: ChatMessage? = null,
-    ) = ChatSummary(id, spaceId, space, name, owner, rev = 5, readRev = 0, member = member, lastMessage = last)
+        owner: String = "me", member: Boolean = true, last: ChatMessage? = null, kind: ChatKind = ChatKind.PRIVATE, muted: Boolean = false,
+    ) = ChatSummary(id, spaceId, space, name, owner, rev = 5, readRev = 0, member = member, lastMessage = last, kind = kind, muted = muted)
 
     private fun msg(
         id: String, author: Peer, text: String?, rev: Long = 1, edited: Long? = null, deleted: Boolean = false,
@@ -306,5 +307,55 @@ class ChatsTabTest {
     @Test fun emptyMemberListIsNotASoleOwner() = runComposeUiTest {
         setContent { MjolnirTheme { ChatSettingsDialog(settings(members = emptyList()), onClose = {}) } }
         onNodeWithText("Leave chat").assertExists() // members not loaded yet: do not claim the owner is alone
+    }
+
+    // ---- open channels ----
+
+    @Test fun listShowsChannelsAbovePrivateChats() = runComposeUiTest {
+        show(ui(chats = listOf(chat("c1", "Game night"), chat("c2", "general", kind = ChatKind.OPEN, owner = "fred")), selected = null))
+        onNodeWithText("FRIENDS").assertExists()
+        onNodeWithText("Channels").assertExists()
+        onNodeWithText("# general").assertExists()
+        onNodeWithText("Private chats").assertExists()
+        val y = { t: String -> onNodeWithText(t).fetchSemanticsNode().boundsInRoot.top }
+        assert(y("Channels") < y("# general") && y("# general") < y("Private chats") && y("Private chats") < y("Game night"))
+    }
+
+    @Test fun emptySectionHidesItsLabel() = runComposeUiTest {
+        show(ui(chats = listOf(chat("c1", "Game night")), selected = null))
+        onNodeWithText("Channels").assertDoesNotExist()
+        onNodeWithText("Private chats").assertExists()
+    }
+
+    @Test fun mutedChatShowsMutedLabel() = runComposeUiTest {
+        show(ui(chats = listOf(chat("c2", "general", kind = ChatKind.OPEN, muted = true)), selected = null, unread = mapOf("c2" to 4)))
+        onNodeWithText("Muted").assertExists()
+        onNodeWithText("4").assertExists()
+    }
+
+    @Test fun newChannelCreatesWithNameOnly() = runComposeUiTest {
+        val made = mutableListOf<String>()
+        val space = Space("s1", "Friends", "me", listOf(me, fred))
+        setContent { MjolnirTheme { NewChatDialog(listOf(space), onCreate = { _, n -> made += "chat $n" }, onCreateChannel = { sp, n -> made += "channel ${sp.id} $n" }, onClose = {}) } }
+        onNodeWithText("Channel").performClick()
+        onNodeWithText("Channel name").assertExists()
+        onNode(hasSetTextAction()).performTextInput("games")
+        onNodeWithText("Create").performClick()
+        assertEquals(listOf("channel s1 games"), made)
+    }
+
+    @Test fun channelSettingsHideInviteAndLeave() = runComposeUiTest {
+        val open = chat(kind = ChatKind.OPEN, name = "general", space = "Home", owner = "fred")
+        setContent { MjolnirTheme { ChatSettingsDialog(ChatSettings(open, listOf(me, fred), emptyList(), "me", false, { it.name }, ChatSettingsActions()), onClose = {}) } }
+        onNodeWithText("Invite").assertDoesNotExist()
+        onNodeWithText("Leave chat").assertDoesNotExist()
+        onNodeWithText("Make owner").assertDoesNotExist()
+        onNodeWithText("Everyone in Home can see this channel.").assertExists()
+        onNodeWithText("Mute").assertExists()
+    }
+
+    @Test fun channelHeaderHasNoInvite() = runComposeUiTest {
+        show(ui(chats = listOf(chat(kind = ChatKind.OPEN, name = "general", owner = "fred"))))
+        onNodeWithText("Invite").assertDoesNotExist()
     }
 }

@@ -157,6 +157,7 @@ class AppController(
     /** Spaces this device is in: the list, invite code, join flow and admin actions. */
     val spaces = SpacesController(
         api = ::api, scope = scope,
+        onSpacesLoaded = { all -> chats.seedPresence(all) }, // always the full list: the seed replaces the whole map
         onPeersAffected = { scope.launch { refreshAfterSpaceChange() } },
         onUnauthorized = { scope.launch { recoverUnauthorized(store.read().token) } },
     )
@@ -269,6 +270,11 @@ class AppController(
     /** Creates a chat in [space] and shows it in the Chats tab. */
     fun createChat(space: Space, name: String) {
         scope.launch { chatCall { createChat(space.id, name) }?.let { selectChat(it.id); openWindow(MainTab.CHATS) } }
+    }
+
+    /** Creates an open channel in [space] and shows it in the Chats tab. */
+    fun createChannel(space: Space, name: String) {
+        scope.launch { chatCall { createChannel(space.id, name) }?.let { selectChat(it.id); openWindow(MainTab.CHATS) } }
     }
 
     /** Drops every chat, its cache and the screen state: after a re-registration or relay switch none of it is this device's any more. */

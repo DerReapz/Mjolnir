@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import app.mjolnir.desktop.InviteUi
 import app.mjolnir.desktop.JoinUi
 import app.mjolnir.client.Messages
+import app.mjolnir.client.Presence
 import app.mjolnir.client.canTakeOver
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Limits
@@ -79,7 +80,9 @@ fun SpacesSection(
     onDialog: (SpaceDialog) -> Unit,
     actions: SpacesActions,
     clock: () -> Long = System::currentTimeMillis,
+    presence: Map<String, Presence> = emptyMap(),
 ) {
+    val now = rememberMinuteClock(clock)
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             ForgeSectionLabel("Spaces")
@@ -94,7 +97,7 @@ fun SpacesSection(
             }
         }
         for (space in spaces) {
-            SpaceCard(space, isAdmin = space.adminId == selfId, selfId, nicknameOf, invite?.takeIf { it.spaceId == space.id }, onDialog, actions, clock)
+            SpaceCard(space, isAdmin = space.adminId == selfId, selfId, nicknameOf, invite?.takeIf { it.spaceId == space.id }, onDialog, actions, clock, presence, now)
         }
     }
 }
@@ -103,6 +106,7 @@ fun SpacesSection(
 private fun SpaceCard(
     space: Space, isAdmin: Boolean, selfId: String?, nicknameOf: (Peer) -> String, invite: InviteUi?,
     onDialog: (SpaceDialog) -> Unit, actions: SpacesActions, clock: () -> Long,
+    presence: Map<String, Presence>, now: Long,
 ) {
     fun confirm(title: String, label: String, action: () -> Unit) = onDialog(SpaceDialog.Confirm(title, label, action))
     Column(Modifier.fillMaxWidth().forgeCard(selected = false).padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -129,6 +133,7 @@ private fun SpaceCard(
                     Text(nicknameOf(member), style = TextStyle(fontFamily = ForgeFonts.inter500, fontSize = 14.sp, color = Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val kind = if (member.kind == DeviceKind.PHONE) "Phone" else "PC"
                     Text(if (admin) "$kind · admin" else kind, style = MaterialTheme.typography.bodySmall.copy(color = Forge.muted))
+                    PresenceStatus(presence[member.deviceId] ?: Presence(member.online, member.lastSeenMs), now)
                 }
                 if (isAdmin && !self) {
                     ForgeTextButton("Make admin", onClick = {

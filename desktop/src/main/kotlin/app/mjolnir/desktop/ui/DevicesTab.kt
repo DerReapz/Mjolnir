@@ -77,6 +77,7 @@ fun DevicesTab(c: AppController, openPairing: Boolean = false, onPairingOpened: 
     val invite by c.spaces.invite.collectAsState()
     val join by c.spaces.join.collectAsState()
     val notice by c.spaces.notice.collectAsState()
+    val presence by c.chats.presence.collectAsState()
     var pairing by remember { mutableStateOf(openPairing) }
     var renaming by remember { mutableStateOf<Peer?>(null) }
     var spaceDialog by remember { mutableStateOf<SpaceDialog?>(null) }
@@ -110,7 +111,7 @@ fun DevicesTab(c: AppController, openPairing: Boolean = false, onPairingOpened: 
                     invite = invite, notice = notice, onDialog = {
                         if (it == SpaceDialog.Join) c.spaces.dismissJoin()
                         spaceDialog = it
-                    }, actions = actions,
+                    }, actions = actions, presence = presence,
                 )
             },
         )

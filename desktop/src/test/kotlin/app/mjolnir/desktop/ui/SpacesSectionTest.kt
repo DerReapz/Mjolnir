@@ -139,4 +139,12 @@ class SpacesSectionTest {
         join = JoinUi.Failed("That's a pairing code. Use Pair a device.")
         onNodeWithText("That's a pairing code. Use Pair a device.").assertExists()
     }
+
+    @Test fun memberShowsPresence() = runComposeUiTest {
+        val ann = Peer("ann", "Ann's PC", DeviceKind.PC, online = true)
+        val bo = Peer("bo", "Bo's phone", DeviceKind.PHONE, online = false, lastSeenMs = now - 5 * 60_000)
+        setContent { MjolnirTheme { SpacesSection(listOf(Space("s1", "Friends", "me", listOf(me, ann, bo))), "me", { it.name }, null, null, {}, SpacesActions(), clock = { now }) } }
+        onNodeWithText("Online").assertExists()
+        onNodeWithText("Last seen 5m ago").assertExists()
+    }
 }

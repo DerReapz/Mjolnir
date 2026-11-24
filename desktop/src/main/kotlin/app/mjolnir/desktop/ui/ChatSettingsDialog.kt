@@ -32,6 +32,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Messages
+import app.mjolnir.client.Presence
+import app.mjolnir.client.canLeave
+import app.mjolnir.client.canManage
+import app.mjolnir.client.canTransferOwner
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.InviteState
@@ -47,6 +52,8 @@ class ChatSettingsActions(
     val onDelete: () -> Unit = {},
     val onApprove: (ChatInvite) -> Unit = {},
     val onDeny: (ChatInvite) -> Unit = {},
+    /** *Mute* (true) or *Unmute* (false) this chat. */
+    val onMute: (Boolean) -> Unit = {},
 )
 
 /**
@@ -61,6 +68,8 @@ class ChatSettings(
     val isSpaceAdmin: Boolean,
     val nicknameOf: (Peer) -> String,
     val actions: ChatSettingsActions,
+    /** Who is online, by device id, for the member list. */
+    val presence: Map<String, Presence> = emptyMap(),
 )
 
 private sealed interface Mode {
@@ -83,9 +92,9 @@ fun ChatSettingsDialog(s: ChatSettings, onClose: () -> Unit) {
     val chat = s.chat
     var mode by remember { mutableStateOf<Mode>(Mode.Main) }
     val owner = chat.ownerId == s.selfId
-    val canDelete = owner || s.isSpaceAdmin
+    val canDelete = canManage(chat, s.selfId, s.isSpaceAdmin)
     val soleOwner = owner && s.members.isNotEmpty() && s.members.all { it.deviceId == s.selfId }
-    val canLeave = chat.member && !soleOwner
+    val canLeave = canLeave(chat) && !soleOwner
     ForgeModal(onDismiss = onClose, maxWidth = 460.dp) {
         when (val m = mode) {
             is Mode.Confirm -> {
@@ -117,7 +126,12 @@ private fun Main(s: ChatSettings, owner: Boolean, canLeave: Boolean, canDelete: 
         Text(chat.name, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
         ForgeTextButton("Close", muted = true, onClick = onClose)
     }
-    Text("${chat.spaceName} · private chat · only members and the space admin can see it", style = small(12, Forge.muted))
+    val channel = chat.kind == ChatKind.OPEN
+    Text(
+        if (channel) Messages.channelHint(chat.spaceName) else "${chat.spaceName} · private chat · only members and the space admin can see it",
+        style = small(12, Forge.muted),
+    )
+    val now = rememberMinuteClock(System::currentTimeMillis)
     ForgeSectionLabel("Members · ${s.members.size}")
     Column {
         for ((i, member) in s.members.withIndex()) {
@@ -134,8 +148,9 @@ private fun Main(s: ChatSettings, owner: Boolean, canLeave: Boolean, canDelete: 
                     },
                     Modifier.weight(1f), style = small(14, family = if (self) ForgeFonts.inter600 else ForgeFonts.inter400), maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
-                if (owner && !self) ForgeTextButton(Messages.MAKE_OWNER, onClick = { s.actions.onMakeOwner(member) })
-                if (s.isSpaceAdmin && !self) ForgeTextButton("Remove", muted = true, onClick = {
+                PresenceStatus(s.presence[member.deviceId] ?: Presence(member.online, member.lastSeenMs), now, Modifier.padding(end = 8.dp))
+                if (canTransferOwner(chat, s.selfId) && !self) ForgeTextButton(Messages.MAKE_OWNER, onClick = { s.actions.onMakeOwner(member) })
+                if (s.isSpaceAdmin && !self && !channel) ForgeTextButton("Remove", muted = true, onClick = {
                     setMode(Mode.Confirm("Remove ${s.nicknameOf(member)} from ${chat.name}?", "Remove") { s.actions.onRemove(member) })
                 })
             }
@@ -156,13 +171,14 @@ private fun Main(s: ChatSettings, owner: Boolean, canLeave: Boolean, canDelete: 
         }
     }
     Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (owner || s.isSpaceAdmin) ChatButton(Messages.RENAME_CHAT, { setMode(Mode.Renaming) }, tall = true)
-        if (chat.member && !soleOwner) {
+        if (canDelete) ChatButton(Messages.RENAME_CHAT, { setMode(Mode.Renaming) }, tall = true)
+        if (chat.member) ChatButton(if (chat.muted) Messages.UNMUTE else Messages.MUTE, { s.actions.onMute(!chat.muted) }, tall = true)
+        if (canLeave(chat) && !soleOwner) {
             ChatButton(Messages.LEAVE_CHAT, { setMode(Mode.Confirm("Leave ${chat.name}?", Messages.LEAVE_CHAT) { s.actions.onLeave() }) }, enabled = !owner, tall = true)
         }
         Box(Modifier.weight(1f))
         if (canDelete) ChatButton(Messages.DELETE_CHAT, {
-            setMode(Mode.Confirm("Delete ${chat.name}? Its messages go for everyone.", Messages.DELETE_CHAT) { s.actions.onDelete() })
+            setMode(Mode.Confirm(if (channel) Messages.deleteChannelConfirm(chat.name, chat.spaceName) else "Delete ${chat.name}? Its messages go for everyone.", Messages.DELETE_CHAT) { s.actions.onDelete() })
         }, danger = true, tall = true)
     }
     if (owner && !soleOwner && canLeave) Text("Make someone else the owner to leave.", style = small(12, Forge.muted))

@@ -30,6 +30,18 @@ class SpacesControllerTest {
         scope.cancel()
     }
 
+    @Test fun everyLoadSeedsPresenceWithAllSpaces() = runTest {
+        val api = FakeRelayApi()
+        val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        val seeded = mutableListOf<List<String>>()
+        val c = SpacesController({ api }, scope, { now }, onSpacesLoaded = { seeded += it.map { s -> s.name } })
+        c.create("Friends"); advanceUntilIdle()
+        c.create("Work"); advanceUntilIdle()
+        assertEquals(listOf("Friends"), seeded.first())
+        assertEquals(listOf("Friends", "Work"), seeded.last().sorted()) // the full list each time, never one space
+        scope.cancel()
+    }
+
     @Test fun inviteShowsCodeAndFreshCodeAfterReject() = runTest {
         val api = FakeRelayApi()
         val (c, scope) = controller(api)

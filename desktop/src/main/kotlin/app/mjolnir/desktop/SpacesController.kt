@@ -46,6 +46,8 @@ class SpacesController(
     private val clock: () -> Long = System::currentTimeMillis,
     private val onPeersAffected: () -> Unit = {},
     private val onUnauthorized: () -> Unit = {},
+    /** Runs with every space this device is in each time the list is (re)loaded. */
+    private val onSpacesLoaded: (List<Space>) -> Unit = {},
 ) {
     private val _spaces = MutableStateFlow<List<Space>>(emptyList())
     val spaces: StateFlow<List<Space>> = _spaces.asStateFlow()
@@ -150,6 +152,7 @@ class SpacesController(
     private suspend fun fetch() {
         val list = requireApi().spaces()
         _spaces.value = list
+        onSpacesLoaded(list)
         if (_invite.value?.let { inv -> list.none { it.id == inv.spaceId } } == true) _invite.value = null
     }
 
