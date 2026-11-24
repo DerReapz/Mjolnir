@@ -96,7 +96,8 @@ fun silentWsTest(block: suspend (RelayClient) -> Unit) = testApplication {
 }
 
 fun clientTest(
-    deps: RelayDeps = RelayDeps(store = Store("jdbc:sqlite::memory:")),
+    // Pinned to the clients' "1.0.0": CI builds the relay with a real 1.0.N, which would push UpdateAvailable to them.
+    deps: RelayDeps = RelayDeps(store = Store("jdbc:sqlite::memory:"), version = "1.0.0"),
     block: suspend ClientTestScope.() -> Unit,
 ) = testApplication {
     application { relayModule(deps) }
