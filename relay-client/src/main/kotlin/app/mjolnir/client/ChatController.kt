@@ -548,8 +548,11 @@ class ChatController(
      */
     fun resumeSends(): Job {
         val gen = generation
-        return scope.launch { drainSends(gen) }
+        return scope.launch { drainSends(gen) }.also { lastDrain = it }
     }
+
+    /** The newest drain [resumeSends] launched, so [awaitSendsIdle] can wait for one that hasn't taken [sendLock] yet. */
+    @Volatile private var lastDrain: Job? = null
 
     private suspend fun drainSends(gen: Int) {
         val ob = outbox ?: return
@@ -598,7 +601,15 @@ class ChatController(
     }
 
     /** Waits for the sends being uploaded and posted right now (tests). */
-    internal suspend fun awaitSendsIdle() = sendLock.withLock { }
+    internal suspend fun awaitSendsIdle() {
+        // A drain launched just now may not hold the lock yet; wait for it (and any it started) before taking the lock.
+        while (true) {
+            val job = lastDrain ?: break
+            job.join()
+            if (lastDrain === job) break
+        }
+        sendLock.withLock { }
+    }
 
     /**
      * *Cancel* on a send still uploading or waiting, *Dismiss* on a failed one: removes it from [pendingSends] and the outbox
