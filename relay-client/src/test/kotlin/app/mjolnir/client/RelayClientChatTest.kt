@@ -3,9 +3,11 @@ package app.mjolnir.client
 import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.AttachmentKind
 import app.mjolnir.protocol.ChatEvent
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.InviteState
+import io.ktor.server.testing.testApplication
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -211,5 +213,34 @@ class RelayClientChatTest {
         c.ann.api.deleteMessage(chat.id, posted.id)
         assertError(RelayErrorKind.NOT_FOUND, "not_found") { c.bob.api.downloadChatFile(att.fileId, target) }
         assertFalse(target.exists())
+    }
+
+    @Test fun createsAnOpenChannel() = clientTest {
+        val c = crew()
+        val channel = c.ann.api.createChannel(c.spaceId, "games")
+        assertEquals(ChatKind.OPEN, channel.kind); assertEquals("games", channel.name)
+        assertEquals(ChatKind.OPEN, c.bob.api.chats(c.spaceId).single().kind) // everyone in the space is in it
+    }
+
+    @Test fun createChannelOnAnOldRelayIsRelayOutdated() = testApplication {
+        val api = RelayClient(createClient { installMjolnirDefaults() }, "http://localhost", "1.0.0") { "t" }
+        assertKind(RelayErrorKind.RELAY_OUTDATED) { api.createChannel("s1", "games") }
+    }
+
+    @Test fun mutesAChat() = clientTest {
+        val c = crew()
+        val chat = c.ann.api.createChat(c.spaceId, "General")
+        assertTrue(c.ann.api.setChatMuted(chat.id, true).muted)
+        assertTrue(c.ann.api.chats(c.spaceId).single().muted)
+        assertFalse(c.ann.api.setChatMuted(chat.id, false).muted)
+    }
+
+    @Test fun refusesInviteToChannel() = clientTest {
+        val c = crew()
+        val channel = c.ann.api.createChannel(c.spaceId, "games")
+        val e = runCatching { c.ann.api.inviteToChat(channel.id, c.bob.id) }.exceptionOrNull()
+        assertIs<RelayException>(e)
+        assertEquals("not_for_open_channels", e.message)
+        assertEquals(RelayErrorKind.ALREADY_SENT, e.kind) // what errorFor makes of every 409
     }
 }

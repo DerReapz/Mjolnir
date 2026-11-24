@@ -85,6 +85,10 @@ interface RelayApi {
     /** The chats of [spaceId] that this device may see: its own, or all of them for the space's admin. */
     suspend fun chats(spaceId: String): List<ChatSummary>
     suspend fun createChat(spaceId: String, name: String): ChatSummary
+    /** Creates an open channel everyone in the space is in; an older relay answers RELAY_OUTDATED. */
+    suspend fun createChannel(spaceId: String, name: String): ChatSummary
+    /** Mutes or unmutes [chatId] for this device (the relay's doorbell skips muted chats unless mentioned). */
+    suspend fun setChatMuted(chatId: String, muted: Boolean): ChatSummary
     suspend fun renameChat(id: String, name: String): ChatSummary
     suspend fun deleteChat(id: String)
 

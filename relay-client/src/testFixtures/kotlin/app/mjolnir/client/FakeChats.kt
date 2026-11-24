@@ -3,6 +3,7 @@ package app.mjolnir.client
 import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.ChatEvent
 import app.mjolnir.protocol.ChatInvite
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.ChatSync
@@ -32,6 +33,9 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         val seenRevs: MutableMap<String, Long> = mutableMapOf(),
         val seenAt: MutableMap<String, Long> = mutableMapOf(),
         val readAt: MutableMap<String, Long> = mutableMapOf(),
+        val kind: ChatKind = ChatKind.PRIVATE,
+        /** Devices that muted the chat. */
+        val mutedBy: MutableSet<String> = mutableSetOf(),
     )
 
     class Invite(val id: String, val chatId: String, val inviteeId: String, val inviterId: String, var state: InviteState)
@@ -90,7 +94,10 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     private fun summary(chat: Chat) = ChatSummary(
         chat.id, chat.spaceId, api.spaceList.firstOrNull { it.id == chat.spaceId }?.name.orEmpty(), chat.name, chat.ownerId, chat.rev,
         chat.readRevs[meId] ?: 0, isMember(chat, meId), chat.messages.filter { !it.deleted }.maxByOrNull { it.createdRev ?: it.rev },
+        chat.kind, meId in chat.mutedBy,
     )
+
+    private fun openRefusal() = err(RelayErrorKind.ALREADY_SENT, "not_for_open_channels")
 
     private fun changed(chat: Chat) { api.events.tryEmit(RelayEvent.ChatChanged(chat.id, chat.rev)) }
 
@@ -115,6 +122,14 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     /** A chat in [spaceId] with [members] (default: just [owner]), at rev 0. */
     fun add(spaceId: String, name: String, owner: Peer, members: List<Peer>): String {
         val chat = Chat("chat-${++nextChat}", spaceId, name, owner.deviceId, (listOf(owner) + members).distinctBy { it.deviceId }.toMutableList())
+        chats[chat.id] = chat
+        return chat.id
+    }
+
+    /** An open channel of [spaceId]: every member of the space is in it, [owner] created it. */
+    fun addChannel(spaceId: String, name: String, owner: Peer): String {
+        val members = api.spaceList.first { it.id == spaceId }.members
+        val chat = Chat("chat-${++nextChat}", spaceId, name, owner.deviceId, (listOf(owner) + members).distinctBy { it.deviceId }.toMutableList(), kind = ChatKind.OPEN)
         chats[chat.id] = chat
         return chat.id
     }
@@ -234,6 +249,18 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         return summary(chat)
     }
 
+    fun createChannel(spaceId: String, name: String): ChatSummary {
+        if (!inSpace(spaceId, meId)) throw notFound
+        return summary(chats.getValue(addChannel(spaceId, validName(name), api.me)))
+    }
+
+    fun setMuted(chatId: String, muted: Boolean): ChatSummary {
+        val a = access(chatId)
+        if (!a.isMember) throw err(RelayErrorKind.NOT_PAIRED, "not_member")
+        if (muted) a.chat.mutedBy += meId else a.chat.mutedBy -= meId
+        return summary(a.chat)
+    }
+
     fun rename(id: String, name: String): ChatSummary {
         val a = access(id)
         if (a.chat.ownerId != meId && !a.isAdmin) throw err(RelayErrorKind.NOT_PAIRED, "not_owner")
@@ -259,6 +286,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
 
     fun inviteTo(chatId: String, deviceId: String): ChatInvite {
         val a = access(chatId)
+        if (a.chat.kind == ChatKind.OPEN) throw openRefusal()
         if (!a.isMember) throw err(RelayErrorKind.NOT_PAIRED, "not_member")
         return createInvite(a.chat, meId, deviceId)
     }
@@ -306,6 +334,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
 
     fun transferOwner(chatId: String, deviceId: String): ChatSummary {
         val a = access(chatId)
+        if (a.chat.kind == ChatKind.OPEN) throw openRefusal()
         if (a.chat.ownerId != meId) throw err(RelayErrorKind.NOT_PAIRED, "not_owner")
         if (deviceId == meId) throw err(RelayErrorKind.INVALID, "already_owner")
         if (!isMember(a.chat, deviceId)) throw err(RelayErrorKind.INVALID, "not_member")
@@ -330,6 +359,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
 
     fun removeMember(chatId: String, deviceId: String) {
         val a = access(chatId)
+        if (a.chat.kind == ChatKind.OPEN) throw openRefusal()
         val self = deviceId == meId
         if (!self && !a.isAdmin) throw err(RelayErrorKind.NOT_PAIRED, "not_admin")
         if (!isMember(a.chat, deviceId)) throw notFound
@@ -338,6 +368,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
 
     fun adminJoin(chatId: String): ChatSummary {
         val a = access(chatId)
+        if (a.chat.kind == ChatKind.OPEN) throw openRefusal()
         if (!a.isAdmin) throw err(RelayErrorKind.NOT_PAIRED, "not_admin")
         if (a.isMember) throw err(RelayErrorKind.ALREADY_SENT, "already_member")
         a.chat.members += api.me

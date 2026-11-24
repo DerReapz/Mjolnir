@@ -6,6 +6,7 @@ import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.Space
 import app.mjolnir.protocol.RelayEvent
 import java.io.File
 import java.nio.file.Files
@@ -1163,5 +1164,40 @@ class ChatControllerTest {
         c.sync(chat)
         assertEquals("GIF", Messages.messagePreview(c.chats.value.single().lastMessage!!))
         assertEquals("GIF", seen.last().text)
+    }
+
+    @Test fun mutedChatDoesNotAnnounceNewMessages() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.setMuted(chat, true) // before the list is loaded: a refused call still must not crash
+        c.refresh()
+        c.setMuted(chat, true)
+        val seen = mutableListOf<IncomingMessage>(); collect(c, seen)
+        api.incoming(chat, sam, "plain")
+        c.sync(chat)
+        assertTrue(seen.isEmpty())
+        api.incoming(chat, sam, "hey @Me", mentions = listOf("dev-1"))
+        c.sync(chat)
+        assertEquals(listOf("hey @Me"), seen.map { it.text })
+    }
+
+    @Test fun setMutedIsOptimisticAndReverts() = runTest {
+        val (api, chat) = fakeWithChat()
+        val c = controller(api)
+        c.refresh()
+        c.setMuted(chat, true)
+        assertTrue(c.chats.value.single().muted)
+        api.failAllWith = RelayException(RelayErrorKind.NETWORK, "down")
+        assertFailsWith<RelayException> { c.setMuted(chat, false) }
+        assertTrue(c.chats.value.single().muted) // back to what it was
+    }
+
+    @Test fun presenceEventsUpdateTheMap() = runTest {
+        val (api, _) = fakeWithChat()
+        val c = controller(api)
+        c.seedPresence(listOf(Space("s1", "Crew", "admin", listOf(sam.copy(online = false, lastSeenMs = 5L)))))
+        assertFalse(c.presence.value.getValue("sam").online)
+        c.onEvent(RelayEvent.PresenceChanged("sam", true, null))
+        assertTrue(c.presence.value.getValue("sam").online)
     }
 }

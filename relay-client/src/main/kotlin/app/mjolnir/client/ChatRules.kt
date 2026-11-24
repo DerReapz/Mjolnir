@@ -1,7 +1,9 @@
 package app.mjolnir.client
 
 import app.mjolnir.protocol.Attachment
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.ChatMessage
+import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
@@ -171,4 +173,20 @@ private fun <T> groupByFolder(items: List<T>, path: (T) -> String?, size: (T) ->
             else -> if (shown.add(top)) byFolder.getValue(top).let { AttachmentGroup.Folder(top, it, it.sumOf(size)) } else null
         }
     }
+}
+
+/** Open channels hold the whole space: nobody is invited, leaves or hands over ownership; private chats work as before. */
+fun canInvite(chat: ChatSummary): Boolean = chat.kind == ChatKind.PRIVATE && chat.member
+fun canLeave(chat: ChatSummary): Boolean = chat.kind == ChatKind.PRIVATE && chat.member
+fun canTransferOwner(chat: ChatSummary, selfId: String?): Boolean = chat.kind == ChatKind.PRIVATE && chat.ownerId == selfId
+
+/** Rename and delete: the chat's owner (a channel's creator) or the space admin. */
+fun canManage(chat: ChatSummary, selfId: String?, isSpaceAdmin: Boolean): Boolean = isSpaceAdmin || (selfId != null && chat.ownerId == selfId)
+
+/** The chat list in two sections: open channels by name (any case), then private chats in their given order. */
+data class ChatSections(val channels: List<ChatSummary>, val privateChats: List<ChatSummary>)
+
+fun chatSections(chats: List<ChatSummary>): ChatSections {
+    val (channels, privateChats) = chats.partition { it.kind == ChatKind.OPEN }
+    return ChatSections(channels.sortedBy { it.name.lowercase() }, privateChats)
 }

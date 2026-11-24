@@ -3,6 +3,9 @@ package app.mjolnir.client
 import app.mjolnir.protocol.AttachmentKind
 import app.mjolnir.protocol.ChatEvent
 import app.mjolnir.protocol.ChatMessage
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /** User-facing copy shared by the desktop and Android apps. */
@@ -77,6 +80,15 @@ object Messages {
     const val RENAME_CHAT = "Rename chat"
     const val LEAVE_CHAT = "Leave chat"
     const val DELETE_CHAT = "Delete chat"
+    const val CHANNELS = "Channels"
+    const val PRIVATE_CHATS = "Private chats"
+    const val NEW_CHANNEL = "New channel"
+    const val CHANNEL_NAME = "Channel name"
+    const val MUTE = "Mute"
+    const val UNMUTE = "Unmute"
+    const val MUTED = "Muted"
+    const val ONLINE = "Online"
+    const val NOT_FOR_OPEN_CHANNELS = "Open channels can't be joined or left — everyone in the space is in them."
     const val EDITED = "(edited)"
     const val MESSAGE_DELETED = "Message deleted"
     const val DELETED_BY_ADMIN = "Deleted by the space admin"
@@ -190,6 +202,27 @@ object Messages {
         is ChatEvent.Renamed -> "Renamed to ${event.name}"
     }
 
+    fun channelHint(space: String) = "Everyone in $space can see this channel."
+    fun deleteChannelConfirm(name: String, space: String) = "Delete #$name? Everyone in $space loses its messages."
+
+    /** An open channel's "Seen by" line: the names when [names] has at most 5, else their count. */
+    fun seenBySummary(names: List<String>): String = if (names.size <= 5) names.joinToString(", ") else "Seen by ${names.size}"
+
+    /** "Last seen ..." for a device last online at [lastSeenMs]; empty when that is unknown. */
+    fun lastSeen(nowMs: Long, lastSeenMs: Long?, zone: ZoneId = ZoneId.systemDefault()): String {
+        if (lastSeenMs == null) return ""
+        val ago = (nowMs - lastSeenMs).coerceAtLeast(0)
+        val minutes = ago / 60_000
+        val hours = ago / 3_600_000
+        return when {
+            minutes < 1 -> "Last seen just now"
+            minutes < 60 -> "Last seen ${minutes}m ago"
+            hours < 24 -> "Last seen ${hours}h ago"
+            hours < 48 -> "Last seen yesterday"
+            else -> "Last seen " + DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH).withZone(zone).format(Instant.ofEpochMilli(lastSeenMs))
+        }
+    }
+
     /** A refused chat action as a sentence; the relay's code is the exception's message. */
     fun chatError(e: RelayException): String = when {
         e.kind == RelayErrorKind.APP_OUTDATED -> APP_OUTDATED
@@ -205,6 +238,7 @@ object Messages {
         e.message == "already_member" -> "Already in this chat."
         e.message == "invalid_mention" -> "Only people in this chat can be mentioned."
         e.message == "deleted" -> "That message was deleted."
+        e.message == "not_for_open_channels" -> NOT_FOR_OPEN_CHANNELS
         e.kind == RelayErrorKind.NOT_FOUND -> "That chat is no longer there."
         e.needsRelayUpdate -> RELAY_OUTDATED
         else -> "Something went wrong. Try again."

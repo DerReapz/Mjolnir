@@ -26,6 +26,8 @@ class SwitchingRelayApi(private val current: () -> RelayApi) : RelayApi {
     override suspend fun createInvite(spaceId: String) = current().createInvite(spaceId)
     override suspend fun chats(spaceId: String) = current().chats(spaceId)
     override suspend fun createChat(spaceId: String, name: String) = current().createChat(spaceId, name)
+    override suspend fun createChannel(spaceId: String, name: String) = current().createChannel(spaceId, name)
+    override suspend fun setChatMuted(chatId: String, muted: Boolean) = current().setChatMuted(chatId, muted)
     override suspend fun renameChat(id: String, name: String) = current().renameChat(id, name)
     override suspend fun deleteChat(id: String) = current().deleteChat(id)
     override suspend fun inviteToChat(chatId: String, deviceId: String) = current().inviteToChat(chatId, deviceId)

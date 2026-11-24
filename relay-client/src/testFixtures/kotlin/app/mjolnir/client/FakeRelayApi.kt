@@ -198,6 +198,8 @@ class FakeRelayApi : RelayApi {
     var failSeen: Boolean by chatState::failSeen
 
     /** Test setup: a chat in [spaceId] (rev 0) owned by [owner] with [members] (the owner is always one); returns its id. */
+    /** Test setup: an open channel of [spaceId] created by [owner]; everyone in the space is in it. */
+    fun addChannel(spaceId: String, name: String, owner: Peer = me): String = chatState.addChannel(spaceId, name, owner)
     fun addChat(spaceId: String, name: String, owner: Peer = me, members: List<Peer> = listOf(owner)): String = chatState.add(spaceId, name, owner, members)
     /** Test setup: [author] posts to [chatId] as someone other than the viewer. */
     fun incoming(chatId: String, author: Peer, text: String?, mentions: List<String> = emptyList(), attachments: List<Attachment> = emptyList()): ChatMessage =
@@ -220,6 +222,8 @@ class FakeRelayApi : RelayApi {
 
     override suspend fun chats(spaceId: String): List<ChatSummary> { check(); return chatState.list(spaceId) }
     override suspend fun createChat(spaceId: String, name: String): ChatSummary { check(); return chatState.create(spaceId, name) }
+    override suspend fun createChannel(spaceId: String, name: String): ChatSummary { check(); return chatState.createChannel(spaceId, name) }
+    override suspend fun setChatMuted(chatId: String, muted: Boolean): ChatSummary { check(); return chatState.setMuted(chatId, muted) }
     override suspend fun renameChat(id: String, name: String): ChatSummary { check(); return chatState.rename(id, name) }
     override suspend fun deleteChat(id: String) { check(); chatState.delete(id) }
     override suspend fun inviteToChat(chatId: String, deviceId: String): ChatInvite { check(); return chatState.inviteTo(chatId, deviceId) }

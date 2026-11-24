@@ -94,4 +94,26 @@ class MessagesTest {
             assertEquals(expected, Messages.failureReason(older, "PC"), kind.name)
         }
     }
+
+    @Test fun lastSeenReadsNaturally() {
+        val now = java.time.LocalDateTime.of(2026, 11, 24, 12, 0).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        fun seen(ago: Long?) = Messages.lastSeen(now, ago?.let { now - it }, java.time.ZoneOffset.UTC)
+        assertEquals("Last seen just now", seen(30_000))
+        assertEquals("Last seen 5m ago", seen(5 * 60_000))
+        assertEquals("Last seen 2h ago", seen(2 * 3_600_000))
+        assertEquals("Last seen yesterday", seen(30 * 3_600_000))
+        assertEquals("", seen(null))
+        val nov12 = java.time.LocalDateTime.of(2026, 11, 12, 9, 0).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        assertEquals("Last seen 12 Nov", Messages.lastSeen(now, nov12, java.time.ZoneOffset.UTC))
+    }
+
+    @Test fun channelCopy() {
+        assertEquals("Everyone in Crew can see this channel.", Messages.channelHint("Crew"))
+        assertEquals("Delete #games? Everyone in Crew loses its messages.", Messages.deleteChannelConfirm("games", "Crew"))
+        assertEquals("Ann, Bob", Messages.seenBySummary(listOf("Ann", "Bob")))
+        assertEquals("A, B, C, D, E", Messages.seenBySummary(listOf("A", "B", "C", "D", "E")))
+        assertEquals("Seen by 6", Messages.seenBySummary(listOf("A", "B", "C", "D", "E", "F")))
+        assertEquals(Messages.NOT_FOR_OPEN_CHANNELS, Messages.chatError(RelayException(RelayErrorKind.ALREADY_SENT, "not_for_open_channels")))
+        assertEquals("Open channels can't be joined or left — everyone in the space is in them.", Messages.NOT_FOR_OPEN_CHANNELS)
+    }
 }

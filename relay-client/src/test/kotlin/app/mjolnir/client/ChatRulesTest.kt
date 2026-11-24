@@ -1,6 +1,8 @@
 package app.mjolnir.client
 
 import app.mjolnir.protocol.ChatEvent
+import app.mjolnir.protocol.ChatKind
+import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.DeviceKind
@@ -161,5 +163,31 @@ class ChatRulesTest {
         assertEquals(emptyList(), mentionSpans("@Sam", emptyList(), listOf(a, b), nick).spans)
         // On the sending side two picked twins stay apart by their shown names.
         assertEquals("@Sam @Sam" to listOf("a", "b"), outgoingMentions("@Sam A @Sam B", listOf(a to "Sam A", b to "Sam B")))
+    }
+
+    private fun summary(id: String, name: String, kind: ChatKind, owner: String = "ann", member: Boolean = true) =
+        ChatSummary(id, "s1", "Crew", name, owner, 0, 0, member, null, kind)
+
+    @Test fun openChannelsCannotBeInvitedToLeftOrHandedOver() {
+        val open = summary("c", "general", ChatKind.OPEN, owner = "me")
+        assertFalse(canInvite(open)); assertFalse(canLeave(open)); assertFalse(canTransferOwner(open, "me"))
+        val priv = summary("p", "plans", ChatKind.PRIVATE, owner = "me")
+        assertTrue(canInvite(priv)); assertTrue(canLeave(priv)); assertTrue(canTransferOwner(priv, "me"))
+        assertFalse(canTransferOwner(priv, "sam"))
+    }
+
+    @Test fun creatorAndSpaceAdminManageAChannel() {
+        val open = summary("c", "games", ChatKind.OPEN, owner = "ann")
+        assertTrue(canManage(open, "ann", false)); assertTrue(canManage(open, "admin", true)); assertFalse(canManage(open, "bob", false))
+    }
+
+    @Test fun chatSectionsSplitAndSort() {
+        val chats = listOf(
+            summary("1", "zeta", ChatKind.PRIVATE), summary("2", "games", ChatKind.OPEN), summary("3", "alpha", ChatKind.PRIVATE),
+            summary("4", "General", ChatKind.OPEN), summary("5", "art", ChatKind.OPEN),
+        )
+        val s = chatSections(chats)
+        assertEquals(listOf("art", "games", "General"), s.channels.map { it.name })
+        assertEquals(listOf("zeta", "alpha"), s.privateChats.map { it.name })
     }
 }

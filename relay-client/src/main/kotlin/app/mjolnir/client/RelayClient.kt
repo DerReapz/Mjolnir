@@ -27,6 +27,7 @@ import app.mjolnir.protocol.Delivery
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.ErrorResponse
 import app.mjolnir.protocol.MjolnirJson
+import app.mjolnir.protocol.MuteRequest
 import app.mjolnir.protocol.PairingCodeResponse
 import app.mjolnir.protocol.PairingStatus
 import app.mjolnir.protocol.Peer
@@ -316,6 +317,14 @@ class RelayClient(
 
     override suspend fun createChat(spaceId: String, name: String): ChatSummary = callBody {
         http.post("$base/v1/spaces/$spaceId/chats") { auth(); jsonBody(CreateChatRequest(name)) }
+    }
+
+    override suspend fun createChannel(spaceId: String, name: String): ChatSummary = callBody {
+        http.post("$base/v1/spaces/$spaceId/channels") { auth(); jsonBody(CreateChatRequest(name)) }
+    }
+
+    override suspend fun setChatMuted(chatId: String, muted: Boolean): ChatSummary = callBody {
+        http.put("$base/v1/chats/$chatId/mute") { auth(); jsonBody(MuteRequest(muted)) }
     }
 
     override suspend fun renameChat(id: String, name: String): ChatSummary = callBody {

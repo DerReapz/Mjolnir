@@ -10,6 +10,7 @@ import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
+import app.mjolnir.protocol.Space
 import app.mjolnir.protocol.RelayEvent
 import java.io.File
 import java.nio.file.Files
@@ -110,6 +111,13 @@ class ChatController(
     private val _unreadMentions = MutableStateFlow<Set<String>>(emptySet())
     /** The chats with an unread message (above the read marker, by someone else, not deleted) that mentions this device. */
     val unreadMentions: StateFlow<Set<String>> = _unreadMentions.asStateFlow()
+
+    private val presenceTracker = PresenceTracker()
+    /** Who of the device's spaces is online, by device id; the apps read presence only through this. */
+    val presence: StateFlow<Map<String, Presence>> get() = presenceTracker.presence
+
+    /** Seeds [presence] from [spaces] (their members carry online and last seen); the apps call this wherever they load spaces. */
+    fun seedPresence(spaces: List<Space>) = presenceTracker.seed(spaces)
 
     /** The chat on screen, if any: its incoming messages don't go to [newMessages]. */
     val openChat = MutableStateFlow<String?>(null)
@@ -339,11 +347,13 @@ class ChatController(
         if (!(summary?.member ?: isMember(cached))) return // a space admin overseeing a chat is not told of its messages
         val name = summary?.name ?: cached.name
         val readRev = summary?.readRev ?: cached.readRev
+        val muted = summary?.muted == true
         val mine = me()
         for (m in messages.sortedBy { it.rev }) {
             if (m.event != null || m.deleted || m.author.deviceId == mine) continue
             val text = Messages.messagePreview(m).ifEmpty { null } ?: continue
             val mentionedMe = mine != null && mine in m.mentions
+            if (muted && !mentionedMe) continue // a muted chat speaks only when mentioned
             if ((m.createdRev ?: m.rev) <= readRev && !mentionedMe) continue // read elsewhere (an edit does not make it unread); a mention still gets through
             if (gen != generation) return
             _newMessages.emit(IncomingMessage(chatId, name, m.author.deviceId, m.author.name, text, mentionedMe))
@@ -403,6 +413,7 @@ class ChatController(
         _unreadMentions.value = emptySet()
         openChat.value = null
         listed = false
+        presenceTracker.clear()
         outbox?.clear()
         media?.clear()
         _pendingSends.value = emptyList()
@@ -419,6 +430,7 @@ class ChatController(
     /** Feeds a relay event in; the work runs on the controller's scope. */
     fun onEvent(e: RelayEvent) {
         if (e == RelayEvent.Connected) _connects.update { it + 1 }
+        presenceTracker.onEvent(e)
         scope.launch {
             when (e) {
                 is RelayEvent.ChatChanged -> chatChanged(e.chatId, e.rev, e.receipts)
@@ -442,6 +454,22 @@ class ChatController(
     // ---- Actions ----
 
     suspend fun createChat(spaceId: String, name: String): ChatSummary = requireApi().createChat(spaceId, name).also(::upsert)
+
+    /** Creates an open channel everyone in [spaceId] is in. */
+    suspend fun createChannel(spaceId: String, name: String): ChatSummary = requireApi().createChannel(spaceId, name).also(::upsert)
+
+    /** Mutes or unmutes [chatId] at once; if the relay refuses, the old state comes back and the failure is rethrown. */
+    suspend fun setMuted(chatId: String, muted: Boolean) {
+        val before = _chats.value.firstOrNull { it.id == chatId }?.muted
+        fun put(value: Boolean) = _chats.update { list -> list.map { if (it.id == chatId) it.copy(muted = value) else it } }
+        put(muted)
+        try {
+            upsert(requireApi().setChatMuted(chatId, muted))
+        } catch (e: Exception) {
+            if (before != null) put(before)
+            throw e
+        }
+    }
 
     suspend fun renameChat(chatId: String, name: String) {
         upsert(requireApi().renameChat(chatId, name)); sync(chatId)
