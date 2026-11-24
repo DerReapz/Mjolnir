@@ -30,10 +30,13 @@ class ChatRoutesTest {
         return s
     }
 
-    /** Space with admin A, plus B (chat owner), C (space member), D (space member who never joins the chat). */
+    /** Space (without #general) with admin A, plus B (chat owner), C (space member), D (space member who never joins the chat). */
     private suspend fun RelayTestScope.cast(): Cast {
         val a = register("A"); val b = register("B"); val c = register("C"); val d = register("D")
-        return Cast(a, b, c, d, spaceWith(a, b, c, d))
+        val space = spaceWith(a, b, c, d)
+        // These tests are about private chats; every new space also starts with the open #general, which would add events and list rows.
+        store.openChatsIn(space.id).forEach { store.deleteChat(it.id) }
+        return Cast(a, b, c, d, space)
     }
 
     private suspend fun RelayTestScope.chatResponse(d: RegisterResponse, spaceId: String, name: String = "Trip"): HttpResponse =

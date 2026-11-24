@@ -140,6 +140,19 @@ sealed interface ChatEvent {
     val createdRev: Long? = null,
     val attachments: List<Attachment> = emptyList(),
 )
+/** OPEN: every member of the space is a member of the chat, and it follows the space. PRIVATE: members are invited. */
+@Serializable(with = ChatKindSerializer::class) enum class ChatKind { PRIVATE, OPEN }
+
+/** Decodes leniently: a kind this version doesn't know (a newer relay's) reads as PRIVATE. */
+object ChatKindSerializer : KSerializer<ChatKind> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("app.mjolnir.protocol.ChatKind", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: ChatKind) = encoder.encodeString(value.name)
+    override fun deserialize(decoder: Decoder): ChatKind {
+        val name = decoder.decodeString()
+        return ChatKind.entries.firstOrNull { it.name == name } ?: ChatKind.PRIVATE
+    }
+}
+@Serializable data class MuteRequest(val muted: Boolean)
 @Serializable data class ChatSummary(
     val id: String,
     val spaceId: String,
@@ -150,6 +163,8 @@ sealed interface ChatEvent {
     val readRev: Long,
     val member: Boolean,
     val lastMessage: ChatMessage?,
+    val kind: ChatKind = ChatKind.PRIVATE,
+    val muted: Boolean = false,
 )
 @Serializable data class ChatSync(
     val chatId: String,

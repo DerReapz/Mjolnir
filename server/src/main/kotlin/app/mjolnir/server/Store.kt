@@ -1,5 +1,6 @@
 package app.mjolnir.server
 
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.CodeKind
 import app.mjolnir.protocol.Attachment
@@ -65,7 +66,10 @@ data class RoomRow(val id: String, val ownerId: String, val guestId: String?, va
 /** What ending a room removed: the blobs in [fileIdsToDelete] are for the caller to delete from storage. */
 data class EndedRoom(val ownerId: String, val guestId: String?, val fileIdsToDelete: List<String>)
 
-data class ChatRow(val id: String, val spaceId: String, val name: String, val ownerId: String, val createdAtMs: Long, val rev: Long)
+/** Name of the open chat every space starts with. */
+const val DEFAULT_CHANNEL = "general"
+
+data class ChatRow(val id: String, val spaceId: String, val name: String, val ownerId: String, val createdAtMs: Long, val rev: Long, val kind: ChatKind = ChatKind.PRIVATE)
 
 data class ChatInviteRow(
     val id: String,
@@ -288,6 +292,9 @@ class Store(jdbcUrl: String) {
         addColumnIfMissing("chat_members", "seen_rev", "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("chat_members", "seen_at", "INTEGER NULL")
         addColumnIfMissing("chat_members", "read_at", "INTEGER NULL")
+        addColumnIfMissing("chats", "kind", "TEXT NOT NULL DEFAULT 'PRIVATE'")
+        addColumnIfMissing("chat_members", "muted", "INTEGER NOT NULL DEFAULT 0")
+        addColumnIfMissing("spaces", "default_channel_done", "INTEGER NOT NULL DEFAULT 0")
         // Databases created before tombstones existed lack acked_at.
         val hasAckedAt = conn.createStatement().use { st ->
             st.executeQuery("PRAGMA table_info(files)").use { rs ->
@@ -500,7 +507,28 @@ class Store(jdbcUrl: String) {
             it.executeUpdate()
         }
         addMember(row.id, adminId, nowMs)
+        createChat(row.id, adminId, DEFAULT_CHANNEL, nowMs, ChatKind.OPEN)
+        update("UPDATE spaces SET default_channel_done=1 WHERE id=?", row.id)
         row
+    }
+
+    /**
+     * Creates `general` in every space that has not had its default channel yet (spaces from before open channels),
+     * owned by the space admin, and marks them done so a deleted `general` is never recreated. Returns how many it made.
+     */
+    @Synchronized
+    fun ensureDefaultChannels(nowMs: Long): Int = transaction {
+        val pending = conn.createStatement().use { st ->
+            st.executeQuery("SELECT id, admin_id FROM spaces WHERE default_channel_done=0 ORDER BY created_at, id").use { rs ->
+                buildList { while (rs.next()) add(rs.getString("id") to rs.getString("admin_id")) }
+            }
+        }
+        var made = 0
+        for ((spaceId, adminId) in pending) {
+            if (createChat(spaceId, adminId, DEFAULT_CHANNEL, nowMs, ChatKind.OPEN) != null) made++
+            update("UPDATE spaces SET default_channel_done=1 WHERE id=?", spaceId)
+        }
+        made
     }
 
     @Synchronized
@@ -532,10 +560,18 @@ class Store(jdbcUrl: String) {
         }
 
     @Synchronized
-    fun addMember(spaceId: String, deviceId: String, nowMs: Long) {
+    fun addMember(spaceId: String, deviceId: String, nowMs: Long): List<String> = transaction {
         conn.prepareStatement("INSERT OR IGNORE INTO space_members(space_id,device_id,joined_at) VALUES(?,?,?)").use {
             it.setString(1, spaceId); it.setString(2, deviceId); it.setLong(3, nowMs); it.executeUpdate()
         }
+        val joined = mutableListOf<String>()
+        for (chat in openChatsIn(spaceId)) {
+            if (update("INSERT OR IGNORE INTO chat_members(chat_id,device_id,joined_at) VALUES(?,?,?)", chat.id, deviceId, nowMs) > 0) {
+                recordEvent(chat.id, deviceId, ChatEvent.MemberJoined(deviceId), nowMs)
+                joined += chat.id
+            }
+        }
+        joined
     }
 
     enum class Removed { REMOVED, NOT_MEMBER, NOT_ADMIN, ADMIN_MUST_TRANSFER }
@@ -578,7 +614,8 @@ class Store(jdbcUrl: String) {
 
     // ---- Chats ----
 
-    private fun ResultSet.toChat() = ChatRow(getString("id"), getString("space_id"), getString("name"), getString("owner_id"), getLong("created_at"), getLong("rev"))
+    private fun ResultSet.toChat() = ChatRow(getString("id"), getString("space_id"), getString("name"), getString("owner_id"), getLong("created_at"), getLong("rev"),
+        getString("kind").let { v -> ChatKind.entries.firstOrNull { it.name == v } ?: ChatKind.PRIVATE })
 
     private fun ResultSet.toInvite() = ChatInviteRow(
         getString("id"), getString("chat_id"), getString("invitee_id"), getString("inviter_id"),
@@ -616,13 +653,39 @@ class Store(jdbcUrl: String) {
 
     /** Creates a chat in [spaceId] with [ownerId] as its first member; null unless [ownerId] is in that space. */
     @Synchronized
-    fun createChat(spaceId: String, ownerId: String, name: String, nowMs: Long): ChatRow? = transaction {
+    fun createChat(spaceId: String, ownerId: String, name: String, nowMs: Long, kind: ChatKind = ChatKind.PRIVATE): ChatRow? = transaction {
         if (!isSpaceMember(spaceId, ownerId)) return@transaction null
-        val row = ChatRow(newId(), spaceId, name, ownerId, nowMs, 0)
-        update("INSERT INTO chats(id,space_id,name,owner_id,created_at,rev) VALUES(?,?,?,?,?,0)", row.id, spaceId, name, ownerId, nowMs)
+        val row = ChatRow(newId(), spaceId, name, ownerId, nowMs, 0, kind)
+        update("INSERT INTO chats(id,space_id,name,owner_id,created_at,rev,kind) VALUES(?,?,?,?,?,0,?)", row.id, spaceId, name, ownerId, nowMs, kind.name)
         update("INSERT INTO chat_members(chat_id,device_id,joined_at) VALUES(?,?,?)", row.id, ownerId, nowMs)
+        // An open chat holds the whole space, silently: nobody "joined" it, it was there when they looked.
+        if (kind == ChatKind.OPEN) {
+            update(
+                "INSERT OR IGNORE INTO chat_members(chat_id,device_id,joined_at) SELECT ?, device_id, ? FROM space_members WHERE space_id=?",
+                row.id, nowMs, spaceId,
+            )
+        }
         row
     }
+
+    /** The open chats of [spaceId], oldest first. */
+    @Synchronized
+    fun openChatsIn(spaceId: String): List<ChatRow> =
+        conn.prepareStatement("SELECT * FROM chats WHERE space_id=? AND kind='OPEN' ORDER BY created_at, id").use {
+            it.setString(1, spaceId); it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toChat()) } }
+        }
+
+    /** Sets [deviceId]'s mute flag on [chatId]; false when it is not a member. */
+    @Synchronized
+    fun setMuted(chatId: String, deviceId: String, muted: Boolean): Boolean =
+        update("UPDATE chat_members SET muted=? WHERE chat_id=? AND device_id=?", if (muted) 1 else 0, chatId, deviceId) > 0
+
+    @Synchronized
+    fun isMuted(chatId: String, deviceId: String): Boolean =
+        conn.prepareStatement("SELECT muted FROM chat_members WHERE chat_id=? AND device_id=?").use {
+            it.setString(1, chatId); it.setString(2, deviceId)
+            it.executeQuery().use { rs -> rs.next() && rs.getInt(1) != 0 }
+        }
 
     @Synchronized
     fun chat(id: String): ChatRow? =

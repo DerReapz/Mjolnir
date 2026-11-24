@@ -2,6 +2,7 @@ package app.mjolnir.server
 
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.CodeKind
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.DeviceKind
 import java.sql.DriverManager
 import java.util.concurrent.CountDownLatch
@@ -26,6 +27,37 @@ class SpacesStoreTest {
         assertEquals("Home", store.space(s.id)?.name)
         assertEquals(listOf(a.id), store.members(s.id).map { it.id })
         assertEquals(listOf(s.id), store.spacesOf(a.id).map { it.id })
+    }
+
+    @Test fun newSpaceHasGeneral() {
+        val a = device()
+        val s = store.createSpace(a.id, "Home", 10)
+        val open = store.openChatsIn(s.id)
+        assertEquals(1, open.size)
+        assertEquals("general", open[0].name)
+        assertEquals(a.id, open[0].ownerId)
+        assertTrue(store.isChatMember(open[0].id, a.id))
+    }
+
+    @Test fun ensureDefaultChannelsRunsOnce() {
+        val file = createTempDirectory().resolve("pre.db").toString()
+        val st = Store("jdbc:sqlite:$file")
+        val a = st.createDevice("a", DeviceKind.PC, "hash-a", 1000L)
+        // A space from before this feature: inserted by SQL, so it has no chats and an unset flag.
+        DriverManager.getConnection("jdbc:sqlite:$file").use { c ->
+            c.createStatement().use {
+                it.executeUpdate("INSERT INTO spaces(id,name,admin_id,created_at) VALUES('old','Old','${a.id}',5)")
+                it.executeUpdate("INSERT INTO space_members(space_id,device_id,joined_at) VALUES('old','${a.id}',5)")
+            }
+        }
+        assertEquals(1, st.ensureDefaultChannels(50))
+        val general = st.openChatsIn("old").single()
+        assertEquals("general", general.name)
+        assertTrue(st.isChatMember(general.id, a.id))
+        assertEquals(0, st.ensureDefaultChannels(60))
+        st.deleteChat(general.id)
+        assertEquals(0, st.ensureDefaultChannels(70))
+        assertTrue(st.openChatsIn("old").isEmpty())
     }
 
     @Test fun membersOrderedByJoin() {

@@ -1,6 +1,7 @@
 package app.mjolnir.server
 
 import app.mjolnir.protocol.ChatEvent
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
@@ -35,10 +36,80 @@ class ChatStoreTest {
         assertTrue(store.isChatMember(c.id, b.id))
         assertFalse(store.isChatMember(c.id, a.id))
         assertEquals(listOf(b.id), store.chatMembers(c.id).map { it.id })
-        assertEquals(listOf(c.id), store.chatsOf(s.id, b.id, false).map { it.id })
-        assertTrue(store.chatsOf(s.id, a.id, false).isEmpty())
-        assertEquals(listOf(c.id), store.chatsOf(s.id, a.id, true).map { it.id }) // admin sees all
+        fun privateOf(d: String, admin: Boolean) = store.chatsOf(s.id, d, admin).filter { it.kind == ChatKind.PRIVATE }.map { it.id }
+        assertEquals(listOf(c.id), privateOf(b.id, false))
+        assertTrue(privateOf(a.id, false).isEmpty())
+        assertEquals(listOf(c.id), privateOf(a.id, true)) // admin sees all
         assertTrue(store.renameChat(c.id, "Trips", b.id, 150)); assertEquals("Trips", store.chat(c.id)?.name)
+    }
+
+    @Test fun openChatIncludesEverySpaceMember() {
+        val a = device(); val b = device(); val c = device()
+        val s = space(a, b, c)
+        val chat = store.createChat(s.id, b.id, "games", 100, ChatKind.OPEN)!!
+        assertEquals(ChatKind.OPEN, chat.kind)
+        assertEquals(ChatKind.OPEN, store.chat(chat.id)?.kind)
+        assertEquals(setOf(a.id, b.id, c.id), store.chatMembers(chat.id).map { it.id }.toSet())
+    }
+
+    @Test fun joiningASpaceJoinsItsOpenChats() {
+        val a = device(); val b = device(); val d = device()
+        val s = space(a, b)
+        val games = store.createChat(s.id, b.id, "games", 100, ChatKind.OPEN)!!
+        val priv = store.createChat(s.id, b.id, "secret", 100)!!
+        val joined = store.addMember(s.id, d.id, 200)
+        val open = store.openChatsIn(s.id).map { it.id }
+        assertEquals(2, open.size)
+        assertEquals(open.toSet(), joined.toSet())
+        assertTrue(games.id in joined)
+        open.forEach { assertTrue(store.isChatMember(it, d.id)) }
+        assertFalse(store.isChatMember(priv.id, d.id))
+        assertTrue(store.addMember(s.id, d.id, 210).isEmpty())
+    }
+
+    @Test fun leavingASpaceLeavesItsOpenChats() {
+        val a = device(); val b = device(); val c = device()
+        val s = space(a, b, c)
+        val games = store.createChat(s.id, b.id, "games", 100, ChatKind.OPEN)!!
+        val res = store.removeMember(s.id, c.id, c.id, 300)
+        assertFalse(store.isChatMember(games.id, c.id))
+        assertTrue(games.id in res.chats.changed.keys)
+        store.openChatsIn(s.id).forEach { assertFalse(store.isChatMember(it.id, c.id)) }
+    }
+
+    @Test fun rejoiningRestoresOpenChats() {
+        val a = device(); val b = device(); val c = device()
+        val s = space(a, b, c)
+        val games = store.createChat(s.id, b.id, "games", 100, ChatKind.OPEN)!!
+        store.postMessage(games.id, b.id, "hello", 110)
+        store.removeMember(s.id, c.id, c.id, 300)
+        store.addMember(s.id, c.id, 400)
+        assertTrue(store.isChatMember(games.id, c.id))
+        assertEquals(1, store.chatMembers(games.id).count { it.id == c.id })
+        assertTrue(store.syncPage(games.id, 0).rows.any { it.text == "hello" })
+    }
+
+    @Test fun creatorLeavingKeepsTheChannel() {
+        val a = device(); val b = device(); val c = device()
+        val s = space(a, b, c)
+        val games = store.createChat(s.id, b.id, "games", 100, ChatKind.OPEN)!!
+        store.removeMember(s.id, b.id, b.id, 300)
+        val after = store.chat(games.id)!!
+        assertEquals(store.chatMembers(games.id).first().id, after.ownerId)
+        assertTrue(after.ownerId != b.id)
+    }
+
+    @Test fun muteIsPerMember() {
+        val a = device(); val b = device(); val c = device()
+        val s = space(a, b, c)
+        val games = store.createChat(s.id, b.id, "games", 100, ChatKind.OPEN)!!
+        assertTrue(store.setMuted(games.id, b.id, true))
+        assertTrue(store.isMuted(games.id, b.id))
+        assertFalse(store.isMuted(games.id, c.id))
+        val outsider = device()
+        assertFalse(store.setMuted(games.id, outsider.id, true))
+        assertTrue(store.setMuted(games.id, b.id, false))
+        assertFalse(store.isMuted(games.id, b.id))
     }
 
     @Test fun postEditDeleteBumpRev() {
@@ -189,6 +260,7 @@ class ChatStoreTest {
     @Test fun lastMemberLeavingDeletesChat() {
         val a = device(); val b = device()
         val s = space(a, b)
+        store.openChatsIn(s.id).forEach { store.deleteChat(it.id) } // #general would otherwise survive with its rows
         val c = store.createChat(s.id, b.id, "Plans", 100)!!
         store.postMessage(c.id, b.id, "hi", 102)!!
         // The owner is always the last one standing, and can't leave through removeChatMember; leaving the space does it.
@@ -427,7 +499,8 @@ class ChatStoreTest {
         val other = store.createChat(s.id, a.id, "Other", 100)!!
         val r = store.removeMember(s.id, b.id, b.id, 200)
         assertEquals(Store.Removed.REMOVED, r.result)
-        assertEquals(setOf(keep.id), r.chats.changed.keys)
+        val privateIds = setOf(keep.id, gone.id, other.id)
+        assertEquals(setOf(keep.id), r.chats.changed.keys.filter { it in privateIds }.toSet()) // #general changes too
         assertEquals(setOf(a.id, b.id, c.id), r.chats.changed.getValue(keep.id).toSet()) // remaining members plus the leaver
         assertEquals(mapOf(gone.id to listOf(b.id)), r.chats.deleted)
         assertFalse(r.chats.changed.containsKey(other.id))
@@ -437,7 +510,7 @@ class ChatStoreTest {
         assertTrue(store.removeMember(s.id, b.id, b.id, 201).chats.changed.isEmpty())
         // deleteSpace reports the chats it removed with their members
         val d = store.deleteSpace(s.id, a.id)!!
-        assertEquals(setOf(keep.id, other.id), d.chats.keys)
+        assertEquals(setOf(keep.id, other.id), d.chats.keys.filter { it in privateIds }.toSet())
         assertEquals(setOf(a.id, c.id), d.chats.getValue(keep.id).toSet())
         assertEquals(setOf(a.id, c.id), d.memberIds.toSet())
     }
@@ -487,6 +560,6 @@ class ChatStoreTest {
         val s = space(a)
         assertNull(store.createChat(s.id, outsider.id, "Nope", 100))
         assertNull(store.createChat("no-space", a.id, "Nope", 100))
-        assertEquals(0, store.rowCount("chats"))
+        assertEquals(1, store.rowCount("chats")) // only #general
     }
 }
