@@ -8,6 +8,7 @@ import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.MjolnirJson
 import app.mjolnir.protocol.Versions
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import app.mjolnir.protocol.ClaimRequest
 import app.mjolnir.protocol.CodeKind
@@ -174,25 +175,28 @@ fun Route.pairingRoutes(deps: RelayDeps) {
             val sink = WebSocketSink(this)
             // Presence is for devices sharing a space; a guest shares none.
             val tracked = me.kind != DeviceKind.GUEST
-            if (hub.add(me.deviceId, sink) && tracked) deps.onConnected(me.deviceId)
-            // An app older than this relay learns it once on connect; no header (the guest page) means nothing.
-            call.request.headers[APP_VERSION_HEADER]?.takeIf { Versions.isNewer(deps.version, it) }
-                ?.let { send(Frame.Text(MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.UpdateAvailable(deps.version)))) }
-            val heartbeat = launch {
-                while (true) {
-                    delay(deps.heartbeatMs)
-                    if (me.kind == DeviceKind.GUEST && store.device(me.deviceId)?.let { deps.deviceActive(it) } != true) {
-                        close(CloseReason(CloseReason.Codes.NORMAL, "room_ended")) // the room ended or expired meanwhile
-                        break
-                    }
-                    store.touchLastSeen(me.deviceId, deps.clock.nowMs()) // an always-on device counts as active (throttled)
-                    send(Frame.Text(HEARTBEAT_FRAME))
-                }
-            }
+            val first = hub.add(me.deviceId, sink)
+            var heartbeat: Job? = null
+            // Everything after the add runs inside the try, so a failure can never leave the sink registered.
             try {
+                if (first && tracked) deps.onConnected(me.deviceId)
+                // An app older than this relay learns it once on connect; no header (the guest page) means nothing.
+                call.request.headers[APP_VERSION_HEADER]?.takeIf { Versions.isNewer(deps.version, it) }
+                    ?.let { send(Frame.Text(MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.UpdateAvailable(deps.version)))) }
+                heartbeat = launch {
+                    while (true) {
+                        delay(deps.heartbeatMs)
+                        if (me.kind == DeviceKind.GUEST && store.device(me.deviceId)?.let { deps.deviceActive(it) } != true) {
+                            close(CloseReason(CloseReason.Codes.NORMAL, "room_ended")) // the room ended or expired meanwhile
+                            break
+                        }
+                        store.touchLastSeen(me.deviceId, deps.clock.nowMs()) // an always-on device counts as active (throttled)
+                        send(Frame.Text(HEARTBEAT_FRAME))
+                    }
+                }
                 for (frame in incoming) { /* client frames are ignored; the channel is server-push */ }
             } finally {
-                heartbeat.cancel()
+                heartbeat?.cancel()
                 hub.remove(me.deviceId, sink)
                 if (tracked) deps.onDisconnected(me.deviceId)
             }

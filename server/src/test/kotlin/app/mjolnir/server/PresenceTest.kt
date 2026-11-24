@@ -10,7 +10,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import kotlin.test.*
 
-private const val GRACE = 100L
+/** Long enough for a WebSocket reconnect under CI load; "nothing yet" windows stay well inside it. */
+private const val GRACE = 1_500L
 
 class PresenceTest {
     private suspend fun RelayTestScope.spaceWith(admin: RegisterResponse, vararg joiners: RegisterResponse): Space {
@@ -74,9 +75,12 @@ class PresenceTest {
         clock.now = 1_700_000_123_000L
         withEvents(a, presence = true) {
             withEvents(b) {}
+            val closed = System.currentTimeMillis()
             assertEquals(RelayEvent.PresenceChanged(b.deviceId, true), next())
-            assertNull(nextOrNull(50)) // not before the grace period
+            assertNull(nextOrNull(300)) // not before the grace period
             assertEquals(RelayEvent.PresenceChanged(b.deviceId, false, clock.now), next())
+            // The server closes its side after the client, so the report can only come later than the grace from here.
+            assertTrue(System.currentTimeMillis() - closed >= GRACE - 100)
         }
     }
 
@@ -86,7 +90,7 @@ class PresenceTest {
         withEvents(a, presence = true) { val ea = this
             withEvents(b) {}
             withEvents(b) {
-                val seen = ea.presenceWithin(GRACE * 3)
+                val seen = ea.presenceWithin(GRACE + 1_000)
                 assertTrue(seen.isNotEmpty() && seen.all { it.online }, "$seen")
             }
         }
@@ -99,7 +103,7 @@ class PresenceTest {
             withEvents(b) {
                 assertEquals(RelayEvent.PresenceChanged(b.deviceId, true), ea.next())
                 withEvents(b) {}
-                assertEquals(emptyList(), ea.presenceWithin(GRACE * 3))
+                assertEquals(emptyList(), ea.presenceWithin(GRACE + 1_000))
                 assertTrue(deps.hub.isConnected(b.deviceId))
             }
         }
@@ -131,7 +135,39 @@ class PresenceTest {
         val (_, guest) = guestOf(a)
         withEvents(a, presence = true) { val ea = this
             withEvents(guest) {}
-            assertEquals(emptyList(), ea.presenceWithin(GRACE * 3))
+            assertEquals(emptyList(), ea.presenceWithin(GRACE + 1_000))
+        }
+    }
+
+    /**
+     * The offline check fires just as the device reconnects: whichever way the two interleave, the last report is online.
+     * The hook pauses the fired check (after it found the device gone) while another thread reconnects; the reconnect's
+     * online report must wait for the offline one instead of slipping in before it.
+     */
+    @Test fun lateOfflineCheckNeverOverridesAFreshOnline() = relayTest(presenceGraceMs = 200) {
+        val a = register("A"); val b = register("B")
+        spaceWith(a, b)
+        val sink = object : EventSink {
+            override suspend fun sendText(text: String) {}
+            override fun abort() {}
+        }
+        withEvents(a, presence = true) {
+            withEvents(b) {}
+            assertEquals(RelayEvent.PresenceChanged(b.deviceId, true), next())
+            var raced = false
+            deps.presence.beforeOfflineReport = { id ->
+                if (!raced) {
+                    raced = true
+                    val reconnect = Thread { if (deps.hub.add(id, sink)) deps.onConnected(id) }
+                    reconnect.start()
+                    reconnect.join(500) // without the lock it finishes here, reporting online before the offline below
+                }
+            }
+            assertEquals(RelayEvent.PresenceChanged(b.deviceId, false, clock.now), next())
+            assertEquals(RelayEvent.PresenceChanged(b.deviceId, true), next())
+            assertTrue(raced)
+            assertTrue(deps.hub.isConnected(b.deviceId))
+            deps.hub.remove(b.deviceId, sink)
         }
     }
 }
