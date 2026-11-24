@@ -35,6 +35,7 @@ import app.mjolnir.client.Messages
 import app.mjolnir.client.Presence
 import app.mjolnir.client.canLeave
 import app.mjolnir.client.canManage
+import app.mjolnir.client.canRemoveMembers
 import app.mjolnir.client.canTransferOwner
 import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.ChatInvite
@@ -150,7 +151,7 @@ private fun Main(s: ChatSettings, owner: Boolean, canLeave: Boolean, canDelete: 
                 )
                 PresenceStatus(s.presence[member.deviceId] ?: Presence(member.online, member.lastSeenMs), now, Modifier.padding(end = 8.dp))
                 if (canTransferOwner(chat, s.selfId) && !self) ForgeTextButton(Messages.MAKE_OWNER, onClick = { s.actions.onMakeOwner(member) })
-                if (s.isSpaceAdmin && !self && !channel) ForgeTextButton("Remove", muted = true, onClick = {
+                if (canRemoveMembers(chat, s.isSpaceAdmin) && !self) ForgeTextButton("Remove", muted = true, onClick = {
                     setMode(Mode.Confirm("Remove ${s.nicknameOf(member)} from ${chat.name}?", "Remove") { s.actions.onRemove(member) })
                 })
             }

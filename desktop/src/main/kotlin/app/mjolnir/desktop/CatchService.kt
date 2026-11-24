@@ -20,7 +20,7 @@ class CatchService(
     /** Runs when a space this device is in changed (members, name, admin) or was deleted; the peer list is refreshed after it. */
     private val onSpaceChanged: (spaceId: String) -> Unit = {},
     private val onSpaceDeleted: (RelayEvent.SpaceDeleted) -> Unit = {},
-    /** Runs for the events the chat list lives on: connect, space changes and the chat events themselves. */
+    /** Runs for the events the chat list lives on: connect, space changes, the chat events themselves and presence. */
     private val onChatEvent: (RelayEvent) -> Unit = {},
     /** Runs for the guest room's events (guest joined, room ended, files downloaded by the guest). */
     private val onGuestRoomEvent: (RelayEvent) -> Unit = {},
@@ -52,7 +52,7 @@ class CatchService(
                 is RelayEvent.Downloaded -> onGuestRoomEvent(event)
                 is RelayEvent.UpdateAvailable -> onUpdateAvailable(event.version)
                 is RelayEvent.ChatChanged, is RelayEvent.ChatDeleted, is RelayEvent.ChatInvitesChanged -> onChatEvent(event)
-                is RelayEvent.PresenceChanged -> Unit // not shown yet
+                is RelayEvent.PresenceChanged -> onChatEvent(event) // the member lists' online dots
             }
         }
     }

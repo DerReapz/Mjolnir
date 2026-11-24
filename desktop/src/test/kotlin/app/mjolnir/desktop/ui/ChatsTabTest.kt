@@ -3,6 +3,9 @@
 package app.mjolnir.desktop.ui
 
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -357,5 +360,24 @@ class ChatsTabTest {
     @Test fun channelHeaderHasNoInvite() = runComposeUiTest {
         show(ui(chats = listOf(chat(kind = ChatKind.OPEN, name = "general", owner = "fred"))))
         onNodeWithText("Invite").assertDoesNotExist()
+    }
+
+    @Test fun emptyChannelShowsItsHintInTheConversation() = runComposeUiTest {
+        var shown by mutableStateOf(ui(chats = listOf(chat(kind = ChatKind.OPEN, name = "general", owner = "fred"))))
+        setContent { MjolnirTheme { ChatsTabContent(shown, ChatsActions(), now = { at }) } }
+        onNodeWithText("Everyone in Friends can see this channel.").assertExists()
+        shown = ui(chats = listOf(chat(kind = ChatKind.OPEN, name = "general", owner = "fred")), messages = listOf(msg("m1", fred, "hi")))
+        onNodeWithText("Everyone in Friends can see this channel.").assertDoesNotExist() // someone wrote: the hint goes
+    }
+
+    @Test fun emptyPrivateChatHasNoChannelHint() = runComposeUiTest {
+        show(ui())
+        onNodeWithText("Everyone in Friends can see this channel.").assertDoesNotExist()
+    }
+
+    @Test fun spaceAdminCannotRemoveFromAChannel() = runComposeUiTest {
+        val open = chat(kind = ChatKind.OPEN, name = "general", owner = "fred")
+        setContent { MjolnirTheme { ChatSettingsDialog(ChatSettings(open, listOf(me, fred), emptyList(), "me", true, { it.name }, ChatSettingsActions()), onClose = {}) } }
+        onNodeWithText("Remove").assertDoesNotExist()
     }
 }

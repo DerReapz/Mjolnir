@@ -83,8 +83,10 @@ import androidx.compose.ui.unit.sp
 import app.mjolnir.client.MentionPicks
 import app.mjolnir.client.PendingSend
 import app.mjolnir.client.Messages
+import app.mjolnir.client.presenceDisplay
 import app.mjolnir.client.Segment
 import app.mjolnir.client.capCodePoints
+import app.mjolnir.client.emptyChannelHint
 import app.mjolnir.client.insertMention
 import app.mjolnir.client.inviteCandidates
 import app.mjolnir.client.latestOwnMessage
@@ -248,14 +250,13 @@ internal fun rememberMinuteClock(clock: () -> Long): Long {
     return now
 }
 
-/** The 8 dp presence dot (green online, grey otherwise) with "Online" or "Last seen …"; nothing for text while unknown. */
+/** The 8 dp presence dot (green online, grey otherwise) with "Online" or "Last seen …"; nothing at all while unknown (see [presenceDisplay]). */
 @Composable
 internal fun PresenceStatus(presence: Presence?, nowMs: Long, modifier: Modifier = Modifier) {
-    val online = presence?.online == true
-    val text = if (online) Messages.ONLINE else Messages.lastSeen(nowMs, presence?.lastSeenMs)
+    val shown = presenceDisplay(presence, nowMs) ?: return
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box(Modifier.size(8.dp).background(if (online) ONLINE_DOT else OFFLINE_DOT, CircleShape))
-        if (text.isNotEmpty()) Text(text, style = body(12, color = Forge.muted), maxLines = 1)
+        Box(Modifier.size(8.dp).background(if (shown.online) ONLINE_DOT else OFFLINE_DOT, CircleShape))
+        Text(shown.text, style = body(12, color = Forge.muted), maxLines = 1)
     }
 }
 
@@ -457,13 +458,15 @@ private fun Conversation(ui: ChatsUi, actions: ChatsActions) {
                 }
             }
             val listState = rememberLazyListState()
-            val count = ui.messages.size + pending.size
+            val hint = emptyChannelHint(chat, ui.messages)?.takeIf { pending.isEmpty() } // an open channel nobody has written in yet
+            val count = ui.messages.size + pending.size + (if (hint != null) 1 else 0)
             LaunchedEffect(chat.id, count) { if (count > 0) listState.scrollToItem(count - 1) } // the newest message
             LazyColumn(
                 Modifier.weight(1f).fillMaxWidth().onGloballyPositioned { listBounds.value = it.boundsInWindow() }, state = listState,
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                hint?.let { item(key = "channel-hint") { SystemLine(it) } }
                 items(ui.messages, key = { it.id }) { m ->
                     val event = m.event
                     if (event != null) SystemLine(Messages.systemLine(event, nameOf))

@@ -61,6 +61,17 @@ class CatchServiceTest {
         events.forEach { api.events.emit(it); runCurrent() }
         assertEquals(events, got); job.cancel()
     }
+    // live presence reaches the chat controller: the member list's dots follow PresenceChanged
+    @Test fun presenceChangesReachTheChatController() = runTest {
+        val api = FakeRelayApi()
+        val dir = kotlin.io.path.createTempDirectory("catch-presence").toFile()
+        val chats = ChatController({ api }, ChatStore(dir), this) { api.me.deviceId }
+        val svc = CatchService(api, InboxDrainer(api, MemorySeen()) {}, {}, {}, onChatEvent = chats::onEvent)
+        val job = launch { svc.run() }; runCurrent()
+        api.events.emit(RelayEvent.PresenceChanged("ph", online = true, lastSeenMs = 5L)); runCurrent()
+        assertEquals(Presence(true, 5L), chats.presence.value["ph"])
+        job.cancel(); dir.deleteRecursively()
+    }
     // R15: a rejected token ends run() with UNAUTHORIZED so Main can re-register
     @Test fun unauthorizedFromEventsPropagates() = runTest {
         val fake = FakeRelayApi()
