@@ -2,6 +2,14 @@ name: CI
 on:
   push:
   pull_request:
+# Read-only unless a job asks for more (release does).
+permissions:
+  contents: read
+# One run per branch at a time. On main a newer push cancels the older run, so an older version can't be released after a
+# newer one (the release job also checks).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -126,6 +134,28 @@ jobs:
           cp artifacts/relay/server-all.jar server/build/libs/server-all.jar
           (cd release && sha256sum "Mjolnir-$VERSION.msi" "mjolnir-$VERSION.apk" server-all.jar > SHA256SUMS)
           cat release/SHA256SUMS
+      # A re-run of an older run (or one that finished after a newer one) must not move releases/latest or :latest back:
+      # Watchtower would downgrade the relay onto data a newer relay already wrote.
+      - name: Check this is the newest release
+        id: newest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! latest=$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name 2> latest-error.txt); then
+            if grep -q "HTTP 404" latest-error.txt; then
+              latest="" # no release yet
+            else
+              cat latest-error.txt
+              exit 1
+            fi
+          fi
+          newest=true
+          if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "${latest#v}" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]; then
+            newest=false
+            echo "::warning::The latest release is $latest, newer than $VERSION: this release is not made latest and :latest is not pushed."
+          fi
+          echo "newest=$newest" >> "$GITHUB_OUTPUT"
       - name: Write release notes
         run: |
           {
@@ -149,7 +179,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           body_path: release-notes.md
           prerelease: ${{ env.APK_SIGNED != 'true' }}
-          make_latest: ${{ env.APK_SIGNED == 'true' }}
+          make_latest: ${{ env.APK_SIGNED == 'true' && steps.newest.outputs.newest == 'true' }}
           fail_on_unmatched_files: true
           files: |
             release/Mjolnir-${{ env.VERSION }}.msi
@@ -168,9 +198,10 @@ jobs:
           context: server
           platforms: linux/amd64,linux/arm64
           push: true
+          # :latest also for a pre-release (the relay updates even when the apps aren't offered it), never for an older run.
           tags: |
             ghcr.io/derreapz/mjolnir-relay:${{ env.VERSION }}
-            ghcr.io/derreapz/mjolnir-relay:latest
+            ${{ steps.newest.outputs.newest == 'true' && 'ghcr.io/derreapz/mjolnir-relay:latest' || '' }}
           labels: |
             org.opencontainers.image.source=https://github.com/DerReapz/Mjolnir
             org.opencontainers.image.version=${{ env.VERSION }}

@@ -179,7 +179,7 @@ The hammer icon is supplied by the project owner; `scripts/make-icons.py` genera
 
 ## Updates
 
-Every push to `main` that passes CI publishes a GitHub release `v1.0.N` (N is the CI run number) with the Windows installer `Mjolnir-1.0.N.msi`, the phone app `mjolnir-1.0.N.apk`, the relay `server-all.jar` and a `SHA256SUMS` file, and pushes the relay image `ghcr.io/derreapz/mjolnir-relay:1.0.N` (and `:latest`). Other branches only upload CI artifacts.
+Every push to `main` that passes CI publishes a GitHub release `v1.0.N` (N is the CI run number) with the Windows installer `Mjolnir-1.0.N.msi`, the phone app `mjolnir-1.0.N.apk`, the relay `server-all.jar` and a `SHA256SUMS` file, and pushes the relay image `ghcr.io/derreapz/mjolnir-relay:1.0.N` (and `:latest`, unless a newer release already exists). Other branches only upload CI artifacts.
 
 How the apps update:
 
@@ -237,14 +237,18 @@ docker run -d --name mjolnir-relay --restart unless-stopped \
 
 The image already sets `MJOLNIR_DB=/data/mjolnir.db` and `MJOLNIR_FILES=/data/files`. Leave out `GOOGLE_APPLICATION_CREDENTIALS` without Firebase (or put the service-account JSON at `<host folder>/secrets/firebase.json`), and add any other settings from the table in *Run the relay locally* with more `-e` flags. As before, the apps need the relay over `https://`, so keep your reverse proxy or tunnel in front of port 8080.
 
-Then let Watchtower pull a new image every 6 hours and restart the relay with the same settings:
+Then let Watchtower pull a new image every 6 hours and restart the relay with the same settings. Use the maintained fork `nickfedor/watchtower`: the original `containrrr/watchtower` is no longer maintained and fails on Docker Engine 29 and newer.
 
 ```
 docker run -d --name watchtower --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  containrrr/watchtower --interval 21600 mjolnir-relay
+  nickfedor/watchtower --interval 21600 --cleanup mjolnir-relay
 ```
 
-Once the relay is updated, the apps notice the newer relay on their next request and show the update banner.
+Check it works with `docker logs watchtower`: it should show its schedule (the first check) and no Docker API errors. (If you already run `containrrr/watchtower` on Docker Engine 25 or newer, adding `-e DOCKER_API_VERSION=1.44` to its `docker run` also gets it working.)
+
+Every release pushes `:latest`, pre-releases included, so the relay is updated even when the apps aren't offered that release. Once the relay is updated, the apps notice the newer relay on their next request and show the update banner.
+
+On Fly.io there is no Watchtower: update the relay with `fly deploy --image ghcr.io/derreapz/mjolnir-relay:<version>`.
 
 The image package is private until you make it public once: on GitHub open the `mjolnir-relay` package (the repository's *Packages*), then **Package settings → Change visibility → Public**. Until then the relay host can't pull it without logging in.
