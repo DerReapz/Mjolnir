@@ -28,6 +28,8 @@ class RelayClientChatTest {
         val ann = newDevice("Ann", DeviceKind.PHONE); val bob = newDevice("Bob", DeviceKind.PHONE)
         val space = admin.api.createSpace("Crew")
         join(admin, space.id, ann); join(admin, space.id, bob)
+        // These tests are about private chats; every new space also starts with the open #general, which would add list rows.
+        deps.store.openChatsIn(space.id).forEach { deps.store.deleteChat(it.id) }
         return Crew(admin, ann, bob, space.id)
     }
 

@@ -33,6 +33,7 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
@@ -55,10 +56,19 @@ class FakeClock(var now: Long = 1_700_000_000_000L) : Clock {
     override fun nowMs(): Long = now
 }
 
-class EventReader(private val incoming: kotlinx.coroutines.channels.ReceiveChannel<Frame>) {
-    suspend fun next(): RelayEvent = withTimeout(5_000) {
-        val frame = incoming.receive() as Frame.Text
-        MjolnirJson.decodeFromString(RelayEvent.serializer(), frame.readText())
+/** Reads a device's events; presence events are skipped unless [presence] (they arrive whenever a co-member connects). */
+class EventReader(private val incoming: kotlinx.coroutines.channels.ReceiveChannel<Frame>, private val presence: Boolean = false) {
+    suspend fun next(): RelayEvent = withTimeout(5_000) { receive() }
+
+    /** The next event within [ms], or null when none comes. */
+    suspend fun nextOrNull(ms: Long): RelayEvent? = withTimeoutOrNull(ms) { receive() }
+
+    private suspend fun receive(): RelayEvent {
+        while (true) {
+            val frame = incoming.receive() as Frame.Text
+            val event = MjolnirJson.decodeFromString(RelayEvent.serializer(), frame.readText())
+            if (presence || event !is RelayEvent.PresenceChanged) return event
+        }
     }
 }
 
@@ -191,12 +201,12 @@ class RelayTestScope(
     suspend fun endRoom(owner: RegisterResponse, roomId: String): HttpStatusCode =
         client.delete("/v1/rooms/$roomId") { bearerAuth(owner.token) }.status
 
-    suspend fun <T> withEvents(device: RegisterResponse, block: suspend EventReader.() -> T): T =
+    suspend fun <T> withEvents(device: RegisterResponse, presence: Boolean = false, block: suspend EventReader.() -> T): T =
         run {
             var result: Result<T>? = null
             client.webSocket("/v1/ws", request = { bearerAuth(device.token) }) {
                 withTimeout(5_000) { while (!deps.hub.isConnected(device.deviceId)) delay(10) }
-                result = runCatching { EventReader(incoming).block() }
+                result = runCatching { EventReader(incoming, presence).block() }
             }
             result!!.getOrThrow()
         }
@@ -212,11 +222,13 @@ fun relayTest(
     heartbeatMs: Long = 30_000,
     roomSweepMs: Long = 15_000,
     version: String = "1.0.0",
+    presenceGraceMs: Long = 30_000,
+    store: Store = Store("jdbc:sqlite::memory:"),
     block: suspend RelayTestScope.() -> Unit,
 ) = testApplication {
     val deps = RelayDeps(
-        store = Store("jdbc:sqlite::memory:"), clock = clock, limits = limits, files = files, push = push,
-        heartbeatMs = heartbeatMs, roomSweepMs = roomSweepMs, version = version,
+        store = store, clock = clock, limits = limits, files = files, push = push,
+        heartbeatMs = heartbeatMs, roomSweepMs = roomSweepMs, version = version, presenceGraceMs = presenceGraceMs,
     )
     var app: Application? = null
     application { relayModule(deps); app = this }

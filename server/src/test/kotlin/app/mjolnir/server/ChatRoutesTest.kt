@@ -730,4 +730,103 @@ class ChatRoutesTest {
         client.delete("/v1/chats/${chat.id}") { bearerAuth(k.owner.token) }
         assertEquals(0, store.rowCount("chat_receipt_marks"))
     }
+
+    // ---- Open channels ----
+
+    private suspend fun RelayTestScope.channelResponse(d: RegisterResponse, spaceId: String, name: String = "games"): HttpResponse =
+        client.post("/v1/spaces/$spaceId/channels") { bearerAuth(d.token); contentType(ContentType.Application.Json); setBody(CreateChatRequest(name)) }
+
+    private suspend fun RelayTestScope.newChannel(d: RegisterResponse, spaceId: String, name: String = "games"): ChatSummary {
+        val r = channelResponse(d, spaceId, name)
+        check(r.status == HttpStatusCode.Created) { "create channel ${r.status}" }
+        return r.body()
+    }
+
+    private suspend fun RelayTestScope.mute(d: RegisterResponse, chatId: String, muted: Boolean): HttpResponse =
+        client.put("/v1/chats/$chatId/mute") { bearerAuth(d.token); contentType(ContentType.Application.Json); setBody(MuteRequest(muted)) }
+
+    private suspend fun assertRefused(r: HttpResponse, what: String) {
+        assertEquals(HttpStatusCode.Conflict, r.status, what)
+        assertEquals("not_for_open_channels", r.body<ErrorResponse>().error, what)
+    }
+
+    @Test fun createOpenChannelAddsEveryone() = relayTest {
+        val k = cast()
+        withEvents(k.admin) { val ea = this; withEvents(k.owner) { val eb = this; withEvents(k.member) { val ec = this; withEvents(k.outsider) { val ed = this
+            val r = channelResponse(k.member, k.space.id)
+            assertEquals(HttpStatusCode.Created, r.status)
+            val chat = r.body<ChatSummary>()
+            assertEquals(ChatKind.OPEN, chat.kind); assertEquals("games", chat.name); assertEquals(k.member.deviceId, chat.ownerId)
+            assertTrue(chat.member); assertFalse(chat.muted)
+            for (e in listOf(ea, eb, ec, ed)) assertEquals(RelayEvent.ChatChanged(chat.id, chat.rev), e.next())
+            for (d in listOf(k.admin, k.owner, k.member, k.outsider)) {
+                val row = chats(d, k.space.id).single { it.id == chat.id }
+                assertEquals(ChatKind.OPEN, row.kind); assertTrue(row.member)
+            }
+        } } } }
+        // Same checks as chat create: a space member, a valid name.
+        assertEquals(HttpStatusCode.BadRequest, channelResponse(k.member, k.space.id, " ").status)
+        assertEquals(HttpStatusCode.NotFound, channelResponse(register("S"), k.space.id).status)
+        // The private-chat route still makes private chats.
+        assertEquals(ChatKind.PRIVATE, newChat(k.owner, k.space.id).kind)
+    }
+
+    @Test fun privateChatRoutesRefuseOpenChannels() = relayTest {
+        val k = cast(); val chat = newChannel(k.owner, k.space.id)
+        assertRefused(invite(k.owner, chat.id, k.member.deviceId), "invite")
+        assertRefused(
+            client.post("/v1/chats/${chat.id}/owner") { bearerAuth(k.owner.token); contentType(ContentType.Application.Json); setBody(TransferOwnerRequest(k.member.deviceId)) },
+            "owner transfer",
+        )
+        assertRefused(leaveChat(k.member, chat.id), "leave")
+        assertRefused(leaveChat(k.admin, chat.id, k.member.deviceId), "admin remove")
+        assertRefused(client.post("/v1/chats/${chat.id}/join") { bearerAuth(k.admin.token) }, "admin join")
+        assertEquals(4, sync(k.owner, chat.id).members.size)
+    }
+
+    @Test fun creatorOrAdminRenamesAndDeletesChannel() = relayTest {
+        val k = cast(); val chat = newChannel(k.owner, k.space.id)
+        suspend fun rename(d: RegisterResponse, name: String) =
+            client.patch("/v1/chats/${chat.id}") { bearerAuth(d.token); contentType(ContentType.Application.Json); setBody(RenameChatRequest(name)) }
+        val plain = rename(k.member, "x")
+        assertEquals(HttpStatusCode.Forbidden, plain.status); assertEquals("not_owner", plain.body<ErrorResponse>().error)
+        assertEquals(HttpStatusCode.OK, rename(k.owner, "games2").status)
+        val byAdmin = rename(k.admin, "fun")
+        assertEquals(HttpStatusCode.OK, byAdmin.status); assertEquals("fun", byAdmin.body<ChatSummary>().name)
+        assertEquals(HttpStatusCode.Forbidden, client.delete("/v1/chats/${chat.id}") { bearerAuth(k.member.token) }.status)
+        assertEquals(HttpStatusCode.NoContent, client.delete("/v1/chats/${chat.id}") { bearerAuth(k.admin.token) }.status)
+        assertTrue(chats(k.member, k.space.id).none { it.id == chat.id })
+    }
+
+    @Test fun muteRoundTrip() = relayTest {
+        val k = cast(); val chat = newChannel(k.owner, k.space.id)
+        val r = mute(k.member, chat.id, true)
+        assertEquals(HttpStatusCode.OK, r.status)
+        val summary = r.body<ChatSummary>()
+        assertTrue(summary.muted); assertEquals(chat.id, summary.id)
+        assertTrue(chats(k.member, k.space.id).single { it.id == chat.id }.muted)
+        assertFalse(chats(k.owner, k.space.id).single { it.id == chat.id }.muted)
+        assertFalse(mute(k.member, chat.id, false).body<ChatSummary>().muted)
+        assertFalse(chats(k.member, k.space.id).single { it.id == chat.id }.muted)
+        // A stranger doesn't learn the chat exists; the admin of a private chat it isn't in can't mute it.
+        assertEquals(HttpStatusCode.NotFound, mute(register("S"), chat.id, true).status)
+        val priv = newChat(k.owner, k.space.id)
+        val asAdmin = mute(k.admin, priv.id, true)
+        assertEquals(HttpStatusCode.Conflict, asAdmin.status); assertEquals("not_member", asAdmin.body<ErrorResponse>().error)
+        assertEquals(HttpStatusCode.NotFound, mute(k.member, priv.id, true).status)
+    }
+
+    @Test fun mutedMemberGetsNoDoorbellUnlessMentioned() { val push = RecordingPush(); relayTest(push = push) {
+        val k = cast(); val chat = newChannel(k.admin, k.space.id)
+        setPushToken(k.owner, "tok-b"); setPushToken(k.member, "tok-c")
+        assertEquals(HttpStatusCode.OK, mute(k.owner, chat.id, true).status)
+        say(k.admin, chat.id, "hello")
+        withTimeout(5_000) { while ("tok-c" !in push.pinged) delay(20) }
+        delay(100)
+        assertEquals(listOf("tok-c"), push.pinged.toList())
+        push.pinged.clear()
+        assertEquals(HttpStatusCode.Created, postMentioning(k.admin, chat.id, "hey B", k.owner.deviceId).status)
+        withTimeout(5_000) { while (push.pinged.size < 2) delay(20) }
+        assertEquals(listOf("tok-b", "tok-c"), push.pinged.sorted())
+    } }
 }

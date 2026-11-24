@@ -84,6 +84,9 @@ data class RelayDeps(
     val tickets: DownloadTickets = DownloadTickets(),
     /** The relay's release version, `1.0.N`; read from the generated `version.properties`. */
     val version: String = readRelayVersion(),
+    /** How long after a device's last connection closes it is reported offline (a quick reconnect reports nothing). */
+    val presenceGraceMs: Long = 30_000,
+    val presence: PresenceWatch = PresenceWatch(),
 )
 
 internal fun readRelayVersion(): String {
@@ -168,6 +171,8 @@ fun Application.relayModule(deps: RelayDeps) {
             requestKey { call -> call.principal<DevicePrincipal>()?.deviceId ?: call.request.origin.remoteHost }
         }
     }
+    // Spaces from before open channels get their `general` once.
+    deps.store.ensureDefaultChannels(deps.clock.nowMs())
     val purgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     purgeScope.launch {
         while (true) {

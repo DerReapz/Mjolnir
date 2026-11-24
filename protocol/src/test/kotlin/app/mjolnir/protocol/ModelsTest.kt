@@ -44,7 +44,7 @@ class GuestRoomModelsTest {
         assertEquals("\"GUEST\"", MjolnirJson.encodeToString(DeviceKind.serializer(), DeviceKind.GUEST))
         val guest = Peer("g", "Guest", DeviceKind.GUEST)
         assertEquals(
-            """{"type":"guest_joined","roomId":"r","guest":{"deviceId":"g","name":"Guest","kind":"GUEST","space":null}}""",
+            """{"type":"guest_joined","roomId":"r","guest":{"deviceId":"g","name":"Guest","kind":"GUEST","space":null,"online":false,"lastSeenMs":null}}""",
             MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.GuestJoined("r", guest)),
         )
         assertEquals("""{"type":"room_ended","roomId":"r"}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.RoomEnded("r")))
@@ -127,5 +127,26 @@ class ChatEventModelsTest {
         }
         assertEquals("""{"type":"member_removed","deviceId":"x","byAdmin":true}""", MjolnirJson.encodeToString(ChatEvent.serializer(), ChatEvent.MemberRemoved("x", true)))
         assertEquals(null, MjolnirJson.decodeFromString<ChatMessage>("""{"id":"m","chatId":"c","author":{"deviceId":"d","name":"n","kind":"PC"},"rev":1,"sentAtEpochMs":2}""").event)
+    }
+}
+
+class OpenChannelModelsTest {
+    @Test fun unknownChatKindDecodesAsPrivate() {
+        assertEquals(ChatKind.PRIVATE, MjolnirJson.decodeFromString(ChatKind.serializer(), "\"VOICE\""))
+        assertEquals(ChatKind.OPEN, MjolnirJson.decodeFromString(ChatKind.serializer(), "\"OPEN\""))
+    }
+
+    @Test fun peerPresenceDefaultsAndOldJsonDecodes() {
+        val p = MjolnirJson.decodeFromString<Peer>("""{"deviceId":"d","name":"n","kind":"PC"}""")
+        assertFalse(p.online); assertEquals(null, p.lastSeenMs)
+        val live = Peer("d", "n", DeviceKind.PC, online = true, lastSeenMs = 5)
+        assertEquals(live, MjolnirJson.decodeFromString<Peer>(MjolnirJson.encodeToString(Peer.serializer(), live)))
+    }
+
+    @Test fun presenceEventUsesItsSerialName() {
+        val e = RelayEvent.PresenceChanged("d", false, 7)
+        assertEquals("""{"type":"presence","deviceId":"d","online":false,"lastSeenMs":7}""", MjolnirJson.encodeToString(RelayEvent.serializer(), e))
+        assertEquals(e, MjolnirJson.decodeFromString(RelayEvent.serializer(), """{"type":"presence","deviceId":"d","online":false,"lastSeenMs":7}"""))
+        assertEquals(RelayEvent.PresenceChanged("d", true), MjolnirJson.decodeFromString(RelayEvent.serializer(), """{"type":"presence","deviceId":"d","online":true}"""))
     }
 }

@@ -1,6 +1,7 @@
 package app.mjolnir.server
 
 import app.mjolnir.protocol.ChatInvite
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.ChatSync
@@ -11,6 +12,7 @@ import app.mjolnir.protocol.ErrorResponse
 import app.mjolnir.protocol.InviteRequest
 import app.mjolnir.protocol.InviteState
 import app.mjolnir.protocol.Limits
+import app.mjolnir.protocol.MuteRequest
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.PostMessageRequest
 import app.mjolnir.protocol.ReadRequest
@@ -30,6 +32,7 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
 
 /**
  * After [deviceId] left [spaceId] (itself or removed by the admin): tells everyone who could see a changed or deleted chat,
@@ -50,6 +53,13 @@ fun emitLeftSpace(deps: RelayDeps, adminId: String, deviceId: String, chats: Lef
 }
 
 private suspend fun ApplicationCall.error(status: HttpStatusCode, code: String) = respond(status, ErrorResponse(code))
+
+/** Answers 409 `not_for_open_channels` and returns true for an open chat: its members follow the space, not invites. */
+private suspend fun ApplicationCall.refuseOpen(chat: ChatRow): Boolean {
+    if (chat.kind != ChatKind.OPEN) return false
+    error(HttpStatusCode.Conflict, "not_for_open_channels")
+    return true
+}
 
 private fun text(raw: String): String? =
     raw.takeIf { it.codePointCount(0, it.length) <= Limits.MAX_CHAT_TEXT_LENGTH }
@@ -89,6 +99,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
     fun summary(chat: ChatRow, me: String): ChatSummary = ChatSummary(
         chat.id, chat.spaceId, store.space(chat.spaceId)?.name.orEmpty(), chat.name, chat.ownerId, chat.rev,
         store.readRev(chat.id, me), store.isChatMember(chat.id, me), store.lastChatMessage(chat.id)?.toWire(),
+        chat.kind, store.isMuted(chat.id, me),
     )
 
     /** Answers with the chat's current summary, or 404 when it was deleted meanwhile. */
@@ -109,15 +120,15 @@ fun Route.chatRoutes(deps: RelayDeps) {
     }
 
     /**
-     * A message change: event to members and admin, doorbell to the members other than [actor]. The event to a member in
-     * [mentioned] says so, and its doorbell is rung whatever else is going on.
+     * A message change: event to members and admin, doorbell to the members other than [actor] who haven't muted the chat.
+     * The event to a member in [mentioned] says so, and its doorbell is rung whatever else is going on (mute included).
      */
     fun fanOut(chat: ChatRow, actor: String, mentioned: Set<String> = emptySet()) {
         val members = store.chatMembers(chat.id).map { it.id }
         val rev = store.chat(chat.id)?.rev ?: return
         val told = mentioned - actor
         audience(chat).forEach { deps.hub.emit(it, RelayEvent.ChatChanged(chat.id, rev, mentioned = it in told)) }
-        members.filter { it != actor }.forEach { deps.pingDevice(it) }
+        members.filter { it != actor && (it in mentioned || !store.isMuted(chat.id, it)) }.forEach { deps.pingDevice(it) }
     }
 
     /** The mentions as a list of distinct device ids, or null unless every one is a current member of [chat]. */
@@ -171,6 +182,20 @@ fun Route.chatRoutes(deps: RelayDeps) {
             call.respond(HttpStatusCode.Created, summary(chat, me))
         }
 
+        // A separate route, not a field on chat create: an older relay would ignore the field and make a private chat,
+        // but it answers this route with 404.
+        post("/v1/spaces/{id}/channels") {
+            val me = me(call)
+            val space = store.space(call.parameters["id"]!!)
+            if (space == null || store.members(space.id).none { it.id == me }) return@post call.error(HttpStatusCode.NotFound, "not_found")
+            val name = validSpaceName(call.receive<CreateChatRequest>().name)
+                ?: return@post call.error(HttpStatusCode.BadRequest, "invalid_name")
+            val chat = store.createChat(space.id, me, name, deps.clock.nowMs(), ChatKind.OPEN)
+                ?: return@post call.error(HttpStatusCode.NotFound, "not_found")
+            emitChanged(chat.id, audience(chat))
+            call.respond(HttpStatusCode.Created, summary(chat, me))
+        }
+
         patch("/v1/chats/{id}") {
             val a = call.access() ?: return@patch
             if (a.chat.ownerId != a.me && !a.isAdmin) return@patch call.error(HttpStatusCode.Forbidden, "not_owner")
@@ -193,10 +218,19 @@ fun Route.chatRoutes(deps: RelayDeps) {
             call.respond(HttpStatusCode.NoContent)
         }
 
+        put("/v1/chats/{id}/mute") {
+            val a = call.access() ?: return@put
+            if (!a.isMember) return@put call.error(HttpStatusCode.Conflict, "not_member")
+            val muted = call.receive<MuteRequest>().muted
+            if (!store.setMuted(a.chat.id, a.me, muted)) return@put call.error(HttpStatusCode.NotFound, "not_found")
+            call.respondChat(a.chat.id, a.me)
+        }
+
         // ---- Invites ----
 
         post("/v1/chats/{id}/invites") {
             val a = call.access() ?: return@post
+            if (call.refuseOpen(a.chat)) return@post
             if (!a.isMember) return@post call.error(HttpStatusCode.Forbidden, "not_member")
             val invitee = call.receive<InviteRequest>().deviceId
             if (store.members(a.chat.spaceId).none { it.id == invitee }) return@post call.error(HttpStatusCode.BadRequest, "not_in_space")
@@ -248,6 +282,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
 
         post("/v1/chats/{id}/owner") {
             val a = call.access() ?: return@post
+            if (call.refuseOpen(a.chat)) return@post
             if (a.chat.ownerId != a.me) return@post call.error(HttpStatusCode.Forbidden, "not_owner")
             val target = call.receive<TransferOwnerRequest>().deviceId
             if (target == a.me) return@post call.error(HttpStatusCode.BadRequest, "already_owner")
@@ -260,6 +295,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
 
         delete("/v1/chats/{id}/members/{deviceId}") {
             val a = call.access() ?: return@delete
+            if (call.refuseOpen(a.chat)) return@delete
             val target = call.parameters["deviceId"]!!
             val self = target == a.me
             // Removing someone else is moderation: the relay checks the space admin here, the store trusts it.
@@ -285,6 +321,7 @@ fun Route.chatRoutes(deps: RelayDeps) {
 
         post("/v1/chats/{id}/join") {
             val a = call.access() ?: return@post
+            if (call.refuseOpen(a.chat)) return@post
             if (!a.isAdmin) return@post call.error(HttpStatusCode.Forbidden, "not_admin")
             if (a.isMember) return@post call.error(HttpStatusCode.Conflict, "already_member")
             if (!store.addChatMember(a.chat.id, a.me, deps.clock.nowMs())) return@post call.error(HttpStatusCode.NotFound, "not_found")

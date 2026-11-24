@@ -24,7 +24,15 @@ object DeviceKindSerializer : KSerializer<DeviceKind> {
 }
 @Serializable data class Tab(val url: String, val title: String? = null)
 @Serializable data class SpaceRef(val id: String, val name: String)
-@Serializable data class Peer(val deviceId: String, val name: String, val kind: DeviceKind, val space: SpaceRef? = null)
+/** [online] and [lastSeenMs] are filled only in [Space.members]; every other Peer keeps the defaults. */
+@Serializable data class Peer(
+    val deviceId: String,
+    val name: String,
+    val kind: DeviceKind,
+    val space: SpaceRef? = null,
+    val online: Boolean = false,
+    val lastSeenMs: Long? = null,
+)
 @Serializable data class RegisterRequest(val name: String, val kind: DeviceKind)
 @Serializable data class RegisterResponse(val deviceId: String, val token: String)
 @Serializable data class RenameRequest(val name: String)
@@ -240,6 +248,12 @@ sealed interface RelayEvent {
     @Serializable @SerialName("room_ended") data class RoomEnded(val roomId: String) : RelayEvent
     /** Sent to the sender when the guest has been served the last byte of these files of [deliveryId]. */
     @Serializable @SerialName("downloaded") data class Downloaded(val deliveryId: String, val fileIds: List<String>) : RelayEvent
+
+    /**
+     * Sent to the devices sharing a space with [deviceId] when it connects ([online]) or, after a grace period with no
+     * connection left, goes offline; [lastSeenMs] is then when it was last seen.
+     */
+    @Serializable @SerialName("presence") data class PresenceChanged(val deviceId: String, val online: Boolean, val lastSeenMs: Long? = null) : RelayEvent
 
     /** Sent once on connect when the app's version is older than the relay's; [version] is the relay's. */
     @Serializable @SerialName("update_available") data class UpdateAvailable(val version: String) : RelayEvent

@@ -99,6 +99,22 @@ class ChatStoreTest {
         assertTrue(after.ownerId != b.id)
     }
 
+    @Test fun openChatTenureFollowsTheSpace() {
+        // Ids sort against join order, so a tie on joined_at would pick the wrong next owner.
+        val a = store.createDevice("a", DeviceKind.PC, "hash-za", 1000L, id = "z-a")
+        val b = store.createDevice("b", DeviceKind.PC, "hash-yb", 1000L, id = "y-b")
+        val c = store.createDevice("c", DeviceKind.PC, "hash-xc", 1000L, id = "x-c")
+        val s = space(a, b, c) // joined at 10, 20, 30
+        val games = store.createChat(s.id, c.id, "games", 100, ChatKind.OPEN)!!
+        assertEquals(listOf(a.id, b.id, c.id), store.chatMembers(games.id).map { it.id })
+        store.removeMember(s.id, c.id, c.id, 300)
+        assertEquals(a.id, store.chat(games.id)!!.ownerId)
+        // A later joiner of the space comes after them, at its join time.
+        val d = store.createDevice("d", DeviceKind.PC, "hash-wd", 1000L, id = "w-d")
+        store.addMember(s.id, d.id, 400)
+        assertEquals(listOf(a.id, b.id, d.id), store.chatMembers(games.id).map { it.id })
+    }
+
     @Test fun muteIsPerMember() {
         val a = device(); val b = device(); val c = device()
         val s = space(a, b, c)

@@ -524,4 +524,40 @@ class SpaceRoutesTest {
         }
         assertEquals(HttpStatusCode.BadRequest, r.status); assertEquals("invalid_name", r.body<ErrorResponse>().error)
     }
+
+    @Test fun joinerGetsOpenChatEvents() = relayTest {
+        val a = register("A"); val b = register("B")
+        val s = createSpace(a)
+        val general = store.openChatsIn(s.id).single()
+        assertEquals("general", general.name)
+        withEvents(a) { val ea = this; withEvents(b) { val eb = this
+            join(a, s, b)
+            val rev = store.chat(general.id)!!.rev
+            assertEquals(RelayEvent.SpaceChanged(s.id), eb.next())
+            assertEquals(RelayEvent.ChatChanged(general.id, rev), eb.next())
+            assertIs<RelayEvent.PairRequested>(ea.next())
+            assertEquals(RelayEvent.SpaceChanged(s.id), ea.next())
+            assertEquals(RelayEvent.ChatChanged(general.id, rev), ea.next())
+        } }
+        val listed = client.get("/v1/spaces/${s.id}/chats") { bearerAuth(b.token) }.body<List<ChatSummary>>().single()
+        assertEquals(general.id, listed.id); assertEquals(ChatKind.OPEN, listed.kind); assertTrue(listed.member)
+    }
+
+    @Test fun relayStartBackfillsGeneral() {
+        val file = kotlin.io.path.createTempDirectory().resolve("pre.db").toString()
+        val st = Store("jdbc:sqlite:$file")
+        val a = st.createDevice("A", DeviceKind.PC, sha256Hex("tok-a"), 1000L)
+        // A space from before open channels: no chats, default channel not made yet.
+        java.sql.DriverManager.getConnection("jdbc:sqlite:$file").use { c ->
+            c.createStatement().use {
+                it.executeUpdate("INSERT INTO spaces(id,name,admin_id,created_at) VALUES('old','Old','${a.id}',5)")
+                it.executeUpdate("INSERT INTO space_members(space_id,device_id,joined_at) VALUES('old','${a.id}',5)")
+            }
+        }
+        relayTest(store = st) {
+            val listed = client.get("/v1/spaces/old/chats") { bearerAuth("tok-a") }.body<List<ChatSummary>>()
+            assertEquals(listOf("general"), listed.map { it.name })
+            assertEquals(ChatKind.OPEN, listed.single().kind)
+        }
+    }
 }

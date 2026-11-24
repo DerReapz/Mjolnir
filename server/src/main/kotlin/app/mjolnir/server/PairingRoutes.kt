@@ -116,6 +116,11 @@ fun Route.pairingRoutes(deps: RelayDeps) {
                     val row = store.pairing(id)!!
                     if (row.kind == CodeKind.SPACE_INVITE) {
                         emitSpaceChanged(deps, row.spaceId!!)
+                        // The joiner is now in every open chat; the MemberJoined entry moved each one's rev for all its members.
+                        for (chat in store.openChatsIn(row.spaceId)) {
+                            val rev = store.chat(chat.id)?.rev ?: continue
+                            store.chatMembers(chat.id).forEach { hub.emit(it.id, RelayEvent.ChatChanged(chat.id, rev)) }
+                        }
                     } else {
                         val owner = store.device(row.ownerId) ?: return@post call.notFound()
                         val claimer = store.device(row.claimerId!!) ?: return@post call.notFound()
@@ -167,7 +172,9 @@ fun Route.pairingRoutes(deps: RelayDeps) {
         webSocket("/v1/ws") {
             val me = call.me()
             val sink = WebSocketSink(this)
-            hub.add(me.deviceId, sink)
+            // Presence is for devices sharing a space; a guest shares none.
+            val tracked = me.kind != DeviceKind.GUEST
+            if (hub.add(me.deviceId, sink) && tracked) deps.onConnected(me.deviceId)
             // An app older than this relay learns it once on connect; no header (the guest page) means nothing.
             call.request.headers[APP_VERSION_HEADER]?.takeIf { Versions.isNewer(deps.version, it) }
                 ?.let { send(Frame.Text(MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.UpdateAvailable(deps.version)))) }
@@ -187,6 +194,7 @@ fun Route.pairingRoutes(deps: RelayDeps) {
             } finally {
                 heartbeat.cancel()
                 hub.remove(me.deviceId, sink)
+                if (tracked) deps.onDisconnected(me.deviceId)
             }
         }
     }

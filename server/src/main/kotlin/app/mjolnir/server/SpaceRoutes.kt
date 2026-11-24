@@ -30,9 +30,13 @@ fun SpaceRow.toRef() = SpaceRef(id, name)
 fun RelayDeps.adminSilent(adminId: String): Boolean =
     !hub.isConnected(adminId) && clock.nowMs() - store.lastSeen(adminId) > Limits.ADMIN_SILENT_TAKEOVER_MS
 
-/** The wire view of [row]: its members and whether its admin is silent. */
-fun RelayDeps.spaceView(row: SpaceRow): Space =
-    Space(row.id, row.name, row.adminId, store.members(row.id).map { it.toPeer() }, adminSilent(row.adminId))
+/** The wire view of [row]: its members with their presence, and whether its admin is silent. */
+fun RelayDeps.spaceView(row: SpaceRow): Space {
+    val members = store.members(row.id).map {
+        it.toPeer().copy(online = hub.isConnected(it.id), lastSeenMs = store.lastSeen(it.id).takeIf { ms -> ms > 0 })
+    }
+    return Space(row.id, row.name, row.adminId, members, adminSilent(row.adminId))
+}
 
 /** Trimmed name, or null when empty, too long or containing control characters (device names have no such rule; this one is stricter). */
 internal fun validSpaceName(raw: String): String? =

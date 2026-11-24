@@ -566,7 +566,11 @@ class Store(jdbcUrl: String) {
         }
         val joined = mutableListOf<String>()
         for (chat in openChatsIn(spaceId)) {
-            if (update("INSERT OR IGNORE INTO chat_members(chat_id,device_id,joined_at) VALUES(?,?,?)", chat.id, deviceId, nowMs) > 0) {
+            val added = update(
+                "INSERT OR IGNORE INTO chat_members(chat_id,device_id,joined_at) SELECT ?, device_id, joined_at FROM space_members WHERE space_id=? AND device_id=?",
+                chat.id, spaceId, deviceId,
+            )
+            if (added > 0) {
                 recordEvent(chat.id, deviceId, ChatEvent.MemberJoined(deviceId), nowMs)
                 joined += chat.id
             }
@@ -657,13 +661,15 @@ class Store(jdbcUrl: String) {
         if (!isSpaceMember(spaceId, ownerId)) return@transaction null
         val row = ChatRow(newId(), spaceId, name, ownerId, nowMs, 0, kind)
         update("INSERT INTO chats(id,space_id,name,owner_id,created_at,rev,kind) VALUES(?,?,?,?,?,0,?)", row.id, spaceId, name, ownerId, nowMs, kind.name)
-        update("INSERT INTO chat_members(chat_id,device_id,joined_at) VALUES(?,?,?)", row.id, ownerId, nowMs)
-        // An open chat holds the whole space, silently: nobody "joined" it, it was there when they looked.
         if (kind == ChatKind.OPEN) {
+            // An open chat holds the whole space, silently: nobody "joined" it, it was there when they looked. Each member's
+            // tenure is its time in the space (the creator's too), so owner hand-off follows who has been there longest.
             update(
-                "INSERT OR IGNORE INTO chat_members(chat_id,device_id,joined_at) SELECT ?, device_id, ? FROM space_members WHERE space_id=?",
-                row.id, nowMs, spaceId,
+                "INSERT OR IGNORE INTO chat_members(chat_id,device_id,joined_at) SELECT ?, device_id, joined_at FROM space_members WHERE space_id=?",
+                row.id, spaceId,
             )
+        } else {
+            update("INSERT INTO chat_members(chat_id,device_id,joined_at) VALUES(?,?,?)", row.id, ownerId, nowMs)
         }
         row
     }
@@ -1154,6 +1160,12 @@ class Store(jdbcUrl: String) {
         conn.prepareStatement("UPDATE devices SET last_seen=? WHERE id=? AND ?-last_seen>60000").use {
             it.setLong(1, nowMs); it.setString(2, deviceId); it.setLong(3, nowMs); it.executeUpdate()
         }
+    }
+
+    /** Writes [nowMs] unthrottled (a connection just closed, so presence reports the exact time). */
+    @Synchronized
+    fun setLastSeen(deviceId: String, nowMs: Long) {
+        update("UPDATE devices SET last_seen=? WHERE id=?", nowMs, deviceId)
     }
 
     @Synchronized

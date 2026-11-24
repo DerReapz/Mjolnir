@@ -52,6 +52,7 @@ class CatchService(
                 is RelayEvent.Downloaded -> onGuestRoomEvent(event)
                 is RelayEvent.UpdateAvailable -> onUpdateAvailable(event.version)
                 is RelayEvent.ChatChanged, is RelayEvent.ChatDeleted, is RelayEvent.ChatInvitesChanged -> onChatEvent(event)
+                is RelayEvent.PresenceChanged -> Unit // not shown yet
             }
         }
     }

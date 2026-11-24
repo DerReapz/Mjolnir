@@ -21,8 +21,11 @@ import java.util.concurrent.CopyOnWriteArraySet
 internal class Registry<T : Any> {
     private val map = ConcurrentHashMap<String, CopyOnWriteArraySet<T>>()
 
-    fun add(key: String, item: T) {
-        map.compute(key) { _, s -> (s ?: CopyOnWriteArraySet()).apply { add(item) } }
+    /** Adds [item]; true when [key] had no items before (checked atomically with the add). */
+    fun add(key: String, item: T): Boolean {
+        var first = false
+        map.compute(key) { _, s -> first = s.isNullOrEmpty(); (s ?: CopyOnWriteArraySet()).apply { add(item) } }
+        return first
     }
 
     fun remove(key: String, item: T) {
@@ -65,7 +68,8 @@ class SessionHub(
     private val registry = Registry<EventSink>()
     private val queues = ConcurrentHashMap<String, Channel<String>>()
 
-    fun add(deviceId: String, sink: EventSink) = registry.add(deviceId, sink)
+    /** Registers [sink]; true when it is the device's only open stream (the device just came online). */
+    fun add(deviceId: String, sink: EventSink): Boolean = registry.add(deviceId, sink)
 
     fun remove(deviceId: String, sink: EventSink) = registry.remove(deviceId, sink)
 
