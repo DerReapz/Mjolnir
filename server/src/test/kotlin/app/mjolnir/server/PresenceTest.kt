@@ -144,30 +144,44 @@ class PresenceTest {
      * The hook pauses the fired check (after it found the device gone) while another thread reconnects; the reconnect's
      * online report must wait for the offline one instead of slipping in before it.
      */
-    @Test fun lateOfflineCheckNeverOverridesAFreshOnline() = relayTest(presenceGraceMs = 200) {
+    @Test fun lateOfflineCheckNeverOverridesAFreshOnline() = relayTest(presenceGraceMs = 1_000) {
         val a = register("A"); val b = register("B")
         spaceWith(a, b)
         val sink = object : EventSink {
             override suspend fun sendText(text: String) {}
             override fun abort() {}
         }
+        // Installed before B ever connects: the race runs whenever the check fires, however long this thread stalls.
+        val raced = java.util.concurrent.atomic.AtomicBoolean(false)
+        deps.presence.beforeOfflineReport = { id ->
+            if (id == b.deviceId && raced.compareAndSet(false, true)) {
+                val reconnect = Thread { if (deps.hub.add(id, sink)) deps.onConnected(id) }
+                reconnect.start()
+                reconnect.join(500) // without the lock it finishes here, reporting online before the offline below
+            }
+        }
         withEvents(a, presence = true) {
             withEvents(b) {}
             assertEquals(RelayEvent.PresenceChanged(b.deviceId, true), next())
-            var raced = false
-            deps.presence.beforeOfflineReport = { id ->
-                if (!raced) {
-                    raced = true
-                    val reconnect = Thread { if (deps.hub.add(id, sink)) deps.onConnected(id) }
-                    reconnect.start()
-                    reconnect.join(500) // without the lock it finishes here, reporting online before the offline below
-                }
-            }
             assertEquals(RelayEvent.PresenceChanged(b.deviceId, false, clock.now), next())
             assertEquals(RelayEvent.PresenceChanged(b.deviceId, true), next())
-            assertTrue(raced)
+            assertTrue(raced.get())
             assertTrue(deps.hub.isConnected(b.deviceId))
             deps.hub.remove(b.deviceId, sink)
+        }
+    }
+
+    /** Within the grace a device that just dropped is still online in the member list, as its co-members were told. */
+    @Test fun membersStayOnlineUntilTheOfflineReport() = relayTest(presenceGraceMs = GRACE) {
+        val a = register("A"); val b = register("B")
+        val s = spaceWith(a, b)
+        withEvents(a, presence = true) {
+            withEvents(b) {}
+            withTimeout(5_000) { while (deps.hub.isConnected(b.deviceId)) delay(10) } // the relay saw the close
+            assertTrue(members(a, s.id).single { it.deviceId == b.deviceId }.online) // the offline report is still pending
+            assertEquals(RelayEvent.PresenceChanged(b.deviceId, true), next())
+            assertEquals(RelayEvent.PresenceChanged(b.deviceId, false, clock.now), next())
+            assertFalse(members(a, s.id).single { it.deviceId == b.deviceId }.online)
         }
     }
 }

@@ -19,6 +19,9 @@ class PresenceWatch {
     @Volatile internal var beforeOfflineReport: (String) -> Unit = {}
 
     internal fun lockFor(deviceId: String): Any = locks[Math.floorMod(deviceId.hashCode(), locks.size)]
+
+    /** True while [deviceId]'s offline report waits out the grace: its co-members still have it as online. */
+    fun offlinePending(deviceId: String): Boolean = pending.containsKey(deviceId)
 }
 
 /** The devices that share any space with [deviceId], without itself: the only ones told about its presence. */
@@ -51,6 +54,7 @@ fun RelayDeps.onDisconnected(deviceId: String) {
             delay(presenceGraceMs)
             synchronized(presence.lockFor(deviceId)) {
                 if (!hub.isConnected(deviceId)) {
+                    presence.pending.remove(deviceId, job) // from here on a member list says offline too
                     presence.beforeOfflineReport(deviceId)
                     emitPresence(RelayEvent.PresenceChanged(deviceId, false, store.lastSeen(deviceId)))
                 }
