@@ -45,6 +45,7 @@ import app.mjolnir.client.Platform
 import app.mjolnir.client.Updater
 import app.mjolnir.client.newMjolnirHttpClient
 import app.mjolnir.android.update.ApkInstaller
+import app.mjolnir.android.update.StartCheckGate
 import app.mjolnir.android.update.UpdateFlow
 import app.mjolnir.android.update.forwardingUpdates
 import kotlinx.coroutines.Job
@@ -82,7 +83,8 @@ class MjolnirApp : Application() {
         resumeChatSendsOnNetwork()
         appScope.launch {
             container.updater.cleanOld() // an APK left by an earlier run (the update it installed, or one never installed)
-            container.updater.start() // checks now and every 6 hours; installs only when the user taps Install
+            // Checks now (unless a start in the last hour did) and every 6 hours; installs only when the user taps Install.
+            container.updater.start(checkNow = container.startCheckGate.checkNow())
         }
         // Throws still in the outbox (e.g. after a force-stop or reboot) get their work back; KEEP leaves running
         // or waiting work alone.
@@ -144,6 +146,9 @@ class AppContainer(context: Context) {
     val updater = Updater(
         newMjolnirHttpClient(), Platform.ANDROID_APK, BuildConfig.VERSION_NAME, File(appContext.cacheDir, "updates"), updateScope,
     )
+
+    /** Keeps frequent process starts from spending GitHub's 60 checks an hour. */
+    val startCheckGate = StartCheckGate(File(filesDir, "update-check.txt"))
 
     /** Talks to the relay at the current `relayUrl`; the client is rebuilt when the URL changes and reads the token live. */
     val api: RelayApi = SwitchingRelayApi(::currentClient)

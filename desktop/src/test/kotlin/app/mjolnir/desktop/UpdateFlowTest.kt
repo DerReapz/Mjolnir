@@ -154,7 +154,16 @@ class UpdateFlowTest {
         assertEquals(File(File(dir, "updates"), "Mjolnir-1.0.9.msi"), file)
         assertTrue(file.readBytes().contentEquals(releases.msi))
         assertEquals(listOf("launch", "exit"), events)
-        assertEquals(listOf("msiexec", "/i", file.absolutePath, "/passive", "/norestart"), msiexecCommand(file))
+        assertEquals(listOf(File("C:\\Windows", "System32\\msiexec.exe").path, "/i", file.absolutePath, "/passive", "/norestart"), msiexecCommand(file, systemRoot = null))
+    }
+
+    @Test fun msiexecIsTheSystemsOwnWithItsOutputDiscarded() {
+        val msi = File(dir, "Mjolnir-1.0.9.msi")
+        val process = msiexecProcess(msi, systemRoot = "D:\\Win")
+        // Never a msiexec.exe found on PATH or in the working directory.
+        assertEquals(listOf(File("D:\\Win", "System32\\msiexec.exe").path, "/i", msi.absolutePath, "/passive", "/norestart"), process.command())
+        assertEquals(ProcessBuilder.Redirect.DISCARD, process.redirectOutput())
+        assertEquals(ProcessBuilder.Redirect.DISCARD, process.redirectError())
     }
 
     @Test fun launchFailureShowsFailed() {
