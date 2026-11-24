@@ -5,11 +5,12 @@ on:
 # Read-only unless a job asks for more (release does).
 permissions:
   contents: read
-# One run per branch at a time. On main a newer push cancels the older run, so an older version can't be released after a
-# newer one (the release job also checks).
+# One run per branch at a time; a newer push waits for the older run instead of cancelling it, so a release is never
+# stopped halfway (missing assets or a pushed version tag without :latest). The release job's guard still makes sure an
+# older version never becomes the latest release or the relay's :latest image.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+  cancel-in-progress: false
 jobs:
   test:
     runs-on: ubuntu-latest
