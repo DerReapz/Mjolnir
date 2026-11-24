@@ -750,6 +750,11 @@ class ChatControllerTest {
         media = ChatMediaCache(File(mediaDir, "cache")),
     ) { "dev-1" }
 
+    /** Polls [done] in real time (sends finish on IO threads, which virtual time can't wait for); fails after [timeoutMs]. */
+    private suspend fun awaitUntil(timeoutMs: Long = 5_000, done: () -> Boolean) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+        kotlinx.coroutines.withTimeout(timeoutMs) { while (!done()) kotlinx.coroutines.delay(10) }
+    }
+
     private fun pick(name: String, size: Int): File = File(picked, name).apply { parentFile.mkdirs(); writeBytes(ByteArray(size) { (it * 5 + name.length).toByte() }) }
 
     private fun pickPng(name: String, w: Int = 40, h: Int = 30): File = File(picked, name).apply {
@@ -1016,10 +1021,12 @@ class ChatControllerTest {
             }
         }
         val c = mediaController(api)
-        val notices = mutableListOf<String>()
+        // The sends finish on an IO thread, so the notices land there and each step waits (in real time) for its outcome.
+        val notices = java.util.concurrent.CopyOnWriteArrayList<String>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { c.sendNotices.collect { notices += it } }
         c.send(chat, "look", listOf(pick("a.bin", 3), pick("huge.mov", 9), pick("b.bin", 3)), ImageIoThumbnailer)
         c.awaitSendsIdle()
+        awaitUntil { notices.size >= 1 && c.pendingSends.value.isEmpty() && c.messages(chat).value.any { it.author.deviceId == "dev-1" } }
         val posted = c.messages(chat).value.single { it.author.deviceId == "dev-1" }
         assertEquals("look", posted.text)
         assertEquals(listOf("a.bin", "b.bin"), posted.attachments.map { it.name })
@@ -1028,12 +1035,14 @@ class ChatControllerTest {
         // Only that file and no text: nothing is posted, the send just goes.
         c.send(chat, null, listOf(pick("huge2.bin", 9)), ImageIoThumbnailer)
         c.awaitSendsIdle()
+        awaitUntil { notices.size >= 2 && c.pendingSends.value.isEmpty() }
         assertEquals(1, fake.postCalls)
         assertTrue(c.pendingSends.value.isEmpty())
         assertEquals(listOf("huge.mov is too big for the relay", "huge2.bin is too big for the relay"), notices)
         // Several in one send are named together, so no notice hides another.
         c.send(chat, null, listOf(pick("huge3.mov", 9), pick("c.bin", 3), pick("huge4.mov", 9)), ImageIoThumbnailer)
         c.awaitSendsIdle()
+        awaitUntil { notices.size >= 3 && c.pendingSends.value.isEmpty() }
         assertEquals("huge3.mov, huge4.mov are too big for the relay", notices.last())
         assertEquals(3, notices.size)
     }
