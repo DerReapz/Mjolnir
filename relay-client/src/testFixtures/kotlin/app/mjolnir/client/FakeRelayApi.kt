@@ -197,9 +197,9 @@ class FakeRelayApi : RelayApi {
     var failSyncOnCall: Int? by chatState::failSyncOnCall
     var failSeen: Boolean by chatState::failSeen
 
-    /** Test setup: a chat in [spaceId] (rev 0) owned by [owner] with [members] (the owner is always one); returns its id. */
     /** Test setup: an open channel of [spaceId] created by [owner]; everyone in the space is in it. */
     fun addChannel(spaceId: String, name: String, owner: Peer = me): String = chatState.addChannel(spaceId, name, owner)
+    /** Test setup: a chat in [spaceId] (rev 0) owned by [owner] with [members] (the owner is always one); returns its id. */
     fun addChat(spaceId: String, name: String, owner: Peer = me, members: List<Peer> = listOf(owner)): String = chatState.add(spaceId, name, owner, members)
     /** Test setup: [author] posts to [chatId] as someone other than the viewer. */
     fun incoming(chatId: String, author: Peer, text: String?, mentions: List<String> = emptyList(), attachments: List<Attachment> = emptyList()): ChatMessage =

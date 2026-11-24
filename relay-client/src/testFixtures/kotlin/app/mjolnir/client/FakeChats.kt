@@ -74,7 +74,10 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
 
     private fun inSpace(spaceId: String, id: String) = api.spaceList.any { s -> s.id == spaceId && s.members.any { it.deviceId == id } }
     private fun adminOf(chat: Chat) = api.spaceList.firstOrNull { it.id == chat.spaceId }?.adminId
-    private fun isMember(chat: Chat, id: String) = chat.members.any { it.deviceId == id }
+    /** A private chat's members; an open channel's are the space's current members. */
+    private fun membersOf(chat: Chat): List<Peer> =
+        if (chat.kind == ChatKind.OPEN) api.spaceList.firstOrNull { it.id == chat.spaceId }?.members.orEmpty() else chat.members
+    private fun isMember(chat: Chat, id: String) = membersOf(chat).any { it.deviceId == id }
 
     private class Access(val chat: Chat, val isAdmin: Boolean, val isMember: Boolean)
 
@@ -104,7 +107,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     private fun mentionsOf(chat: Chat, ids: List<String>): List<String> =
         ids.distinct().also { l -> if (l.any { !isMember(chat, it) }) throw err(RelayErrorKind.INVALID, "invalid_mention") }
 
-    private fun receiptsOf(chat: Chat) = chat.members.map {
+    private fun receiptsOf(chat: Chat) = membersOf(chat).map {
         val id = it.deviceId
         Receipt(id, maxOf(chat.seenRevs[id] ?: 0, chat.readRevs[id] ?: 0), chat.readRevs[id] ?: 0, chat.seenAt[id], chat.readAt[id])
     }
@@ -218,7 +221,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         val a = access(chatId)
         val msg = a.chat.messages.firstOrNull { it.id == msgId && it.event == null } ?: throw notFound
         fun first(id: String, kind: String) = marks[chatId].orEmpty().filter { it.deviceId == id && it.kind == kind && it.rev >= (msg.createdRev ?: msg.rev) }.minOfOrNull { it.at }
-        return a.chat.members.map { MessageReceipt(it.deviceId, first(it.deviceId, "seen"), first(it.deviceId, "read")) }
+        return membersOf(a.chat).map { MessageReceipt(it.deviceId, first(it.deviceId, "seen"), first(it.deviceId, "read")) }
     }
 
     fun seenRev(chatId: String): Long = chats.getValue(chatId).seenRevs[meId] ?: 0
@@ -227,7 +230,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
     internal fun onLeftSpace(spaceId: String, deviceId: String) {
         chats.values.filter { it.spaceId == spaceId }.toList().forEach { chat ->
             invites.removeAll { it.chatId == chat.id && (it.inviteeId == deviceId || it.inviterId == deviceId) }
-            if (isMember(chat, deviceId)) removeInternal(chat, deviceId, actor = deviceId, removed = false, forced = true)
+            if (chat.kind == ChatKind.PRIVATE && isMember(chat, deviceId)) removeInternal(chat, deviceId, actor = deviceId, removed = false, forced = true)
         }
     }
 
@@ -381,7 +384,7 @@ class FakeChats internal constructor(private val api: FakeRelayApi) {
         syncCalls += chatId to sinceRev
         if (syncCalls.size == failSyncOnCall) throw err(RelayErrorKind.NETWORK, "down")
         val rows = a.chat.messages.filter { it.rev > sinceRev }.sortedBy { it.rev }
-        return ChatSync(chatId, a.chat.rev, a.chat.ownerId, a.chat.members.toList(), rows.take(PAGE), rows.size > PAGE, receiptsOf(a.chat))
+        return ChatSync(chatId, a.chat.rev, a.chat.ownerId, membersOf(a.chat).toList(), rows.take(PAGE), rows.size > PAGE, receiptsOf(a.chat))
     }
 
     private fun text(raw: String): String {

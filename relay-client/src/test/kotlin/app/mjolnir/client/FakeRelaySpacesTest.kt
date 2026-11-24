@@ -44,4 +44,16 @@ class FakeRelaySpacesTest {
         api.asMemberOf("s2", sam, adminSilent = true)
         assertEquals(api.me.deviceId, api.takeOverAdmin("s2").adminId)
     }
+
+    @Test fun openChannelMembershipFollowsTheSpace() = runTest {
+        val api = FakeRelayApi()
+        val space = api.createSpace("Friends")
+        val channel = api.addChannel(space.id, "games")
+        assertEquals(setOf(api.me.deviceId), api.syncChat(channel, 0).members.map { it.deviceId }.toSet())
+        api.addMember(space.id, sam) // joins the space after the channel was made
+        assertEquals(setOf(api.me.deviceId, "sam"), api.syncChat(channel, 0).members.map { it.deviceId }.toSet())
+        assertTrue(api.chats(space.id).single().member)
+        api.removeMember(space.id, "sam")
+        assertEquals(setOf(api.me.deviceId), api.syncChat(channel, 0).members.map { it.deviceId }.toSet())
+    }
 }
