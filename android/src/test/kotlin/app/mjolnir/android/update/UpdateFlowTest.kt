@@ -286,17 +286,6 @@ class UpdateFlowTest {
         assertEquals(listOf(1, 2), install.sessionIds)
     }
 
-    @Test fun relayNewerThanTheAppTriggersACheck() {
-        val releases = FakeReleases()
-        val updater = Updater(releases.client(), Platform.ANDROID_APK, "1.0.5", File(temp.root, "updates"), scope)
-        forwardRelayVersion(updater, "1.0.5", "1.0.5")
-        forwardRelayVersion(updater, "1.0.5", "1.0.3")
-        assertTrue(releases.requests.isEmpty()) // a relay as old as (or older than) the app means no new release
-        assertTrue(updater.relayTooOld.value)
-        forwardRelayVersion(updater, "1.0.5", "1.0.9")
-        assertEquals(UpdateState.Available("1.0.9"), await { updater.state.first { it is UpdateState.Available } })
-    }
-
     @Test fun updateAvailableFromAnEventStreamReachesTheUpdater() {
         val updater = Updater(FakeReleases().client(), Platform.ANDROID_APK, "1.0.5", File(temp.root, "updates"), scope)
         val passed = await { flowOf(RelayEvent.Connected, RelayEvent.UpdateAvailable("1.0.9")).forwardingUpdates(updater).toList() }

@@ -70,7 +70,7 @@ class Updater(
     val state: StateFlow<UpdateState> = _state.asStateFlow()
 
     private val _relayTooOld = MutableStateFlow(false)
-    /** True once the relay reported a version lower than this app's; never cleared within a session. */
+    /** True while the current relay's version is lower than this app's; follows the relay (updated or switched: cleared). */
     val relayTooOld: StateFlow<Boolean> = _relayTooOld.asStateFlow()
 
     /** The release behind the current [UpdateState.Available] (and any download of it). */
@@ -80,11 +80,15 @@ class Updater(
     private val downloadLock = Mutex()
     @Volatile private var lastPushCheckAt: Long? = null
 
-    /** Checks now, then every [CHECK_INTERVAL_MS]. A second call does nothing. */
-    fun start() {
+    /**
+     * Checks now (or, with [checkNow] false, first after one interval), then every [CHECK_INTERVAL_MS]. A second call
+     * does nothing.
+     */
+    fun start(checkNow: Boolean = true) {
         synchronized(this) {
             if (schedule?.isActive == true) return
             schedule = scope.launch {
+                if (!checkNow) delay(CHECK_INTERVAL_MS)
                 while (true) {
                     check()
                     delay(CHECK_INTERVAL_MS)
@@ -112,9 +116,15 @@ class Updater(
         scope.launch { check() }
     }
 
-    /** The relay's version from a response header; a relay older than this app sets [relayTooOld]. */
+    /**
+     * The relay's version from a response header. [relayTooOld] follows it (a relay older than this app sets it, a
+     * current one clears it), and a relay newer than this app means a release is out: [onUpdateAvailable] checks for it
+     * (throttled as a push). An unreadable version changes nothing.
+     */
     fun onRelayVersion(version: String) {
-        if (Versions.isNewer(currentVersion, version)) _relayTooOld.value = true
+        Versions.parse(version) ?: return
+        _relayTooOld.value = Versions.isNewer(currentVersion, version)
+        if (Versions.isNewer(version, currentVersion)) onUpdateAvailable(version)
     }
 
     /**

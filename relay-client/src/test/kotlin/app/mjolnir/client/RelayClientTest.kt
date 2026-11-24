@@ -1,5 +1,6 @@
 package app.mjolnir.client
 
+import app.mjolnir.protocol.APP_VERSION_HEADER
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.PairingCode
 import app.mjolnir.protocol.PairingState
@@ -33,9 +34,12 @@ class RelayClientTest {
         var token: String? = "tok-9"
         val client = RelayClient.create("https://relay.example/", "1.0.0") { token }
         client.use {
-            assertEquals(FileRequest("https://relay.example/v1/files/f1", mapOf("Authorization" to "Bearer tok-9")), it.chatFileRequest("f1"))
-            token = null // read live: no token, no header
-            assertEquals(FileRequest("https://relay.example/v1/files/f1", emptyMap()), it.chatFileRequest("f1"))
+            assertEquals(
+                FileRequest("https://relay.example/v1/files/f1", mapOf(APP_VERSION_HEADER to "1.0.0", "Authorization" to "Bearer tok-9")),
+                it.chatFileRequest("f1"),
+            )
+            token = null // read live: no token, no bearer; the app's version still goes
+            assertEquals(FileRequest("https://relay.example/v1/files/f1", mapOf(APP_VERSION_HEADER to "1.0.0")), it.chatFileRequest("f1"))
         }
     }
 

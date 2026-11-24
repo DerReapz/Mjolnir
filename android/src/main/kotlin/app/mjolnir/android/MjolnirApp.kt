@@ -46,7 +46,6 @@ import app.mjolnir.client.Updater
 import app.mjolnir.client.newMjolnirHttpClient
 import app.mjolnir.android.update.ApkInstaller
 import app.mjolnir.android.update.UpdateFlow
-import app.mjolnir.android.update.forwardRelayVersion
 import app.mjolnir.android.update.forwardingUpdates
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.filterNotNull
@@ -290,9 +289,7 @@ class AppContainer(context: Context) {
             // The relay's version header (any response): a relay older than the app is flagged, a newer one means an
             // update is out (ruling UP-R3: no socket of its own for the relay's UpdateAvailable push).
             relayVersionJob?.cancel()
-            relayVersionJob = updateScope.launch {
-                c.relayVersion.filterNotNull().collect { forwardRelayVersion(updater, BuildConfig.VERSION_NAME, it) }
-            }
+            relayVersionJob = updateScope.launch { c.relayVersion.filterNotNull().collect(updater::onRelayVersion) }
         }
     }
 

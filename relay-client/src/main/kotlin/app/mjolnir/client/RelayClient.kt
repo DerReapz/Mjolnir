@@ -179,7 +179,7 @@ class RelayClient(
     }
 
     companion object {
-        private val UNMARKED_KINDS = setOf(RelayErrorKind.UNAUTHORIZED, RelayErrorKind.RATE_LIMITED, RelayErrorKind.NOT_FOUND)
+        private val UNMARKED_KINDS = setOf(RelayErrorKind.UNAUTHORIZED, RelayErrorKind.RATE_LIMITED, RelayErrorKind.NOT_FOUND, RelayErrorKind.APP_OUTDATED)
 
         fun create(baseUrl: String, appVersion: String, token: () -> String?): RelayClient =
             RelayClient(
@@ -221,6 +221,8 @@ class RelayClient(
             404 -> if (parsed == null) RelayErrorKind.RELAY_OUTDATED else RelayErrorKind.NOT_FOUND
             409 -> RelayErrorKind.ALREADY_SENT
             413 -> RelayErrorKind.TOO_LARGE
+            // A relay that no longer serves this app (the accounts relay's update_required), whatever the body says.
+            426 -> RelayErrorKind.APP_OUTDATED
             429 -> RelayErrorKind.RATE_LIMITED
             507 -> RelayErrorKind.STORAGE_FULL
             else -> if (code >= 500) RelayErrorKind.SERVER else RelayErrorKind.INVALID
@@ -503,8 +505,9 @@ class RelayClient(
         }
     }
 
+    /** The headers this client's own requests carry: the app's version and, with a token, the bearer. */
     override fun chatFileRequest(fileId: String): FileRequest =
-        FileRequest("$base/v1/files/$fileId", token()?.let { mapOf(HttpHeaders.Authorization to "Bearer $it") }.orEmpty())
+        FileRequest("$base/v1/files/$fileId", mapOf(APP_VERSION_HEADER to appVersion) + token()?.let { mapOf(HttpHeaders.Authorization to "Bearer $it") }.orEmpty())
 
     override fun events(): Flow<RelayEvent> = channelFlow {
         val inner = launch { connectLoop().collect { send(it) } }

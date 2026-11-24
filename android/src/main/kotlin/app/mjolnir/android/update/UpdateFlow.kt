@@ -6,7 +6,6 @@ import app.mjolnir.client.Messages
 import app.mjolnir.client.UpdateState
 import app.mjolnir.client.Updater
 import app.mjolnir.protocol.RelayEvent
-import app.mjolnir.protocol.Versions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -171,15 +170,6 @@ class UpdateFlow(
         val live = session.value ?: return
         if (!installer.isLive(live.id)) session.compareAndSet(live, null)
     }
-}
-
-/**
- * The relay's version from a response header: tells [updater] whether the relay is older than this app, and a relay
- * newer than the app means a release is out (T2's updater skips repeats and throttles the GitHub check).
- */
-fun forwardRelayVersion(updater: Updater, appVersion: String, relayVersion: String) {
-    updater.onRelayVersion(relayVersion)
-    if (Versions.isNewer(relayVersion, appVersion)) updater.onUpdateAvailable(relayVersion)
 }
 
 /** Passes the relay's `UpdateAvailable` push on to [updater] from an event stream the app already listens to. */

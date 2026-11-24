@@ -82,4 +82,16 @@ class MessagesTest {
         assertEquals("Video", Messages.messagePreview(video(null)))
         assertEquals("Video", Messages.messagePreview(video(0))) // a bad length shows none
     }
+
+    /** relayUpdateReason leaves exactly the kinds with their own failureReason alone (UP-R5 consistency). */
+    @Test fun specificFailureKindsAreTheKindsWithTheirOwnReason() {
+        val generic = Messages.failureReason(RelayErrorKind.SERVER, "PC")
+        val ownReason = RelayErrorKind.entries.filter { Messages.failureReason(it, "PC") != generic }.toSet()
+        assertEquals(ownReason, Messages.SPECIFIC_FAILURE_KINDS)
+        for (kind in RelayErrorKind.entries) {
+            val older = RelayException(kind, kind.name, fromOlderRelay = true)
+            val expected = if (kind in ownReason) Messages.failureReason(kind, "PC") else "the relay needs updating"
+            assertEquals(expected, Messages.failureReason(older, "PC"), kind.name)
+        }
+    }
 }

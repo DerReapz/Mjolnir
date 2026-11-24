@@ -25,8 +25,12 @@ import app.mjolnir.protocol.UploadStatus
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 
-/** RELAY_OUTDATED: a 404 without the relay's JSON error body, i.e. a route an older relay doesn't have. */
-enum class RelayErrorKind { UNAUTHORIZED, NOT_PAIRED, INVALID, NOT_FOUND, RATE_LIMITED, TOO_LARGE, STORAGE_FULL, ALREADY_SENT, SERVER, NETWORK, RELAY_OUTDATED }
+/**
+ * RELAY_OUTDATED: a 404 without the relay's JSON error body, i.e. a route an older relay doesn't have.
+ * APP_OUTDATED: a 426 (any body), a relay that needs a newer app; retried like a network error, so queued sends survive
+ * the update.
+ */
+enum class RelayErrorKind { UNAUTHORIZED, NOT_PAIRED, INVALID, NOT_FOUND, RATE_LIMITED, TOO_LARGE, STORAGE_FULL, ALREADY_SENT, SERVER, NETWORK, RELAY_OUTDATED, APP_OUTDATED }
 
 /** [userMessage], when set, is a ready-made reason for the user (e.g. "Couldn't read a.jpg") that beats the kind's generic one. */
 class RelayException(

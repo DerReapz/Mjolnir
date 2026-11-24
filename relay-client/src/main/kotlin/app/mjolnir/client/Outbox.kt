@@ -33,7 +33,7 @@ data class OutgoingFiles(
 
 sealed interface OutboxResult {
     data class Done(val item: OutgoingFiles) : OutboxResult
-    /** NETWORK, SERVER, RATE_LIMITED: state kept. Also returned for an id that is no longer queued. */
+    /** NETWORK, SERVER, RATE_LIMITED, APP_OUTDATED: state kept. Also returned for an id that is no longer queued. */
     data object Retry : OutboxResult
     /**
      * Anything else: item removed (cleanup not called, so the caller can give the files back). [message] is a
@@ -115,7 +115,8 @@ class Outbox(
     }
 
     private fun failure(item: OutgoingFiles, e: RelayException): OutboxResult = when (e.kind) {
-        RelayErrorKind.NETWORK, RelayErrorKind.SERVER, RelayErrorKind.RATE_LIMITED -> OutboxResult.Retry
+        // APP_OUTDATED: kept for after the app's update.
+        RelayErrorKind.NETWORK, RelayErrorKind.SERVER, RelayErrorKind.RATE_LIMITED, RelayErrorKind.APP_OUTDATED -> OutboxResult.Retry
         else -> {
             remove(item.id)
             OutboxResult.Failed(item, e.kind, e.userMessage ?: Messages.relayUpdateReason(e))
@@ -197,7 +198,7 @@ data class OutgoingMessage(
 sealed interface ChatOutboxResult {
     /** Everything is posted. [unconfirmed]: a post's response was lost, so the chat needs a sync to show it. */
     data class Done(val unconfirmed: Boolean) : ChatOutboxResult
-    /** NETWORK, or SERVER fewer than [ChatOutbox.MAX_SERVER_ERRORS] times in a row: state kept for the next try. */
+    /** NETWORK, APP_OUTDATED, or SERVER fewer than [ChatOutbox.MAX_SERVER_ERRORS] times in a row: state kept for the next try. */
     data object Retry : ChatOutboxResult
     /** RATE_LIMITED: state kept; try again in a minute. */
     data object RateLimited : ChatOutboxResult
@@ -379,7 +380,7 @@ class ChatOutbox(
     private fun failure(item: OutgoingMessage, e: RelayException): ChatOutboxResult {
         val current = get(item.id) ?: return ChatOutboxResult.Cancelled // e.g. its file was deleted with it mid-upload
         return when {
-            e.kind == RelayErrorKind.NETWORK -> ChatOutboxResult.Retry
+            e.kind == RelayErrorKind.NETWORK || e.kind == RelayErrorKind.APP_OUTDATED -> ChatOutboxResult.Retry // kept for after the update
             e.kind == RelayErrorKind.RATE_LIMITED -> ChatOutboxResult.RateLimited
             e.kind == RelayErrorKind.SERVER && current.serverErrors + 1 < MAX_SERVER_ERRORS -> {
                 persist(item.id) { it.copy(serverErrors = it.serverErrors + 1) }

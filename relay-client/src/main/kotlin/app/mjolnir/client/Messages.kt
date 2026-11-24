@@ -52,6 +52,8 @@ object Messages {
     const val INSTALLING = "Installing…"
     /** A request the relay doesn't know (an older relay), or a relay older than this app: replaces the generic error. */
     const val RELAY_OUTDATED = "The relay needs updating. Ask whoever runs it to update."
+    /** A relay that needs a newer app (HTTP 426, [RelayErrorKind.APP_OUTDATED]): replaces any other error copy. */
+    const val APP_OUTDATED = "This relay needs a newer Mjolnir. Install the update."
     /** The banner while [Updater.relayTooOld]. */
     const val RELAY_TOO_OLD = "This version needs a newer relay."
 
@@ -154,6 +156,7 @@ object Messages {
 
     /** Why a send with attachments failed for good, as the failed bubble shows it. */
     fun mediaNotSent(e: RelayException): String {
+        if (e.kind == RelayErrorKind.APP_OUTDATED) return APP_OUTDATED
         if (e.kind == RelayErrorKind.RELAY_OUTDATED) return RELAY_OUTDATED
         val reason = e.userMessage?.replaceFirstChar(Char::lowercaseChar) ?: when {
             e.kind == RelayErrorKind.TOO_LARGE -> "a file is too big for the relay"
@@ -189,6 +192,7 @@ object Messages {
 
     /** A refused chat action as a sentence; the relay's code is the exception's message. */
     fun chatError(e: RelayException): String = when {
+        e.kind == RelayErrorKind.APP_OUTDATED -> APP_OUTDATED
         e.kind == RelayErrorKind.RELAY_OUTDATED -> RELAY_OUTDATED
         e.message == "too_many_files" -> e.userMessage ?: "That folder has too many files (max 1000)."
         e.kind == RelayErrorKind.NETWORK -> "Can't reach the relay. Check your connection."
@@ -214,16 +218,18 @@ object Messages {
         RelayErrorKind.TOO_LARGE -> "a file is too big for the relay"
         RelayErrorKind.STORAGE_FULL -> "the relay is out of space"
         RelayErrorKind.RELAY_OUTDATED -> "the relay needs updating"
+        RelayErrorKind.APP_OUTDATED -> "the relay needs a newer Mjolnir"
         else -> "the relay had a problem"
     }
 
     /** [failureReason] for a failed call: an error from a relay too old for this app says the relay needs updating. */
     fun failureReason(e: RelayException, peerName: String): String = relayUpdateReason(e) ?: failureReason(e.kind, peerName)
 
-    /** Kinds whose [failureReason] is specific whatever the relay's age. */
-    private val SPECIFIC_FAILURE_KINDS = setOf(
+    /** Kinds whose [failureReason] is specific whatever the relay's age: exactly those with a branch of their own there. */
+    internal val SPECIFIC_FAILURE_KINDS = setOf(
         RelayErrorKind.NETWORK, RelayErrorKind.NOT_PAIRED, RelayErrorKind.RATE_LIMITED,
         RelayErrorKind.UNAUTHORIZED, RelayErrorKind.TOO_LARGE, RelayErrorKind.STORAGE_FULL,
+        RelayErrorKind.RELAY_OUTDATED, RelayErrorKind.APP_OUTDATED,
     )
 
     /**

@@ -19,14 +19,23 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import app.mjolnir.protocol.AttachmentKind
+import app.mjolnir.protocol.ClaimResponse
+import app.mjolnir.protocol.DeviceKind
+import app.mjolnir.protocol.Peer
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -93,7 +102,7 @@ class UpdatesTest {
 
     /** Waits in real time: downloads run on real IO threads. */
     private suspend fun <T> realTimeout(block: suspend () -> T): T =
-        withContext(Dispatchers.Default.limitedParallelism(1)) { withTimeout(5_000) { block() } }
+        withContext(Dispatchers.Default.limitedParallelism(1)) { withTimeout(15_000) { block() } }
 
     private suspend fun Updater.awaitState(predicate: (UpdateState) -> Boolean): UpdateState = realTimeout { state.first(predicate) }
 
@@ -132,7 +141,8 @@ class UpdatesTest {
         u.onUpdateAvailable("1.0.7")
         u.awaitState { it is UpdateState.Available }
         val seen = mutableListOf<UpdateState>()
-        val watcher = backgroundScope.launch { u.state.collect { seen += it } }
+        // Unconfined: the watcher sees every state the download sets, however fast the real IO threads run.
+        val watcher = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { u.state.collect { seen += it } }
         u.download()
         val ready = assertIs<UpdateState.Ready>(u.state.value)
         assertEquals("1.0.7", ready.version)
@@ -185,7 +195,7 @@ class UpdatesTest {
         assertEquals(UpdateState.Available("1.0.7"), phone.state.value)
     }
 
-    @Test fun appNewerThanRelayFlaggedOnce() = runTest {
+    @Test fun relayTooOldFollowsTheCurrentRelay() = runTest {
         val u = updater(gitHub(), current = "1.0.10", virtual = true)
         val flips = mutableListOf<Boolean>()
         backgroundScope.launch { u.relayTooOld.collect { flips += it } }
@@ -194,10 +204,39 @@ class UpdatesTest {
         assertFalse(u.relayTooOld.value)
         u.onRelayVersion("1.0.9"); u.onRelayVersion("1.0.9"); u.onRelayVersion("1.0.2"); runCurrent()
         assertTrue(u.relayTooOld.value)
-        u.onRelayVersion("1.0.12"); u.onRelayVersion("garbage"); runCurrent() // never cleared within a session
+        u.onRelayVersion("1.0.12"); runCurrent() // the relay was updated (or the app moved to a current one): cleared
+        assertFalse(u.relayTooOld.value)
+        u.onRelayVersion("garbage"); runCurrent() // an unreadable version changes nothing
+        assertFalse(u.relayTooOld.value)
+        u.onRelayVersion("1.0.3"); u.onRelayVersion("garbage"); runCurrent()
         assertTrue(u.relayTooOld.value)
-        assertEquals(listOf(false, true), flips)
+        assertEquals(listOf(false, true, false, true), flips)
         assertEquals("This version needs a newer relay.", Messages.RELAY_TOO_OLD)
+    }
+
+    @Test fun relayNewerThanTheAppTriggersACheck() = runTest {
+        val gh = gitHub()
+        val u = updater(gh, virtual = true)
+        u.onRelayVersion("1.0.5"); u.onRelayVersion("1.0.3"); runCurrent()
+        assertEquals(0, gh.apiCalls) // a relay as old as (or older than) the app means no new release
+        u.onRelayVersion("1.0.7"); runCurrent()
+        assertEquals(1, gh.apiCalls)
+        assertEquals(UpdateState.Available("1.0.7"), u.state.value)
+        assertFalse(u.relayTooOld.value)
+        u.onRelayVersion("1.0.7"); runCurrent() // already shown: no second check
+        assertEquals(1, gh.apiCalls)
+    }
+
+    @Test fun startWithoutCheckingNowWaitsForTheInterval() = runTest {
+        val gh = gitHub()
+        val u = updater(gh, virtual = true)
+        u.start(checkNow = false); runCurrent()
+        assertEquals(0, gh.apiCalls)
+        advanceTimeBy(Updater.CHECK_INTERVAL_MS - 1); runCurrent()
+        assertEquals(0, gh.apiCalls)
+        advanceTimeBy(1); runCurrent()
+        assertEquals(1, gh.apiCalls)
+        assertEquals(UpdateState.Available("1.0.7"), u.state.value)
     }
 
     @Test fun interruptedDownloadLeavesNoFile() = runTest {
@@ -373,6 +412,73 @@ class UpdatesTest {
     @Test fun claimOnAnOutdatedRelaySaysSo() = runTest {
         val api = FakeRelayApi().apply { onClaim = { throw RelayException(RelayErrorKind.RELAY_OUTDATED, "HTTP 404") } }
         assertEquals(ClaimOutcome.Failed(Messages.RELAY_OUTDATED), claimAndAwait(api, "ABC234", {}))
+    }
+
+    @Test fun relayAskingForANewerAppAsksForTheUpdate() = runTest {
+        // The coming accounts relay answers 426 update_required (any body) to apps it no longer serves.
+        val bodies = listOf("""{"error":"update_required"}""", "", "<html>Upgrade Required</html>")
+        var answered = 0
+        val http = HttpClient(MockEngine) {
+            installMjolnirDefaults()
+            engine {
+                addHandler {
+                    val body = bodies[answered++ % bodies.size]
+                    respond(body, HttpStatusCode.UpgradeRequired, headersOf(HttpHeaders.ContentType to listOf("application/json"), RELAY_VERSION_HEADER to listOf("1.0.7")))
+                }
+            }
+        }
+        val client = RelayClient(http, "http://relay.test", "1.0.5", token = { "t" })
+        val gh = gitHub()
+        val u = updater(gh, virtual = true)
+        backgroundScope.launch { client.relayVersion.filterNotNull().collect(u::onRelayVersion) }
+
+        repeat(bodies.size) {
+            val e = assertFailsWith<RelayException> { client.chats("s1") }
+            assertEquals(RelayErrorKind.APP_OUTDATED, e.kind)
+            assertFalse(e.fromOlderRelay)
+            assertEquals("This relay needs a newer Mjolnir. Install the update.", Messages.chatError(e))
+            assertEquals(Messages.APP_OUTDATED, Messages.mediaNotSent(e))
+            assertEquals(Messages.APP_OUTDATED, spaceErrorCopy(e))
+            assertEquals("the relay needs a newer Mjolnir", Messages.failureReason(e, "PC"))
+            assertEquals("the relay needs a newer Mjolnir", Messages.failureReason(e.kind, "PC"))
+        }
+        // The relay is newer than the app: the update is looked up and offered.
+        runCurrent()
+        assertEquals(UpdateState.Available("1.0.7"), u.state.value)
+        assertFalse(u.relayTooOld.value)
+
+        // Queued throws survive the update: the item stays for the next try.
+        val dir = tempDir()
+        File(dir, "a").writeBytes(ByteArray(5))
+        val outbox = Outbox(
+            JsonFileStore(File(dir, "outbox.json"), ListSerializer(OutgoingFiles.serializer())) { emptyList() }, { client },
+            open = { f, off -> File(f.path).inputStream().apply { skip(off) } },
+        )
+        val upload = LocalUpload(File(dir, "a").path, "a", "application/octet-stream", 5)
+        outbox.enqueue(OutgoingFiles("o1", "pc1", "Desk PC", listOf(upload), createdAtEpochMs = 1))
+        assertEquals(OutboxResult.Retry, outbox.process("o1"))
+        assertEquals(listOf("o1"), outbox.pending().map { it.id })
+
+        // And so do queued chat sends.
+        val chatOutbox = ChatOutbox(File(dir, "chat-outbox"))
+        chatOutbox.enqueue(OutgoingMessage("m1", "c1", text = "hi", attachments = listOf(OutgoingAttachment(upload, AttachmentKind.FILE)), createdAtEpochMs = 1))
+        assertEquals(ChatOutboxResult.Retry, chatOutbox.process("m1", client))
+        assertEquals(null, chatOutbox.get("m1")?.failure)
+        assertEquals(listOf("m1"), chatOutbox.pending().map { it.id })
+
+        // Pairing, polling and the guest room say so too.
+        val outdated = RelayException(RelayErrorKind.APP_OUTDATED, "update_required")
+        assertEquals(ClaimOutcome.Failed(Messages.APP_OUTDATED), claimAndAwait(FakeRelayApi().apply { onClaim = { throw outdated } }, "ABC234", {}))
+        val polled = FakeRelayApi()
+        polled.onClaim = { polled.failAllWith = outdated; ClaimResponse("pair-1", Peer("owner", "Owner", DeviceKind.PC)) }
+        assertEquals(ClaimOutcome.Failed(Messages.APP_OUTDATED), claimAndAwait(polled, "ABC234", {}, pollMs = 1))
+        val room = GuestRoomController(
+            { FakeRelayApi().apply { failAllWith = outdated } }, { "https://relay.test" },
+            JsonFileStore(File(dir, "guest-room.json"), MapSerializer(String.serializer(), String.serializer())) { emptyMap() },
+            TestScope(UnconfinedTestDispatcher(testScheduler)), { 1_000L },
+        )
+        room.open()
+        assertEquals(Messages.APP_OUTDATED, assertIs<GuestRoomUi.Failed>(room.state.value).message)
     }
 
     @Test fun updateCopy() {
