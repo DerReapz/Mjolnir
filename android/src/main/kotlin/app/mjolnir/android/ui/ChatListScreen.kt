@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -28,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -44,6 +46,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Messages
+import app.mjolnir.client.Presence
+import app.mjolnir.protocol.ChatKind
+import app.mjolnir.protocol.ChatSummary
+import kotlinx.coroutines.delay
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.Limits
 import app.mjolnir.protocol.Peer
@@ -55,6 +61,9 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 private val AvatarUnread = androidx.compose.ui.graphics.Color(0xFF3B2A0E)
+private val MutedBadge = androidx.compose.ui.graphics.Color(0xFF4A4A4A)
+private val OnlineDot = androidx.compose.ui.graphics.Color(0xFF3FB950)
+private val OfflineDot = androidx.compose.ui.graphics.Color(0xFF6E7681)
 private val AvatarIdle = androidx.compose.ui.graphics.Color(0xFF262626)
 
 /** The Chats tab: the list, and over it the open chat or its settings. Back steps out one level. */
@@ -84,7 +93,7 @@ fun ChatListScreen(vm: ChatViewModel, modifier: Modifier = Modifier) {
         onOpen = vm::open, onNewChat = { creating = true },
         onApprove = vm::approve, onDeny = vm::deny, onJoin = vm::join, onDecline = vm::decline, onDismissNotice = vm::dismissNotice,
     )
-    if (creating) NewChatDialog(spaces, onCreate = { space, name -> vm.createChat(space, name); creating = false }, onClose = { creating = false })
+    if (creating) NewChatDialog(spaces, onCreate = { space, name, channel -> if (channel) vm.createChannel(space, name) else vm.createChat(space, name); creating = false }, onClose = { creating = false })
 }
 
 /** The list per the `PhoneChatList` mockup: approvals and invitations as cards, the chats grouped by space in 56 dp rows. */
@@ -120,11 +129,27 @@ fun ChatListContent(
                         modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 6.dp),
                     )
                 }
-                for (row in group.rows) item(key = row.chat.id) { ChatRowItem(row, now, onClick = { onOpen(row.chat.id) }) }
+                if (group.channels.isNotEmpty()) {
+                    item(key = "channels-${group.spaceName}") { SectionLabel(Messages.CHANNELS) }
+                    for (row in group.channels) item(key = row.chat.id) { ChatRowItem(row, now, onClick = { onOpen(row.chat.id) }) }
+                }
+                if (group.privateChats.isNotEmpty()) {
+                    item(key = "private-${group.spaceName}") { SectionLabel(Messages.PRIVATE_CHATS) }
+                    for (row in group.privateChats) item(key = row.chat.id) { ChatRowItem(row, now, onClick = { onOpen(row.chat.id) }) }
+                }
             }
         }
     }
 }
+
+/** A space's "Channels" / "Private chats" subsection label; an empty subsection shows none. */
+@Composable
+private fun SectionLabel(text: String) {
+    Text(text, color = Forge.Muted, fontSize = 12.sp, modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 2.dp))
+}
+
+/** The title a chat row and header show: `# name` for an open channel, the name for a private chat. */
+internal fun chatTitle(chat: ChatSummary): String = if (chat.kind == ChatKind.OPEN) "# ${chat.name}" else chat.name
 
 @Composable
 internal fun NoticeBar(text: String, onDismiss: () -> Unit) {
@@ -152,7 +177,7 @@ private fun ChatRowItem(row: ChatRow, now: () -> Long, onClick: () -> Unit) {
         }
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(row.chat.name, Modifier.weight(1f, fill = false), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(chatTitle(row.chat), Modifier.weight(1f, fill = false), fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (!row.chat.member) {
                     Text(
                         Messages.ADMIN_VIEW, color = Forge.Muted, fontSize = 11.sp, maxLines = 1,
@@ -161,10 +186,11 @@ private fun ChatRowItem(row: ChatRow, now: () -> Long, onClick: () -> Unit) {
                 }
                 Box(Modifier.weight(1f))
                 if (row.mention) Text("@", color = Forge.Accent, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.semantics { contentDescription = "Unread mention" })
+                if (row.chat.muted) Text(Messages.MUTED, color = Forge.Muted, fontSize = 11.sp, maxLines = 1)
                 if (unread) {
                     Text(
-                        row.unread.toString(), color = Forge.OnAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.background(Forge.Accent, RoundedCornerShape(10.dp)).padding(horizontal = 7.dp, vertical = 1.dp),
+                        row.unread.toString(), color = if (row.chat.muted) Forge.Text else Forge.OnAccent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.background(if (row.chat.muted) MutedBadge else Forge.Accent, RoundedCornerShape(10.dp)).padding(horizontal = 7.dp, vertical = 1.dp),
                     )
                 } else row.lastAtEpochMs?.let { Text(listTime(it, now()), color = Forge.Muted, fontSize = 12.sp) }
             }
@@ -217,21 +243,33 @@ private fun InviteCard(text: androidx.compose.ui.text.AnnotatedString, yes: Stri
     }
 }
 
-/** *New chat*: pick the space (when there are several) and name the chat. */
+/** *New chat*: choose Chat or Channel, pick the space (when there are several) and name it (a channel has just a name). */
 @Composable
-fun NewChatDialog(spaces: List<Space>, onCreate: (Space, String) -> Unit, onClose: () -> Unit) {
+fun NewChatDialog(spaces: List<Space>, onCreate: (Space, String, Boolean) -> Unit, onClose: () -> Unit) {
+    var channel by rememberSaveable { mutableStateOf(false) }
     var pickedId by rememberSaveable { mutableStateOf(spaces.firstOrNull()?.id) }
     var name by rememberSaveable { mutableStateOf("") }
     val picked = spaces.firstOrNull { it.id == pickedId } ?: spaces.firstOrNull()
     val valid = picked != null && name.isNotBlank()
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text(Messages.NEW_CHAT_PHONE) },
+        title = { Text(if (channel) Messages.NEW_CHANNEL else Messages.NEW_CHAT_PHONE) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (spaces.isEmpty()) {
                     Text("Chats live in a space. Join or create a space on the Devices tab first.", color = Forge.Muted)
                 } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        for ((label, isChannel) in listOf("Chat" to false, "Channel" to true)) {
+                            Row(
+                                Modifier.heightIn(min = 48.dp).selectable(channel == isChannel, role = Role.RadioButton) { channel = isChannel },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RadioButton(channel == isChannel, onClick = null)
+                                Text(label, Modifier.padding(start = 8.dp))
+                            }
+                        }
+                    }
                     if (spaces.size > 1) {
                         Text("Space", color = Forge.Muted, style = MaterialTheme.typography.labelMedium)
                         for (space in spaces) {
@@ -246,15 +284,38 @@ fun NewChatDialog(spaces: List<Space>, onCreate: (Space, String) -> Unit, onClos
                     }
                     OutlinedTextField(
                         name, { name = it.take(Limits.MAX_SPACE_NAME_LENGTH) }, singleLine = true, shape = FieldShape, colors = forgeFieldColors(),
-                        placeholder = { Text("Holiday planning", color = Forge.Muted) }, modifier = Modifier.fillMaxWidth(),
+                        label = if (channel) ({ Text(Messages.CHANNEL_NAME) }) else null,
+                        placeholder = { Text(if (channel) "games" else "Holiday planning", color = Forge.Muted) }, modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { picked?.let { onCreate(it, name.trim()) } }, enabled = valid, modifier = Modifier.heightIn(min = 48.dp)) { Text("Create") } },
+        confirmButton = { TextButton(onClick = { picked?.let { onCreate(it, name.trim(), channel) } }, enabled = valid, modifier = Modifier.heightIn(min = 48.dp)) { Text("Create") } },
         dismissButton = { TextButton(onClick = onClose, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") } },
     )
 }
+
+/** [clock] re-read every minute, so "Last seen 3m ago" keeps up. */
+@Composable
+internal fun rememberMinuteClock(clock: () -> Long = System::currentTimeMillis): Long {
+    var now by remember { mutableLongStateOf(clock()) }
+    LaunchedEffect(Unit) { while (true) { delay(60_000); now = clock() } }
+    return now
+}
+
+/** The 8 dp presence dot (green online, grey otherwise) with "Online" or "Last seen …"; no text while unknown. */
+@Composable
+internal fun PresenceStatus(presence: Presence?, nowMs: Long, modifier: Modifier = Modifier) {
+    val online = presence?.online == true
+    val text = if (online) Messages.ONLINE else Messages.lastSeen(nowMs, presence?.lastSeenMs)
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(Modifier.size(8.dp).background(if (online) OnlineDot else OfflineDot, CircleShape))
+        if (text.isNotEmpty()) Text(text, color = Forge.Muted, fontSize = 12.sp, maxLines = 1)
+    }
+}
+
+/** The live presence of [peer], else what the peer itself carries. */
+internal fun presenceOf(peer: Peer, live: Map<String, Presence>): Presence = live[peer.deviceId] ?: Presence(peer.online, peer.lastSeenMs)
 
 /** The list's timestamp: the time today, the weekday within a week, else the date. */
 internal fun listTime(ms: Long, now: Long, zone: ZoneId = ZoneId.systemDefault()): String {
@@ -281,7 +342,7 @@ fun ShareToChatDialog(offer: ShareOffer, onPick: (chatId: String) -> Unit, onThr
                 items(offer.chats.size) { i ->
                     val chat = offer.chats[i]
                     Column(Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(role = Role.Button) { onPick(chat.id) }.padding(horizontal = 4.dp, vertical = 6.dp)) {
-                        Text(chat.name, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(chatTitle(chat), fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(chat.spaceName, color = Forge.Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }

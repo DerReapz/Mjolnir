@@ -89,6 +89,7 @@ import app.mjolnir.client.messageSegments
 import app.mjolnir.protocol.Attachment
 import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.ChatSummary
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
@@ -194,7 +195,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
     Box(modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         val count = members.size
-        Header(current.name, "${current.spaceName} · $count ${if (count == 1) "member" else "members"}", onBack, onSettings)
+        Header(chatTitle(current), "${current.spaceName} · $count ${if (count == 1) "member" else "members"}", onBack, onSettings)
         notice?.let { NoticeBar(it, vm::dismissNotice) }
         val listState = rememberLazyListState()
         // The newest message, unless the reader scrolled up to read older ones (our own sends always follow).
@@ -266,7 +267,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
             onDownload = { vm.download(m) }, onShareFiles = { vm.share(m) },
         )
     }
-    infoFor?.let { m -> MessageInfoDialog(m, receipts, members, shownName, loadTimes = { vm.receiptTimes(m) }, onDismiss = { infoFor = null }) }
+    infoFor?.let { m -> MessageInfoDialog(m, receipts, members, shownName, channel = current.kind == ChatKind.OPEN, loadTimes = { vm.receiptTimes(m) }, onDismiss = { infoFor = null }) }
     val video by (videos?.now ?: NO_VIDEO).collectAsState()
     video?.takeIf { it.fullScreen }?.let { full ->
         val m = messages.firstOrNull { it.id == full.key.messageId }
@@ -325,7 +326,7 @@ private fun MentionPicker(candidates: List<Peer>, shownName: (Peer) -> String, o
 /** Long-press → *Info*: who has read and who has only seen the message, with times. */
 @Composable
 private fun MessageInfoDialog(
-    m: ChatMessage, receipts: List<Receipt>, members: List<Peer>, shownName: (Peer) -> String,
+    m: ChatMessage, receipts: List<Receipt>, members: List<Peer>, shownName: (Peer) -> String, channel: Boolean,
     loadTimes: suspend () -> List<MessageReceipt>, onDismiss: () -> Unit,
 ) {
     val r = messageReceipts(m, receipts, members)
@@ -341,7 +342,10 @@ private fun MessageInfoDialog(
                 )) {
                     Text(label.uppercase(), color = Forge.Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
                     if (list.isEmpty()) Text(Messages.NOBODY_YET, color = Forge.Muted, fontSize = 14.sp)
-                    for (rc in list) {
+                    else if (channel && label == Messages.SEEN) {
+                        // A channel's audience is the whole space: names up to five, else a count.
+                        Text(Messages.seenBySummary(list.mapNotNull { rc -> members.firstOrNull { it.deviceId == rc.deviceId }?.let(shownName) }), fontSize = 15.sp)
+                    } else for (rc in list) {
                         val name = members.firstOrNull { it.deviceId == rc.deviceId }?.let(shownName) ?: continue
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(name, fontSize = 15.sp)

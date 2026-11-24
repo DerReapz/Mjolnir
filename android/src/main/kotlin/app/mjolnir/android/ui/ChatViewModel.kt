@@ -7,7 +7,9 @@ import app.mjolnir.client.ChatController
 import app.mjolnir.client.Messages
 import app.mjolnir.client.validDurationMs
 import app.mjolnir.client.MentionPicks
+import app.mjolnir.client.Presence
 import app.mjolnir.client.capCodePoints
+import app.mjolnir.client.chatSections
 import app.mjolnir.client.insertMention
 import app.mjolnir.client.latestOwnMessage
 import app.mjolnir.client.mentionSpans
@@ -61,8 +63,8 @@ import kotlinx.coroutines.launch
 /** One line of the chat list. */
 data class ChatRow(val chat: ChatSummary, val unread: Int, val preview: String, val lastAtEpochMs: Long?, val mention: Boolean = false)
 
-/** The chats of one space, most recently active first. */
-data class ChatGroup(val spaceName: String, val rows: List<ChatRow>)
+/** The chats of one space: its open channels by name, then its private chats, most recently active first. */
+data class ChatGroup(val spaceName: String, val channels: List<ChatRow>, val privateChats: List<ChatRow>)
 
 /** The chat list: approvals this phone owes as an owner on top, invitations to join below. */
 data class ChatListUi(
@@ -153,6 +155,9 @@ class ChatViewModel(
     /** The spaces this phone is in: who administers them, who could be invited, where a new chat can go. */
     val spaces: StateFlow<List<Space>> = _spaces.asStateFlow()
 
+    /** Who is online, by device id (the live map; see [Presence]). */
+    val presence: StateFlow<Map<String, Presence>> get() = controller.presence
+
     private val _loaded = MutableStateFlow(false)
     /** True once the chat list was fetched at least once since this screen came up (whether or not it worked). */
     val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
@@ -187,7 +192,16 @@ class ChatViewModel(
         }
         val groups = rows.groupBy { it.chat.spaceId }.values
             .sortedBy { it.first().chat.spaceName.lowercase() }
-            .map { g -> ChatGroup(g.first().chat.spaceName, g.sortedWith(compareByDescending<ChatRow> { it.lastAtEpochMs ?: 0L }.thenBy { it.chat.name.lowercase() })) }
+            .map { g ->
+                val byId = g.associateBy { it.chat.id }
+                val sections = chatSections(g.map { it.chat })
+                ChatGroup(
+                    g.first().chat.spaceName,
+                    sections.channels.map { byId.getValue(it.id) },
+                    sections.privateChats.map { byId.getValue(it.id) }
+                        .sortedWith(compareByDescending<ChatRow> { it.lastAtEpochMs ?: 0L }.thenBy { it.chat.name.lowercase() }),
+                )
+            }
         ChatListUi(groups, invites.filter { it.state == InviteState.PENDING_APPROVAL }, invites.filter { it.state == InviteState.APPROVED })
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatListUi())
 
@@ -311,7 +325,7 @@ class ChatViewModel(
         viewModelScope.launch {
             quietly { controller.refresh() }
             quietly { controller.refreshInvites() }
-            quietly { _spaces.value = api.spaces() }
+            quietly { api.spaces().let { all -> _spaces.value = all; controller.seedPresence(all) } } // the seed replaces the map: always every space
             _loaded.value = true
         }
     }
@@ -533,6 +547,14 @@ class ChatViewModel(
     fun createChat(space: Space, name: String) {
         viewModelScope.launch { call { controller.createChat(space.id, name.trim()) }?.let { open(it.id) } }
     }
+
+    /** Creates an open channel in [space] (every member of the space is in it) and opens it. */
+    fun createChannel(space: Space, name: String) {
+        viewModelScope.launch { call { controller.createChannel(space.id, name.trim()) }?.let { open(it.id) } }
+    }
+
+    /** *Mute* (true) or *Unmute* (false) [chatId]: a muted chat only notifies for an @mention. */
+    fun setMuted(chatId: String, muted: Boolean) = run { controller.setMuted(chatId, muted) }
 
     fun rename(chatId: String, name: String) = run { controller.renameChat(chatId, name.trim()) }
     fun makeOwner(chatId: String, deviceId: String) = run { controller.transferChatOwner(chatId, deviceId) }

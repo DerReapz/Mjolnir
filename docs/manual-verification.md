@@ -74,6 +74,16 @@ Needs two PCs (A, B) and a phone (C) in one space, with A as the space admin (so
 - **Phone notifications, app closed:** with the app swiped away, a message and a mention both notify the phone.
 - **Offline catch-up:** turn the phone's network off, send several messages from a PC, restore the network; the chat catches up in order.
 
+## Channels and online status
+Needs a PC (A, admin), a phone (B) and, for the late-joiner check, a third device (C), all on the updated relay and apps.
+- **`#general`:** create a new space on A. Its Chats list shows a `Channels` section with `# general`, and B (once in the space) sees it and can post there; A sees B's message.
+- **Late joiner and history:** post a few messages in `# general`, then add C to the space. C sees `# general` with that history.
+- **More channels:** *New chat* → *Channel* → `Channel name` creates one that every member sees at once; private chats stay under `Private chats` (an empty section's label is hidden).
+- **No invite or leave:** a channel's settings have no *Invite…*, *Leave chat*, *Make owner* or *Remove*, and show `Everyone in {space} can see this channel.` Deleting asks `Delete #{name}? Everyone in {space} loses its messages.`
+- **Mute:** on B, *Mute* a channel: it shows `Muted` with a grey unread count and a new message doesn't notify; an @mention of B still does. *Unmute* restores notifications.
+- **Online dot:** the space's member list (Devices → Spaces) and a channel's member list show a green dot and `Online` for connected devices. Close the app on C: within about 30 s its dot goes grey and shows `Last seen just now`, then `Last seen 1m ago` a minute later.
+- **Old app:** an app from before this feature still lists a channel as a normal chat (and can read and post in it).
+
 ## Chat media
 Needs two PCs (A, B) and a phone (C) in one chat, on the updated relay.
 - **Send each kind from every app:** a photo, a GIF, a file and a folder from A, B and C. Photos and GIFs show as thumbnails; a file shows its name and `File · {size}`; a folder shows one `Folder · {n} files · {size}` bubble. Sends start immediately (no caption step).

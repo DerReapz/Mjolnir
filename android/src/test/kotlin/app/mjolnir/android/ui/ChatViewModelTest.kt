@@ -73,13 +73,53 @@ class ChatViewModelTest {
         controller.refresh(); advanceUntilIdle()
         val groups = vm.list.value.groups
         assertEquals(listOf("Crew", "Work"), groups.map { it.spaceName })
-        val general = groups[0].rows.single()
+        val general = groups[0].privateChats.single()
         assertEquals(2, general.unread)
         assertEquals("Samwise: two", general.preview)
-        val design = groups[1].rows.single()
+        val design = groups[1].privateChats.single()
         assertEquals(work, design.chat.id)
         assertEquals(0, design.unread)
         assertEquals("No messages yet", design.preview)
+    }
+
+    @Test fun groupsSplitChannelsAndPrivate() = runTest {
+        api.addChannel("s1", "general", owner = admin)
+        api.addChannel("s1", "games", owner = admin)
+        val planning = api.addChat("s1", "Planning", owner = me, members = listOf(me, sam))
+        val vm = newVm()
+        controller.refresh(); advanceUntilIdle()
+        val group = vm.list.value.groups.single()
+        assertEquals(listOf("games", "general"), group.channels.map { it.chat.name })
+        assertEquals(listOf(planning), group.privateChats.map { it.chat.id })
+    }
+
+    @Test fun createChannelCallsController() = runTest {
+        val vm = newVm()
+        val space = api.spaceList.single()
+        vm.refresh(); advanceUntilIdle()
+        vm.createChannel(space, "  games "); advanceUntilIdle()
+        val made = vm.list.value.groups.single().channels.single()
+        assertEquals("games", made.chat.name)
+        assertEquals(app.mjolnir.protocol.ChatKind.OPEN, made.chat.kind)
+        assertEquals(made.chat.id, vm.selectedId.value)
+    }
+
+    @Test fun muteToggles() = runTest {
+        val chat = api.addChannel("s1", "general", owner = admin)
+        val vm = newVm()
+        controller.refresh(); advanceUntilIdle()
+        assertFalse(vm.list.value.groups.single().channels.single().chat.muted)
+        vm.setMuted(chat, true); advanceUntilIdle()
+        assertTrue(vm.list.value.groups.single().channels.single().chat.muted)
+        vm.setMuted(chat, false); advanceUntilIdle()
+        assertFalse(vm.list.value.groups.single().channels.single().chat.muted)
+    }
+
+    @Test fun refreshSeedsPresenceFromAllSpaces() = runTest {
+        api.asMemberOf("s2", admin, name = "Work")
+        val vm = newVm()
+        vm.refresh(); advanceUntilIdle()
+        assertTrue(controller.presence.value.keys.containsAll(listOf("admin", "sam", "ann")))
     }
 
     @Test fun joinDeclineInvitation() = runTest {
@@ -91,7 +131,7 @@ class ChatViewModelTest {
         val invitations = vm.list.value.invitations
         assertEquals(listOf("Book club", "Film club"), invitations.map { it.chatName })
         vm.join(invitations[0]); advanceUntilIdle()
-        assertEquals(listOf(book), vm.list.value.groups.flatMap { it.rows }.map { it.chat.id })
+        assertEquals(listOf(book), vm.list.value.groups.flatMap { it.privateChats }.map { it.chat.id })
         vm.decline(invitations[1]); advanceUntilIdle()
         assertTrue(vm.list.value.invitations.isEmpty())
         assertEquals(InviteState.DECLINED, api.chatState.invites.single { it.chatId == film }.state)
@@ -167,7 +207,7 @@ class ChatViewModelTest {
         chatsVisible.value = false; advanceUntilIdle()
         api.incoming(chat, sam, "@Me", mentions = listOf(me.deviceId))
         controller.refresh(); advanceUntilIdle()
-        assertTrue(vm.list.value.groups.single().rows.single().mention)
+        assertTrue(vm.list.value.groups.single().privateChats.single().mention)
     }
 
     @Test fun editFlow() = runTest {

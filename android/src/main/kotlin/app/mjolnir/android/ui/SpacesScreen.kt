@@ -111,6 +111,7 @@ fun SpacesScreen(vm: SpacesViewModel, start: SpacesStart, onBack: () -> Unit, mo
 private fun SpaceBlock(space: Space, state: SpacesUi, vm: SpacesViewModel, onRename: () -> Unit) {
     val isAdmin = space.adminId == state.selfId
     val invite = state.invite?.takeIf { it.spaceId == space.id }
+    val now = rememberMinuteClock()
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         ForgeCard {
             Column(Modifier.weight(1f)) {
@@ -139,6 +140,7 @@ private fun SpaceBlock(space: Space, state: SpacesUi, vm: SpacesViewModel, onRen
                     Text(state.nameOf(member), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     val kind = if (member.kind == DeviceKind.PHONE) "Phone" else "PC"
                     Text(if (admin) "$kind · admin" else kind, style = MaterialTheme.typography.bodySmall, color = Forge.Muted)
+                    PresenceStatus(presenceOf(member, state.presence), now)
                 }
                 if (isAdmin && member.deviceId != state.selfId) {
                     SpaceButton("Make admin") { vm.askMakeAdmin(space, member) }

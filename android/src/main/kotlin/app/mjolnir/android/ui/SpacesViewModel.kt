@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import app.mjolnir.client.ClaimOutcome
 import app.mjolnir.client.Messages
 import app.mjolnir.client.Nicknames
+import app.mjolnir.client.Presence
 import app.mjolnir.client.RelayApi
 import app.mjolnir.client.RelayErrorKind
 import app.mjolnir.client.RelayException
@@ -67,6 +68,8 @@ data class SpacesUi(
     val nicknames: Map<String, String> = emptyMap(),
     /** This phone's device id (to tell its own admin rights and its own row); null until the first refresh. */
     val selfId: String? = null,
+    /** Who is online, by device id; a member without an entry falls back to its own online and last seen. */
+    val presence: Map<String, Presence> = emptyMap(),
 ) {
     /** The name to show for [peer]: its nickname, else its real name. */
     fun nameOf(peer: Peer): String = nicknames[peer.deviceId] ?: peer.name
@@ -95,8 +98,12 @@ class SpacesViewModel(
     /** Called when the relay rejects this phone's token, so the registration is reset (must not throw). */
     private val onUnauthorized: suspend () -> Unit = {},
     private val pollMs: Long = 2_000,
+    /** The live presence map (the chat controller's); the member list shows it. */
+    private val presence: StateFlow<Map<String, Presence>> = MutableStateFlow(emptyMap()),
+    /** Runs with every space this phone is in each time the list loads (the presence seed replaces the whole map, so always the full list). */
+    private val onSpacesLoaded: (List<Space>) -> Unit = {},
 ) : ViewModel() {
-    private val _state = MutableStateFlow(SpacesUi(nicknames = nicknames.changes.value))
+    private val _state = MutableStateFlow(SpacesUi(nicknames = nicknames.changes.value, presence = presence.value))
     val state: StateFlow<SpacesUi> = _state.asStateFlow()
 
     private var joinJob: Job? = null
@@ -111,6 +118,7 @@ class SpacesViewModel(
 
     init {
         viewModelScope.launch { nicknames.changes.collect { shown -> _state.update { it.copy(nicknames = shown) } } }
+        viewModelScope.launch { presence.collect { live -> _state.update { it.copy(presence = live) } } }
         restoreInvite()
     }
 
@@ -275,6 +283,7 @@ class SpacesViewModel(
         // A space that vanished without this phone deleting or leaving it: its admin deleted it, or removed this phone.
         val gone = before.filter { b -> list.none { it.id == b.id } && b.id !in deletedHere && b.id !in leftHere }
         _state.update { it.copy(spaces = list) }
+        onSpacesLoaded(list)
         if (gone.isNotEmpty()) notify(gone.joinToString(" ") { "You're no longer in ${it.name}." })
         if (_state.value.invite?.let { inv -> list.none { it.id == inv.spaceId } } == true) setInvite(null)
         if (_state.value.selfId == null) {

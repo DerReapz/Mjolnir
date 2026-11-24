@@ -94,6 +94,7 @@ class MainActivity : ComponentActivity() {
             return SpacesViewModel(
                 c.api, c.nicknames, extras.createSavedStateHandle(),
                 onPeersAffected = { throwing.refreshTargets() }, onUnauthorized = { resetQuietly(c.session) },
+                presence = c.chatController.presence, onSpacesLoaded = c.chatController::seedPresence,
             ) as T
         }
 

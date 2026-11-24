@@ -37,7 +37,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Messages
+import app.mjolnir.client.canInvite
+import app.mjolnir.client.canLeave
+import app.mjolnir.client.canManage
+import app.mjolnir.client.canTransferOwner
 import app.mjolnir.client.inviteCandidates
+import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.ChatInvite
 import app.mjolnir.protocol.ChatSummary
 import app.mjolnir.protocol.DeviceKind
@@ -69,8 +74,12 @@ fun ChatSettingsScreen(vm: ChatViewModel, onBack: () -> Unit, modifier: Modifier
     val nameOf = { p: Peer -> names[p.deviceId] ?: p.name }
     val owner = current.ownerId == self
     val isAdmin = vm.isSpaceAdmin(current)
+    val channel = current.kind == ChatKind.OPEN
+    val canManage = canManage(current, self, isAdmin)
     val soleOwner = owner && members.isNotEmpty() && members.all { it.deviceId == self }
-    val canLeave = current.member && !soleOwner
+    val canLeave = canLeave(current) && !soleOwner
+    val livePresence by vm.presence.collectAsState()
+    val now = rememberMinuteClock()
     val pending = invites.approvals.filter { it.chatId == current.id }
     var confirm by remember { mutableStateOf<Confirm?>(null) }
     var renaming by remember { mutableStateOf(false) }
@@ -78,10 +87,13 @@ fun ChatSettingsScreen(vm: ChatViewModel, onBack: () -> Unit, modifier: Modifier
 
     Column(modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(current.name, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(chatTitle(current), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             TextButton(onClick = onBack, modifier = Modifier.heightIn(min = 48.dp)) { Text("Back") }
         }
-        Text("${current.spaceName} · private chat · only members and the space admin can see it", color = Forge.Muted, fontSize = 12.sp)
+        Text(
+            if (channel) Messages.channelHint(current.spaceName) else "${current.spaceName} · private chat · only members and the space admin can see it",
+            color = Forge.Muted, fontSize = 12.sp,
+        )
         notice?.let { NoticeBar(it, vm::dismissNotice) }
         Text("MEMBERS · ${members.size}", color = Forge.Muted, style = MaterialTheme.typography.labelMedium)
         for (member in members) {
@@ -90,9 +102,10 @@ fun ChatSettingsScreen(vm: ChatViewModel, onBack: () -> Unit, modifier: Modifier
                 Column(Modifier.weight(1f)) {
                     Text(nameOf(member), fontWeight = if (me) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (member.deviceId == current.ownerId) Text("owner", color = Forge.Muted, fontSize = 12.sp)
+                    if (channel) PresenceStatus(presenceOf(member, livePresence), now)
                 }
-                if (owner && !me) TextButton(onClick = { vm.makeOwner(current.id, member.deviceId) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(Messages.MAKE_OWNER) }
-                if (isAdmin && !me) TextButton(
+                if (canTransferOwner(current, self) && !me) TextButton(onClick = { vm.makeOwner(current.id, member.deviceId) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(Messages.MAKE_OWNER) }
+                if (isAdmin && !me && !channel) TextButton(
                     onClick = { confirm = Confirm("Remove ${nameOf(member)} from ${current.name}?", "Remove") { vm.removeMember(current.id, member.deviceId) } },
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) { Text("Remove", color = Forge.Muted) }
@@ -102,10 +115,15 @@ fun ChatSettingsScreen(vm: ChatViewModel, onBack: () -> Unit, modifier: Modifier
             Text("PENDING", color = Forge.Muted, style = MaterialTheme.typography.labelMedium)
             for (invite in pending) PendingRow(invite, nameOf, onApprove = { vm.approve(invite) }, onDeny = { vm.deny(invite) })
         }
-        if (current.member) {
+        if (canInvite(current)) {
             OutlinedButton(onClick = { inviting = true }, shape = ButtonShape, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(Messages.INVITE) }
         }
-        if (owner || isAdmin) {
+        if (current.member) {
+            OutlinedButton(
+                onClick = { vm.setMuted(current.id, !current.muted) }, shape = ButtonShape, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            ) { Text(if (current.muted) Messages.UNMUTE else Messages.MUTE) }
+        }
+        if (canManage) {
             OutlinedButton(onClick = { renaming = true }, shape = ButtonShape, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) { Text(Messages.RENAME_CHAT) }
         }
         if (canLeave) {
@@ -115,9 +133,9 @@ fun ChatSettingsScreen(vm: ChatViewModel, onBack: () -> Unit, modifier: Modifier
             ) { Text(Messages.LEAVE_CHAT) }
             if (owner) Text("Make someone else the owner to leave.", color = Forge.Muted, fontSize = 12.sp)
         }
-        if (owner || isAdmin) {
+        if (canManage) {
             OutlinedButton(
-                onClick = { confirm = Confirm("Delete ${current.name}? Its messages go for everyone.", Messages.DELETE_CHAT) { vm.deleteChat(current.id) } },
+                onClick = { confirm = Confirm(if (channel) Messages.deleteChannelConfirm(current.name, current.spaceName) else "Delete ${current.name}? Its messages go for everyone.", Messages.DELETE_CHAT) { vm.deleteChat(current.id) } },
                 shape = ButtonShape, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
             ) { Text(Messages.DELETE_CHAT, color = Danger) }
         }

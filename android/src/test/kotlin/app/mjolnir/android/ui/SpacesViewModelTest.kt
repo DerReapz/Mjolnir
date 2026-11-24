@@ -61,6 +61,18 @@ class SpacesViewModelTest {
         return vm to vm.state.value.spaces.single().id
     }
 
+    @Test fun membersCarryPresence() = runTest {
+        val tracker = app.mjolnir.client.PresenceTracker()
+        val b = Peer("b", "B's phone", DeviceKind.PHONE)
+        api.asMemberOf("s1", admin, name = "Friends")
+        api.addMember("s1", b)
+        val vm = SpacesViewModel(api, nicknames, SavedStateHandle(), clock = { now }, presence = tracker.presence, onSpacesLoaded = tracker::seed)
+        vm.refresh(); runCurrent()
+        assertEquals(false, vm.state.value.presence["b"]?.online)
+        tracker.onEvent(RelayEvent.PresenceChanged("b", true)); runCurrent()
+        assertEquals(true, vm.state.value.presence["b"]?.online)
+    }
+
     @Test fun createRefreshesList() = runTest {
         val vm = newVm()
         vm.create("Friends"); advanceUntilIdle()
