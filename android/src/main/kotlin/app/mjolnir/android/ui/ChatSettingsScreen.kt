@@ -40,6 +40,7 @@ import app.mjolnir.client.Messages
 import app.mjolnir.client.canInvite
 import app.mjolnir.client.canLeave
 import app.mjolnir.client.canManage
+import app.mjolnir.client.canRemoveMembers
 import app.mjolnir.client.canTransferOwner
 import app.mjolnir.client.inviteCandidates
 import app.mjolnir.protocol.ChatKind
@@ -102,10 +103,10 @@ fun ChatSettingsScreen(vm: ChatViewModel, onBack: () -> Unit, modifier: Modifier
                 Column(Modifier.weight(1f)) {
                     Text(nameOf(member), fontWeight = if (me) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (member.deviceId == current.ownerId) Text("owner", color = Forge.Muted, fontSize = 12.sp)
-                    if (channel) PresenceStatus(presenceOf(member, livePresence), now)
+                    PresenceStatus(presenceOf(member, livePresence), now)
                 }
                 if (canTransferOwner(current, self) && !me) TextButton(onClick = { vm.makeOwner(current.id, member.deviceId) }, modifier = Modifier.heightIn(min = 48.dp)) { Text(Messages.MAKE_OWNER) }
-                if (isAdmin && !me && !channel) TextButton(
+                if (canRemoveMembers(current, isAdmin) && !me) TextButton(
                     onClick = { confirm = Confirm("Remove ${nameOf(member)} from ${current.name}?", "Remove") { vm.removeMember(current.id, member.deviceId) } },
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) { Text("Remove", color = Forge.Muted) }

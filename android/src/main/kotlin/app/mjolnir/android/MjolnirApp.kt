@@ -58,7 +58,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -204,10 +203,14 @@ class AppContainer(context: Context) {
     /** The update banner and its Install button; the install prompt opens only while the app is in the foreground. */
     val updateFlow = UpdateFlow(updater, ApkInstaller.forApp(appContext), updateScope, appForeground)
 
-    /** Live chat updates while the Chats tab is on screen. */
+    /**
+     * Live chat updates and presence while the app is in the foreground, on any tab: it is the phone's one event socket, so
+     * it also keeps this phone online for others and the Spaces member list current. Which chat counts as open (read, not
+     * notified) still follows the Chats tab (see ChatViewModel).
+     */
     val chatWatcher = ChatWatcher(
         chatController, events = { api.events().forwardingUpdates(updater) }, scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
-        active = combine(appForeground, chatsVisible) { fg, shown -> fg && shown },
+        active = appForeground,
     )
 
     /** The one registration guard for the whole app. */

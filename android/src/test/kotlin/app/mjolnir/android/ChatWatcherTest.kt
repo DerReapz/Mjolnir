@@ -3,8 +3,10 @@ package app.mjolnir.android
 import app.mjolnir.client.ChatController
 import app.mjolnir.client.ChatStore
 import app.mjolnir.client.FakeRelayApi
+import app.mjolnir.client.Presence
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.Peer
+import app.mjolnir.protocol.RelayEvent
 import kotlin.test.assertEquals
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -41,5 +43,16 @@ class ChatWatcherTest {
 
         active.value = false; advanceUntilIdle()
         assertEquals(0, api.events.subscriptionCount.value)
+    }
+
+    @Test fun presenceReachesTheControllerWhileActive() = runTest {
+        val controller = ChatController({ api }, ChatStore(temp.newFolder("chats")), CoroutineScope(main.dispatcher)) { api.me.deviceId }
+        val foreground = MutableStateFlow(true) // the app is open, on whichever tab
+        ChatWatcher(controller, { api.events() }, CoroutineScope(main.dispatcher), foreground, retryDelayMs = 10)
+        advanceUntilIdle()
+        api.events.emit(RelayEvent.PresenceChanged("sam", online = true)); advanceUntilIdle()
+        assertEquals(Presence(true, null), controller.presence.value["sam"])
+        foreground.value = false; advanceUntilIdle()
+        assertEquals(0, api.events.subscriptionCount.value) // in the background the socket goes
     }
 }

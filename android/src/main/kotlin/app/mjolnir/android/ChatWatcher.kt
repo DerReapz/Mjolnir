@@ -12,9 +12,9 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
- * Feeds the relay's events to the [ChatController] for as long as [active] says a chat screen is on show (the Chats tab
- * with the app in the foreground), so messages appear live. Everywhere else the phone relies on the FCM doorbell and the
- * inbox worker. A dropped connection is retried; the controller catches up on every reconnect (`Connected`).
+ * Feeds the relay's events to the [ChatController] for as long as [active] says so (the app in the foreground, on any
+ * tab), so messages and presence appear live. In the background the phone relies on the FCM doorbell and the inbox
+ * worker. A dropped connection is retried; the controller catches up on every reconnect (`Connected`).
  */
 class ChatWatcher(
     private val controller: ChatController,

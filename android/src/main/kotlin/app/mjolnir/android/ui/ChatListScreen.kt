@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Messages
 import app.mjolnir.client.Presence
+import app.mjolnir.client.presenceDisplay
 import app.mjolnir.protocol.ChatKind
 import app.mjolnir.protocol.ChatSummary
 import kotlinx.coroutines.delay
@@ -303,14 +304,13 @@ internal fun rememberMinuteClock(clock: () -> Long = System::currentTimeMillis):
     return now
 }
 
-/** The 8 dp presence dot (green online, grey otherwise) with "Online" or "Last seen …"; no text while unknown. */
+/** The 8 dp presence dot (green online, grey otherwise) with "Online" or "Last seen …"; nothing at all while unknown (see [presenceDisplay]). */
 @Composable
 internal fun PresenceStatus(presence: Presence?, nowMs: Long, modifier: Modifier = Modifier) {
-    val online = presence?.online == true
-    val text = if (online) Messages.ONLINE else Messages.lastSeen(nowMs, presence?.lastSeenMs)
+    val shown = presenceDisplay(presence, nowMs) ?: return
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Box(Modifier.size(8.dp).background(if (online) OnlineDot else OfflineDot, CircleShape))
-        if (text.isNotEmpty()) Text(text, color = Forge.Muted, fontSize = 12.sp, maxLines = 1)
+        Box(Modifier.size(8.dp).background(if (shown.online) OnlineDot else OfflineDot, CircleShape))
+        Text(shown.text, color = Forge.Muted, fontSize = 12.sp, maxLines = 1)
     }
 }
 

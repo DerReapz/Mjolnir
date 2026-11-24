@@ -82,6 +82,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mjolnir.client.Messages
 import app.mjolnir.client.Segment
+import app.mjolnir.client.emptyChannelHint
 import app.mjolnir.client.latestOwnMessage
 import app.mjolnir.client.mentionQuery
 import app.mjolnir.client.messageReceipts
@@ -198,6 +199,8 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
         Header(chatTitle(current), "${current.spaceName} · $count ${if (count == 1) "member" else "members"}", onBack, onSettings)
         notice?.let { NoticeBar(it, vm::dismissNotice) }
         val listState = rememberLazyListState()
+        val hint = emptyChannelHint(current, messages)?.takeIf { pending.isEmpty() } // an open channel nobody has written in yet
+        val hintRows = if (hint != null) 1 else 0
         // The newest message, unless the reader scrolled up to read older ones (our own sends always follow).
         var pendingShown by remember(current.id) { mutableIntStateOf(0) }
         LaunchedEffect(current.id, messages.size, pending.size) {
@@ -207,7 +210,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
             val ownLast = newSend || messages.lastOrNull()?.author?.deviceId == self
             val layout = listState.layoutInfo
             val nearBottom = layout.totalItemsCount == 0 || (layout.visibleItemsInfo.lastOrNull()?.index ?: 0) >= layout.totalItemsCount - 2
-            if (nearBottom || ownLast) listState.scrollToItem(messages.size + pending.size - 1)
+            if (nearBottom || ownLast) listState.scrollToItem(hintRows + messages.size + pending.size - 1)
         }
         if (videos != null) {
             // The screen, not the bubbles, owns the video's lifetime: a video whose bubble isn't among the rows shown pauses
@@ -229,6 +232,7 @@ fun ChatScreen(vm: ChatViewModel, onBack: () -> Unit, onSettings: () -> Unit, mo
             contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 14.dp + barHeightDp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            hint?.let { item(key = "channel-hint") { SystemLine(it) } }
             items(messages, key = { it.id }) { m ->
                 val event = m.event
                 if (event != null) SystemLine(Messages.systemLine(event, nameOf))
