@@ -180,8 +180,15 @@ fun canInvite(chat: ChatSummary): Boolean = chat.kind == ChatKind.PRIVATE && cha
 fun canLeave(chat: ChatSummary): Boolean = chat.kind == ChatKind.PRIVATE && chat.member
 fun canTransferOwner(chat: ChatSummary, selfId: String?): Boolean = chat.kind == ChatKind.PRIVATE && chat.ownerId == selfId
 
+/** Removing a member: the space admin, from a private chat only (everyone in the space is in an open channel). */
+fun canRemoveMembers(chat: ChatSummary, isSpaceAdmin: Boolean): Boolean = chat.kind == ChatKind.PRIVATE && isSpaceAdmin
+
 /** Rename and delete: the chat's owner (a channel's creator) or the space admin. */
 fun canManage(chat: ChatSummary, selfId: String?, isSpaceAdmin: Boolean): Boolean = isSpaceAdmin || (selfId != null && chat.ownerId == selfId)
+
+/** The hint an open channel's conversation shows while nobody has written in it yet (system lines don't count); else null. */
+fun emptyChannelHint(chat: ChatSummary, messages: List<ChatMessage>): String? =
+    if (chat.kind == ChatKind.OPEN && messages.none { it.event == null }) Messages.channelHint(chat.spaceName) else null
 
 /** The chat list in two sections: open channels by name (any case), then private chats in their given order. */
 data class ChatSections(val channels: List<ChatSummary>, val privateChats: List<ChatSummary>)

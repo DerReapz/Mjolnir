@@ -181,6 +181,21 @@ class ChatRulesTest {
         assertTrue(canManage(open, "ann", false)); assertTrue(canManage(open, "admin", true)); assertFalse(canManage(open, "bob", false))
     }
 
+    @Test fun onlyTheSpaceAdminRemovesAndNeverFromAChannel() {
+        val priv = summary("p", "plans", ChatKind.PRIVATE, owner = "ann")
+        assertTrue(canRemoveMembers(priv, isSpaceAdmin = true))
+        assertFalse(canRemoveMembers(priv, isSpaceAdmin = false)) // the chat's owner alone cannot
+        assertFalse(canRemoveMembers(summary("c", "general", ChatKind.OPEN), isSpaceAdmin = true))
+    }
+
+    @Test fun anOpenChannelWithoutMessagesShowsItsHint() {
+        val open = summary("c", "general", ChatKind.OPEN)
+        assertEquals("Everyone in Crew can see this channel.", emptyChannelHint(open, emptyList()))
+        assertEquals("Everyone in Crew can see this channel.", emptyChannelHint(open, listOf(msg("j", ann, 1, event = ChatEvent.MemberJoined("ann"))))) // system lines aren't messages
+        assertNull(emptyChannelHint(open, listOf(msg("m", ann, 2))))
+        assertNull(emptyChannelHint(summary("p", "plans", ChatKind.PRIVATE), emptyList()))
+    }
+
     @Test fun chatSectionsSplitAndSort() {
         val chats = listOf(
             summary("1", "zeta", ChatKind.PRIVATE), summary("2", "games", ChatKind.OPEN), summary("3", "alpha", ChatKind.PRIVATE),

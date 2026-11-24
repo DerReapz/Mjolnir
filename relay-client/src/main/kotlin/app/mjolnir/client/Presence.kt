@@ -6,9 +6,21 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.time.ZoneId
 
 /** Whether a device is online, and when it was last seen (null while unknown or never). */
 data class Presence(val online: Boolean, val lastSeenMs: Long?)
+
+/** What a member list shows for a device: the dot (green when [online], grey otherwise) and "Online" or "Last seen …". */
+data class PresenceDisplay(val online: Boolean, val text: String)
+
+/** The display of [presence], or null to show nothing (no dot, no text) while it is unknown, as on an old relay. Both apps use it. */
+fun presenceDisplay(presence: Presence?, nowMs: Long, zone: ZoneId = ZoneId.systemDefault()): PresenceDisplay? = when {
+    presence == null -> null
+    presence.online -> PresenceDisplay(true, Messages.ONLINE)
+    presence.lastSeenMs == null -> null
+    else -> PresenceDisplay(false, Messages.lastSeen(nowMs, presence.lastSeenMs, zone))
+}
 
 /** Who is online, by device id: seeded from the spaces' members, then kept current by the relay's presence events. */
 class PresenceTracker {

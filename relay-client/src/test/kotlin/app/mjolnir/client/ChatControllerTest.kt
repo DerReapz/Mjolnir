@@ -1200,4 +1200,16 @@ class ChatControllerTest {
         c.onEvent(RelayEvent.PresenceChanged("sam", true, null))
         assertTrue(c.presence.value.getValue("sam").online)
     }
+
+    @Test fun aReconnectReseedsPresenceFromTheSpaces() = runTest {
+        val (api, _) = fakeWithChat()
+        val c = controller(api)
+        c.seedPresence(listOf(Space("s1", "Crew", "admin", listOf(sam.copy(online = true))))) // stale: Sam went away while we were offline
+        api.spaceList.replaceAll { s ->
+            s.copy(members = s.members.map { when (it.deviceId) { "sam" -> it.copy(online = false, lastSeenMs = 42L); "admin" -> it.copy(online = true); else -> it } })
+        }
+        c.onEvent(RelayEvent.Connected)
+        assertEquals(Presence(false, 42L), c.presence.value["sam"])
+        assertEquals(Presence(true, null), c.presence.value["admin"])
+    }
 }

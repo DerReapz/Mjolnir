@@ -29,4 +29,12 @@ class PresenceTest {
         t.seed(listOf(space(Peer("b", "B", DeviceKind.PC))))
         assertEquals(setOf("b"), t.presence.value.keys)
     }
+
+    @Test fun displayShowsNothingWhileUnknown() {
+        val now = 10 * 60_000L
+        assertEquals(null, presenceDisplay(null, now))
+        assertEquals(null, presenceDisplay(Presence(false, null), now)) // an old relay: no dot, no text
+        assertEquals(PresenceDisplay(true, "Online"), presenceDisplay(Presence(true, null), now))
+        assertEquals(PresenceDisplay(false, "Last seen 5m ago"), presenceDisplay(Presence(false, now - 5 * 60_000L), now))
+    }
 }

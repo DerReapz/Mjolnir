@@ -173,7 +173,7 @@ class ChatController(
 
     // ---- Reading ----
 
-    /** Re-reads the chat list of every space, forgets chats that are gone, and syncs those that moved on. */
+    /** Re-reads the chat list of every space (re-seeding [presence] from them), forgets chats that are gone, and syncs those that moved on. */
     suspend fun refresh() = refreshAll(null)
 
     /** [trigger] is the chat and rev of the `ChatChanged` that caused this refresh: its messages from that rev on are news. */
@@ -181,7 +181,9 @@ class ChatController(
         val a = api() ?: return
         val gen = generation
         val summaries = try {
-            a.spaces().flatMap { space ->
+            val spaces = a.spaces()
+            if (gen == generation) presenceTracker.seed(spaces) // the full list: catches up on presence missed while offline
+            spaces.flatMap { space ->
                 try { a.chats(space.id) } catch (e: RelayException) { if (e.kind == RelayErrorKind.NOT_FOUND) emptyList() else throw e }
             }
         } catch (e: RelayException) {
