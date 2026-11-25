@@ -16,6 +16,9 @@ import app.mjolnir.android.send.createSendingChannels
 import app.mjolnir.android.send.scheduleOutgoing
 import app.mjolnir.android.session.PhoneSession
 import app.mjolnir.android.session.SwitchingRelayApi
+import app.mjolnir.android.voice.AndroidAudioFactory
+import app.mjolnir.android.voice.newVoiceAudioDispatcher
+import app.mjolnir.android.voice.phoneVoiceController
 import android.net.ConnectivityManager
 import android.net.Network
 import app.mjolnir.android.chat.ChatSendFiles
@@ -77,6 +80,7 @@ class MjolnirApp : Application() {
         createReceivingChannels(this)
         createChatChannel(this)
         createChatSendingChannel(this)
+        createVoiceChannel(this)
         schedulePeriodicInboxDrain(this)
         syncPushToken(this)
         resumeChatSendsOnNetwork()
@@ -194,6 +198,16 @@ class AppContainer(context: Context) {
         post = { m, name -> postChatNotification(appContext, m, name) },
     )
 
+    /**
+     * Voice rooms: the room lists of every space (kept current by [chatWatcher]'s events) and the one session this phone
+     * has open, on open mic by default. A session has its own socket and runs in the VoiceService's lifetime, so it goes
+     * on with the screen off; capture and playout run on their own urgent-audio threads.
+     */
+    val voice = phoneVoiceController(
+        api, CoroutineScope(SupervisorJob() + Dispatchers.IO), AndroidAudioFactory(appContext),
+        selfId = { try { config.read().deviceId } catch (e: IOException) { null } }, audioDispatcher = newVoiceAudioDispatcher(),
+    )
+
     /** True while an activity of the app is started. */
     val appForeground = MutableStateFlow(false)
 
@@ -210,11 +224,11 @@ class AppContainer(context: Context) {
      */
     val chatWatcher = ChatWatcher(
         chatController, events = { api.events().forwardingUpdates(updater) }, scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
-        active = appForeground,
+        active = appForeground, alsoTo = { voice.onEvent(it) },
     )
 
     /** The one registration guard for the whole app. */
-    val session = PhoneSession(api, config, onReset = { nicknames.clear(); chatController.clear(); chatExportDir.deleteRecursively() })
+    val session = PhoneSession(api, config, onReset = { voice.leave(); nicknames.clear(); chatController.clear(); chatExportDir.deleteRecursively() })
 
     /** Call after the relay URL was written to [config]; the next call builds a client for the new address. */
     fun invalidateRelayClient() = synchronized(clientLock) { cachedUrl = null }

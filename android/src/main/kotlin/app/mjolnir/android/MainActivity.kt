@@ -7,6 +7,14 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Column
+import app.mjolnir.android.ui.InVoiceBar
+import app.mjolnir.android.ui.VoiceEffect
+import app.mjolnir.android.ui.VoiceViewModel
+import app.mjolnir.android.voice.startVoiceService
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -80,21 +88,24 @@ class MainActivity : ComponentActivity() {
                     c.chatMediaCache, AndroidThumbnailer, MediaStoreFilePublisher(appContext), c.chatSendFiles,
                     importer = { uris, dir -> chatImporter.importForChat(uris.map(Uri::parse), dir) }, exportDir = c.chatExportDir,
                 )
+                val voice = voiceVm // in the same store: holding it (not the Activity) is safe
                 @Suppress("UNCHECKED_CAST")
                 return ChatViewModel(
                     c.chatController, c.api, c.nicknames, { try { c.config.read().deviceId } catch (e: java.io.IOException) { null } },
                     c.appForeground, c.chatsVisible, extras.createSavedStateHandle(),
                     onRead = { chatId -> cancelChatNotification(appContext, chatId) }, media = media, videos = c.chatVideos,
+                    onSpacesLoaded = voice::spacesLoaded,
                 ) as T
             }
             if (modelClass != SpacesViewModel::class.java) return create(modelClass)
             val c = container
             val throwing = throwVm
+            val voice = voiceVm
             @Suppress("UNCHECKED_CAST")
             return SpacesViewModel(
                 c.api, c.nicknames, extras.createSavedStateHandle(),
                 onPeersAffected = { throwing.refreshTargets() }, onUnauthorized = { resetQuietly(c.session) },
-                presence = c.chatController.presence, onSpacesLoaded = c.chatController::seedPresence,
+                presence = c.chatController.presence, onSpacesLoaded = { all -> c.chatController.seedPresence(all); voice.spacesLoaded(all) },
             ) as T
         }
 
@@ -119,6 +130,14 @@ class MainActivity : ComponentActivity() {
                 }
                 CaughtViewModel::class.java -> CaughtViewModel(c.caught, c.caughtChanged, Dispatchers.IO, c.nicknames)
                 GuestRoomViewModel::class.java -> GuestRoomViewModel(c.guestRoom)
+                VoiceViewModel::class.java -> {
+                    val appContext = applicationContext
+                    VoiceViewModel(
+                        c.voice, selfId = { try { c.config.read().deviceId } catch (e: java.io.IOException) { null } },
+                        hasMicPermission = { appContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED },
+                        startService = { room -> startVoiceService(appContext, room.name) },
+                    )
+                }
                 SettingsViewModel::class.java -> SettingsViewModel(c.api, c.config, session, onRelayUrlChanged = c::invalidateRelayClient)
                 else -> error("Unknown ViewModel $modelClass")
             } as T
@@ -127,6 +146,7 @@ class MainActivity : ComponentActivity() {
 
     private val throwVm: ThrowViewModel by viewModels { factory }
     private val chatVm: ChatViewModel by viewModels { factory }
+    private val voiceVm: VoiceViewModel by viewModels { factory }
     private val importer by lazy { UriImporter(applicationContext, container.outboxDir) } // never captures the Activity
 
     private var requestedScreen by mutableStateOf<Screen?>(null)
@@ -148,6 +168,14 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(requestedScreen) {
                     requestedScreen?.let { screen = it; requestedScreen = null }
                 }
+                // Voice rooms need the microphone: the answer goes to the voice view model, which then starts the service and joins.
+                val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> voiceVm.onMicPermission(granted) }
+                LaunchedEffect(Unit) {
+                    voiceVm.effects.collect { effect ->
+                        when (effect) { VoiceEffect.RequestMicPermission -> micPermission.launch(Manifest.permission.RECORD_AUDIO) }
+                    }
+                }
+                val voiceActive by container.voice.active.collectAsState()
                 val chatUnread by container.chatController.unread.collectAsState()
                 val chatOpen by chatVm.selectedId.collectAsState()
                 val shareOffer by chatVm.shareOffer.collectAsState()
@@ -164,14 +192,20 @@ class MainActivity : ComponentActivity() {
                 val updateBanner by container.updateFlow.banner.collectAsState()
                 Scaffold(
                     containerColor = Forge.Background,
-                    topBar = { UpdateBanner(updateBanner, onInstall = { container.updateFlow.install() }) },
+                    topBar = {
+                        Column {
+                            UpdateBanner(updateBanner, onInstall = { container.updateFlow.install() })
+                            // Wherever the voice panel (at the foot of the chat list) is out of sight: a tap goes back to it.
+                            voiceActive?.let { a -> if (screen != Screen.CHATS || chatOpen != null) InVoiceBar(a.roomName, onOpen = { chatVm.close(); screen = Screen.CHATS }) }
+                        }
+                    },
                     // A conversation takes the whole screen, as in the mockup.
                     bottomBar = { if (!(screen == Screen.CHATS && chatOpen != null)) MjolnirNav(screen, onSelect = { screen = it }, chatsBadge = chatUnread.values.sum()) },
                 ) { padding ->
                     Box(Modifier.fillMaxSize().padding(padding)) {
                         when (screen) {
                             Screen.THROW -> ThrowScreen(throwVm, importer, onPairDevice = { screen = Screen.DEVICES })
-                            Screen.CHATS -> ChatsScreen(chatVm)
+                            Screen.CHATS -> ChatsScreen(chatVm, voice = voiceVm, onOpenSettings = ::openAppSettings)
                             Screen.CAUGHT -> CaughtScreen(viewModel(factory = factory))
                             Screen.DEVICES -> DevicesScreen(viewModel(factory = factory), viewModel(factory = factory), viewModel(factory = factory), viewModel(factory = factory))
                             Screen.SETTINGS -> SettingsScreen(viewModel(factory = factory))
@@ -222,6 +256,14 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         container.appForeground.value = false
         super.onStop()
+    }
+
+    /** The app's page in the system settings, where a refused permission can be turned on. */
+    private fun openAppSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+        } catch (_: android.content.ActivityNotFoundException) {
+        }
     }
 
     private fun askForNotifications() {

@@ -73,6 +73,18 @@ fun createChatChannel(context: Context) {
     manager.createNotificationChannel(NotificationChannel(CHANNEL_MENTIONS, "Mentions", NotificationManager.IMPORTANCE_HIGH))
 }
 
+/** The ongoing voice-room notification: low importance and silent (no sound, no vibration). */
+const val CHANNEL_VOICE = "voice"
+
+fun createVoiceChannel(context: Context) {
+    val channel = NotificationChannel(CHANNEL_VOICE, "Voice rooms", NotificationManager.IMPORTANCE_LOW).apply {
+        setSound(null, null)
+        enableVibration(false)
+        setShowBadge(false)
+    }
+    context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+}
+
 /** What a chat notification says and how loudly: a mention is `{name} mentioned you in {chat}: {text}` at high priority, in its own slot. */
 internal data class ChatNotificationSpec(val channel: String, val priority: Int, val text: String, val id: Int)
 

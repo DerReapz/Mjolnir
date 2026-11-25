@@ -64,7 +64,7 @@ import kotlinx.coroutines.launch
 data class ChatRow(val chat: ChatSummary, val unread: Int, val preview: String, val lastAtEpochMs: Long?, val mention: Boolean = false)
 
 /** The chats of one space: its open channels by name, then its private chats, most recently active first. */
-data class ChatGroup(val spaceName: String, val channels: List<ChatRow>, val privateChats: List<ChatRow>)
+data class ChatGroup(val spaceName: String, val channels: List<ChatRow>, val privateChats: List<ChatRow>, val spaceId: String = "")
 
 /** The chat list: approvals this phone owes as an owner on top, invitations to join below. */
 data class ChatListUi(
@@ -150,6 +150,8 @@ class ChatViewModel(
     /** The app's one video player; without it videos show as file bubbles. */
     val videos: VideoPlayerState? = null,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** The spaces were fetched (the voice rooms follow them). */
+    private val onSpacesLoaded: (List<Space>) -> Unit = {},
 ) : ViewModel() {
     private val _spaces = MutableStateFlow<List<Space>>(emptyList())
     /** The spaces this phone is in: who administers them, who could be invited, where a new chat can go. */
@@ -200,6 +202,7 @@ class ChatViewModel(
                     sections.channels.map { byId.getValue(it.id) },
                     sections.privateChats.map { byId.getValue(it.id) }
                         .sortedWith(compareByDescending<ChatRow> { it.lastAtEpochMs ?: 0L }.thenBy { it.chat.name.lowercase() }),
+                    g.first().chat.spaceId,
                 )
             }
         ChatListUi(groups, invites.filter { it.state == InviteState.PENDING_APPROVAL }, invites.filter { it.state == InviteState.APPROVED })
@@ -325,7 +328,7 @@ class ChatViewModel(
         viewModelScope.launch {
             quietly { controller.refresh() }
             quietly { controller.refreshInvites() }
-            quietly { api.spaces().let { all -> _spaces.value = all; controller.seedPresence(all) } } // the seed replaces the map: always every space
+            quietly { api.spaces().let { all -> _spaces.value = all; controller.seedPresence(all); onSpacesLoaded(all) } } // the seed replaces the map: always every space
             _loaded.value = true
         }
     }

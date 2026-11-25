@@ -14,7 +14,8 @@ import kotlinx.coroutines.launch
 /**
  * Feeds the relay's events to the [ChatController] for as long as [active] says so (the app in the foreground, on any
  * tab), so messages and presence appear live. In the background the phone relies on the FCM doorbell and the inbox
- * worker. A dropped connection is retried; the controller catches up on every reconnect (`Connected`).
+ * worker. A dropped connection is retried; the controller catches up on every reconnect (`Connected`). A voice session
+ * has its own socket, so it is not bound by this foreground rule.
  */
 class ChatWatcher(
     private val controller: ChatController,
@@ -22,6 +23,8 @@ class ChatWatcher(
     scope: CoroutineScope,
     active: Flow<Boolean>,
     private val retryDelayMs: Long = RETRY_DELAY_MS,
+    /** Also gets every event (the voice rooms: room changes, and `Connected` to refetch). */
+    private val alsoTo: (RelayEvent) -> Unit = {},
 ) {
     init {
         scope.launch {
@@ -32,7 +35,7 @@ class ChatWatcher(
     private suspend fun listen() {
         while (true) {
             try {
-                events().collect(controller::onEvent)
+                events().collect { e -> controller.onEvent(e); alsoTo(e) }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: RelayException) {

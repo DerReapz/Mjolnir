@@ -55,4 +55,15 @@ class ChatWatcherTest {
         foreground.value = false; advanceUntilIdle()
         assertEquals(0, api.events.subscriptionCount.value) // in the background the socket goes
     }
+
+    @Test fun otherEventsReachTheVoiceRoomsToo() = runTest {
+        val controller = ChatController({ api }, ChatStore(temp.newFolder("chats")), CoroutineScope(main.dispatcher)) { api.me.deviceId }
+        val seen = mutableListOf<RelayEvent>()
+        ChatWatcher(controller, { api.events() }, CoroutineScope(main.dispatcher), MutableStateFlow(true), retryDelayMs = 10, alsoTo = { seen += it })
+        advanceUntilIdle()
+        val room = app.mjolnir.protocol.VoiceRoom("r1", "s1", "Lounge", "admin")
+        api.events.emit(RelayEvent.VoiceRoomChanged(room)); advanceUntilIdle()
+        api.events.emit(RelayEvent.VoiceRoomDeleted("s1", "r1")); advanceUntilIdle()
+        assertEquals(listOf(RelayEvent.VoiceRoomChanged(room), RelayEvent.VoiceRoomDeleted("s1", "r1")), seen)
+    }
 }

@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Voice rooms: the microphone, the call audio mode, and the foreground service that keeps a room going with the screen off. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- In-app updates: the app is distributed outside Play (GitHub releases), so it installs its own verified APK. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
@@ -46,6 +50,12 @@
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
+
+        <!-- A voice room in progress (started from the app with the microphone granted; stops when the session ends). -->
+        <service
+            android:name="app.mjolnir.android.voice.VoiceService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <receiver
             android:name="app.mjolnir.android.send.SendNowReceiver"

@@ -69,7 +69,7 @@ private val AvatarIdle = androidx.compose.ui.graphics.Color(0xFF262626)
 
 /** The Chats tab: the list, and over it the open chat or its settings. Back steps out one level. */
 @Composable
-fun ChatsScreen(vm: ChatViewModel, modifier: Modifier = Modifier) {
+fun ChatsScreen(vm: ChatViewModel, modifier: Modifier = Modifier, voice: VoiceViewModel? = null, onOpenSettings: () -> Unit = {}) {
     val selected by vm.selectedId.collectAsState()
     var settings by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(Unit) { vm.refresh() }
@@ -78,23 +78,43 @@ fun ChatsScreen(vm: ChatViewModel, modifier: Modifier = Modifier) {
     when {
         selected != null && settings -> ChatSettingsScreen(vm, onBack = { settings = false }, modifier)
         selected != null -> ChatScreen(vm, onBack = vm::close, onSettings = { settings = true }, modifier)
-        else -> ChatListScreen(vm, modifier)
+        else -> ChatListScreen(vm, modifier, voice, onOpenSettings)
     }
 }
 
 @Composable
-fun ChatListScreen(vm: ChatViewModel, modifier: Modifier = Modifier) {
+fun ChatListScreen(vm: ChatViewModel, modifier: Modifier = Modifier, voiceVm: VoiceViewModel? = null, onOpenSettings: () -> Unit = {}) {
     val ui by vm.list.collectAsState()
     val spaces by vm.spaces.collectAsState()
     val notice by vm.notice.collectAsState()
     val names by vm.nicknameMap.collectAsState()
     var creating by rememberSaveable { mutableStateOf(false) }
+    val voice = voiceVm?.ui?.collectAsState()?.value ?: PhoneVoiceUi()
+    var newRoomIn by rememberSaveable { mutableStateOf<String?>(null) }
+    var managing by rememberSaveable { mutableStateOf<String?>(null) }
+    val voiceActions = voiceVm?.let { v ->
+        PhoneVoiceActions(
+            onJoin = v::join, onLeave = v::leave, onMute = v::setMuted, onTalking = v::setTalking, onOpenMic = v::setOpenMic,
+            onNewRoom = { newRoomIn = it }, onManage = { managing = it.id }, onDismissNotice = v::dismissNotice,
+            onDismissMicPrompt = v::dismissMicPrompt, onOpenSettings = { v.dismissMicPrompt(); onOpenSettings() },
+        )
+    } ?: PhoneVoiceActions()
     ChatListContent(
         ui, nameOf = { p -> names[p.deviceId] ?: p.name }, notice = notice, modifier = modifier,
         onOpen = vm::open, onNewChat = { creating = true },
         onApprove = vm::approve, onDeny = vm::deny, onJoin = vm::join, onDecline = vm::decline, onDismissNotice = vm::dismissNotice,
+        voice = voice, voiceActions = voiceActions,
     )
     if (creating) NewChatDialog(spaces, onCreate = { space, name, channel -> if (channel) vm.createChannel(space, name) else vm.createChat(space, name); creating = false }, onClose = { creating = false })
+    newRoomIn?.let { spaceId ->
+        val spaceName = voice.spaces.firstOrNull { it.id == spaceId }?.name ?: ui.groups.firstOrNull { it.spaceId == spaceId }?.spaceName.orEmpty()
+        NewVoiceRoomDialog(spaceName, onCreate = { name -> voiceVm?.createRoom(spaceId, name); newRoomIn = null }, onClose = { newRoomIn = null })
+    }
+    managing?.let { id ->
+        val room = voice.rooms.values.firstNotNullOfOrNull { list -> list.find { it.id == id } }
+        if (room == null) LaunchedEffect(id) { managing = null } // deleted meanwhile
+        else VoiceRoomDialog(room, onRename = { voiceVm?.renameRoom(room, it) }, onDelete = { voiceVm?.deleteRoom(room) }, onClose = { managing = null })
+    }
 }
 
 /** The list per the `PhoneChatList` mockup: approvals and invitations as cards, the chats grouped by space in 56 dp rows. */
@@ -105,6 +125,7 @@ fun ChatListContent(
     onOpen: (String) -> Unit = {}, onNewChat: () -> Unit = {},
     onApprove: (ChatInvite) -> Unit = {}, onDeny: (ChatInvite) -> Unit = {},
     onJoin: (ChatInvite) -> Unit = {}, onDecline: (ChatInvite) -> Unit = {}, onDismissNotice: () -> Unit = {},
+    voice: PhoneVoiceUi = PhoneVoiceUi(), voiceActions: PhoneVoiceActions = PhoneVoiceActions(),
 ) {
     Column(modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 20.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -112,6 +133,14 @@ fun ChatListContent(
             OutlinedButton(onClick = onNewChat, shape = ButtonShape, modifier = Modifier.heightIn(min = 44.dp)) { Text(Messages.NEW_CHAT_PHONE) }
         }
         notice?.let { NoticeBar(it, onDismissNotice) }
+        voice.micPrompt?.let { MicPromptBar(it, voiceActions.onOpenSettings, voiceActions.onDismissMicPrompt) }
+        // Each space once, by name: its chats, then (on a relay with voice) its voice rooms, even with no chat yet.
+        val byId = ui.groups.associateBy { it.spaceId }
+        val spaceIds = if (!voice.supported) ui.groups.map { it.spaceId } else {
+            (ui.groups.map { it.spaceId to it.spaceName } + voice.spaces.map { it.id to it.name })
+                .distinctBy { it.first }.sortedBy { it.second.lowercase() }.map { it.first }
+        }
+        val spaceNames = voice.spaces.associate { it.id to it.name } + ui.groups.associate { it.spaceId to it.spaceName }
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             for (invite in ui.approvals) item(key = "approve-${invite.id}") { ApprovalCard(invite, nameOf, onApprove, onDeny) }
             for (invite in ui.invitations) item(key = "invite-${invite.id}") { InvitationCard(invite, onJoin, onDecline) }
@@ -123,23 +152,27 @@ fun ChatListContent(
                     )
                 }
             }
-            for (group in ui.groups) {
-                item(key = "space-${group.spaceName}") {
+            for (spaceId in spaceIds) {
+                val group = byId[spaceId] ?: ChatGroup(spaceNames[spaceId].orEmpty(), emptyList(), emptyList(), spaceId)
+                item(key = "space-$spaceId") {
                     Text(
                         group.spaceName.uppercase(), color = Forge.Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp,
                         modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 6.dp),
                     )
                 }
                 if (group.channels.isNotEmpty()) {
-                    item(key = "channels-${group.spaceName}") { SectionLabel(Messages.CHANNELS) }
+                    item(key = "channels-$spaceId") { SectionLabel(Messages.CHANNELS) }
                     for (row in group.channels) item(key = row.chat.id) { ChatRowItem(row, now, onClick = { onOpen(row.chat.id) }) }
                 }
                 if (group.privateChats.isNotEmpty()) {
-                    item(key = "private-${group.spaceName}") { SectionLabel(Messages.PRIVATE_CHATS) }
+                    item(key = "private-$spaceId") { SectionLabel(Messages.PRIVATE_CHATS) }
                     for (row in group.privateChats) item(key = row.chat.id) { ChatRowItem(row, now, onClick = { onOpen(row.chat.id) }) }
                 }
+                if (voice.supported) item(key = "voice-$spaceId") { VoiceRoomsSection(spaceId, voice, nameOf, voiceActions) }
             }
         }
+        voice.notice?.let { NoticeBar(it, voiceActions.onDismissNotice) }
+        VoicePanel(voice, nameOf, voiceActions)
     }
 }
 
