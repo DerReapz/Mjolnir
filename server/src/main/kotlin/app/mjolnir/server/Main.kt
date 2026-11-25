@@ -44,6 +44,7 @@ fun main() {
         maxSpacesPerDevice = System.getenv("MJOLNIR_MAX_SPACES")?.toIntOrNull()?.coerceAtLeast(1) ?: defaults.maxSpacesPerDevice,
         maxMembersPerSpace = System.getenv("MJOLNIR_MAX_MEMBERS")?.toIntOrNull()?.coerceAtLeast(2) ?: defaults.maxMembersPerSpace,
         maxChatFileBytes = maxChatFileBytes,
+        maxVoicePerRoom = System.getenv("MJOLNIR_MAX_VOICE")?.toIntOrNull()?.coerceIn(1, 16) ?: defaults.maxVoicePerRoom,
         guestMaxBytes = System.getenv("MJOLNIR_GUEST_MAX_MB")?.toLongOrNull()?.coerceAtLeast(1)?.let { it * MIB },
     )
     val deps = RelayDeps(store = Store("jdbc:sqlite:$db"), limits = limits, files = files, push = push)

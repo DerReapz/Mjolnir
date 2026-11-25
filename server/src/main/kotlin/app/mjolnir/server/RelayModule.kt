@@ -66,6 +66,8 @@ data class RelayLimits(
     val chatMessagesPerMinute: Int = 60,
     /** Per-file cap for chat attachments from `MJOLNIR_MAX_CHAT_FILE_MB`; null: the per-file limit `MJOLNIR_MAX_FILE_MB`. May exceed it (videos); the upload ceiling follows, deliveries and guest rooms keep the per-file limit. */
     val maxChatFileBytes: Long? = null,
+    /** People per voice room, from `MJOLNIR_MAX_VOICE` (1..16). */
+    val maxVoicePerRoom: Int = 8,
 )
 
 data class RelayDeps(
@@ -87,6 +89,8 @@ data class RelayDeps(
     /** How long after a device's last connection closes it is reported offline (a quick reconnect reports nothing). */
     val presenceGraceMs: Long = 30_000,
     val presence: PresenceWatch = PresenceWatch(),
+    /** Who is in which voice room (in memory only). */
+    val voice: VoiceHub = VoiceHub(),
 )
 
 internal fun readRelayVersion(): String {
@@ -173,6 +177,8 @@ fun Application.relayModule(deps: RelayDeps) {
     }
     // Spaces from before open channels get their `general` once.
     deps.store.ensureDefaultChannels(deps.clock.nowMs())
+    // ...and their `Lounge` voice room.
+    deps.store.ensureDefaultVoiceRooms(deps.clock.nowMs())
     val purgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     purgeScope.launch {
         while (true) {
@@ -205,6 +211,7 @@ fun Application.relayModule(deps: RelayDeps) {
         deviceRoutes(deps)
         pairingRoutes(deps)
         spaceRoutes(deps)
+        voiceRoutes(deps)
         chatRoutes(deps)
         sendRoutes(deps)
         fileRoutes(deps)

@@ -68,6 +68,9 @@ data class EndedRoom(val ownerId: String, val guestId: String?, val fileIdsToDel
 
 /** Name of the open chat every space starts with. */
 const val DEFAULT_CHANNEL = "general"
+const val DEFAULT_VOICE_ROOM = "Lounge"
+
+data class VoiceRoomRow(val id: String, val spaceId: String, val name: String, val creatorId: String, val createdAtMs: Long)
 
 data class ChatRow(val id: String, val spaceId: String, val name: String, val ownerId: String, val createdAtMs: Long, val rev: Long, val kind: ChatKind = ChatKind.PRIVATE)
 
@@ -209,6 +212,15 @@ class Store(jdbcUrl: String) {
             )
             it.executeUpdate("CREATE INDEX IF NOT EXISTS space_members_device ON space_members(device_id)")
             it.executeUpdate(
+                """CREATE TABLE IF NOT EXISTS voice_rooms(
+                    id TEXT PRIMARY KEY,
+                    space_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    creator_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL)"""
+            )
+            it.executeUpdate("CREATE INDEX IF NOT EXISTS voice_rooms_space ON voice_rooms(space_id)")
+            it.executeUpdate(
                 """CREATE TABLE IF NOT EXISTS rooms(
                     id TEXT PRIMARY KEY,
                     owner_id TEXT NOT NULL,
@@ -295,6 +307,7 @@ class Store(jdbcUrl: String) {
         addColumnIfMissing("chats", "kind", "TEXT NOT NULL DEFAULT 'PRIVATE'")
         addColumnIfMissing("chat_members", "muted", "INTEGER NOT NULL DEFAULT 0")
         addColumnIfMissing("spaces", "default_channel_done", "INTEGER NOT NULL DEFAULT 0")
+        addColumnIfMissing("spaces", "default_voice_done", "INTEGER NOT NULL DEFAULT 0")
         // Databases created before tombstones existed lack acked_at.
         val hasAckedAt = conn.createStatement().use { st ->
             st.executeQuery("PRAGMA table_info(files)").use { rs ->
@@ -509,8 +522,62 @@ class Store(jdbcUrl: String) {
         addMember(row.id, adminId, nowMs)
         createChat(row.id, adminId, DEFAULT_CHANNEL, nowMs, ChatKind.OPEN)
         update("UPDATE spaces SET default_channel_done=1 WHERE id=?", row.id)
+        createVoiceRoom(row.id, adminId, DEFAULT_VOICE_ROOM, nowMs)
+        update("UPDATE spaces SET default_voice_done=1 WHERE id=?", row.id)
         row
     }
+
+    /**
+     * Creates `Lounge` in every space that has not had its default voice room yet (spaces from before voice rooms),
+     * owned by the space admin, and marks them done so a deleted `Lounge` is never recreated. Returns how many it made.
+     */
+    @Synchronized
+    fun ensureDefaultVoiceRooms(nowMs: Long): Int = transaction {
+        val pending = conn.createStatement().use { st ->
+            st.executeQuery("SELECT id, admin_id FROM spaces WHERE default_voice_done=0 ORDER BY created_at, id").use { rs ->
+                buildList { while (rs.next()) add(rs.getString("id") to rs.getString("admin_id")) }
+            }
+        }
+        var made = 0
+        for ((spaceId, adminId) in pending) {
+            if (createVoiceRoom(spaceId, adminId, DEFAULT_VOICE_ROOM, nowMs) != null) made++
+            update("UPDATE spaces SET default_voice_done=1 WHERE id=?", spaceId)
+        }
+        made
+    }
+
+    // ---- Voice rooms ----
+
+    private fun ResultSet.toVoiceRoom() = VoiceRoomRow(getString("id"), getString("space_id"), getString("name"), getString("creator_id"), getLong("created_at"))
+
+    /** Creates a voice room in [spaceId]; null unless [creatorId] is a member of that space. */
+    @Synchronized
+    fun createVoiceRoom(spaceId: String, creatorId: String, name: String, nowMs: Long): VoiceRoomRow? = transaction {
+        if (!isSpaceMember(spaceId, creatorId)) return@transaction null
+        val row = VoiceRoomRow(newId(), spaceId, name, creatorId, nowMs)
+        update("INSERT INTO voice_rooms(id,space_id,name,creator_id,created_at) VALUES(?,?,?,?,?)", row.id, spaceId, name, creatorId, nowMs)
+        row
+    }
+
+    @Synchronized
+    fun voiceRoom(id: String): VoiceRoomRow? =
+        conn.prepareStatement("SELECT * FROM voice_rooms WHERE id=?").use {
+            it.setString(1, id)
+            it.executeQuery().use { rs -> if (rs.next()) rs.toVoiceRoom() else null }
+        }
+
+    @Synchronized
+    fun voiceRoomsIn(spaceId: String): List<VoiceRoomRow> =
+        conn.prepareStatement("SELECT * FROM voice_rooms WHERE space_id=? ORDER BY created_at, id").use {
+            it.setString(1, spaceId)
+            it.executeQuery().use { rs -> buildList { while (rs.next()) add(rs.toVoiceRoom()) } }
+        }
+
+    @Synchronized
+    fun renameVoiceRoom(id: String, name: String): Boolean = update("UPDATE voice_rooms SET name=? WHERE id=?", name, id) > 0
+
+    @Synchronized
+    fun deleteVoiceRoom(id: String): Boolean = update("DELETE FROM voice_rooms WHERE id=?", id) > 0
 
     /**
      * Creates `general` in every space that has not had its default channel yet (spaces from before open channels),
@@ -610,6 +677,7 @@ class Store(jdbcUrl: String) {
         val ids = members(id).map { it.id }
         val invites = chatsIn(id).flatMap { inviteParties(it.id) }.toSet()
         val chats = chatsIn(id).associate { it.id to deleteChat(it.id) }
+        update("DELETE FROM voice_rooms WHERE space_id=?", id)
         conn.prepareStatement("DELETE FROM space_members WHERE space_id=?").use { it.setString(1, id); it.executeUpdate() }
         conn.prepareStatement("DELETE FROM pairings WHERE space_id=?").use { it.setString(1, id); it.executeUpdate() }
         conn.prepareStatement("DELETE FROM spaces WHERE id=?").use { it.setString(1, id); it.executeUpdate() }

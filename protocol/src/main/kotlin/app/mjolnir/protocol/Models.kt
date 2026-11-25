@@ -83,6 +83,9 @@ object DeviceKindSerializer : KSerializer<DeviceKind> {
 )
 @Serializable data class CreateSpaceRequest(val name: String)
 @Serializable data class RenameSpaceRequest(val name: String)
+/** A voice room of a space; [participants] are the members currently in it (only space members ever see them). */
+@Serializable data class VoiceRoom(val id: String, val spaceId: String, val name: String, val creatorId: String, val participants: List<Peer> = emptyList())
+@Serializable data class CreateVoiceRoomRequest(val name: String)
 @Serializable data class TransferAdminRequest(val deviceId: String)
 @Serializable data class RoomResponse(val roomId: String, val secret: String, val expiresAtEpochMs: Long)
 /** [downloadedFileIds]: files sent to the room's guest that the guest has already downloaded, so an owner app that wasn't listening can catch up. */
@@ -227,6 +230,10 @@ sealed interface RelayEvent {
     @Serializable @SerialName("space_changed") data class SpaceChanged(val spaceId: String) : RelayEvent
     @Serializable @SerialName("space_deleted") data class SpaceDeleted(val space: SpaceRef) : RelayEvent
 
+    /** A voice room was created, renamed, or its participants changed; sent to every member of its space. */
+    @Serializable @SerialName("voice_room") data class VoiceRoomChanged(val room: VoiceRoom) : RelayEvent
+    @Serializable @SerialName("voice_room_deleted") data class VoiceRoomDeleted(val spaceId: String, val roomId: String) : RelayEvent
+
     /**
      * Sent to a chat's members (and its space admin) when the chat's messages or members changed; [rev] is the chat's revision.
      * [mentioned] is set for a device a new message mentions; [receipts] carries the receipts that changed when only who has
@@ -253,7 +260,7 @@ sealed interface RelayEvent {
      * Sent to the devices sharing a space with [deviceId] when it connects ([online]) or, after a grace period with no
      * connection left, goes offline; [lastSeenMs] is then when it was last seen.
      */
-    @Serializable @SerialName("presence") data class PresenceChanged(val deviceId: String, val online: Boolean, val lastSeenMs: Long? = null) : RelayEvent
+    @Serializable @SerialName("presence") data class PresenceChanged(val deviceId: String, val online: Boolean, val lastSeenMs: Long? = null, val voiceRoomId: String? = null) : RelayEvent
 
     /** Sent once on connect when the app's version is older than the relay's; [version] is the relay's. */
     @Serializable @SerialName("update_available") data class UpdateAvailable(val version: String) : RelayEvent

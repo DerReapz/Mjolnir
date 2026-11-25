@@ -104,7 +104,9 @@ fun Route.spaceRoutes(deps: RelayDeps) {
 
         delete("/v1/spaces/{id}") {
             val (row, me) = call.adminSpace() ?: return@delete
+            val voiceRoomIds = store.voiceRoomsIn(row.id).map { it.id }
             val deleted = store.deleteSpace(row.id, me) ?: return@delete call.error(HttpStatusCode.Forbidden, "not_admin")
+            voiceRoomIds.forEach { deps.voice.closeRoom(it) }
             freeChatBlobs(deps)
             deleted.memberIds.filter { it != me }.forEach { deps.hub.emit(it, RelayEvent.SpaceDeleted(row.toRef())) }
             deleted.chats.forEach { (chatId, members) -> (members + row.adminId).toSet().forEach { deps.hub.emit(it, RelayEvent.ChatDeleted(chatId)) } }
@@ -131,6 +133,7 @@ fun Route.spaceRoutes(deps: RelayDeps) {
             }
             emitSpaceChanged(deps, row.id, also = listOf(target))
             emitLeftSpace(deps, row.adminId, target, removal.chats)
+            kickFromVoice(deps, row.id, target)
             call.respond(HttpStatusCode.NoContent)
         }
 

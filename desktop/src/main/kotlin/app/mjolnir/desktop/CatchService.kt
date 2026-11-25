@@ -53,6 +53,7 @@ class CatchService(
                 is RelayEvent.UpdateAvailable -> onUpdateAvailable(event.version)
                 is RelayEvent.ChatChanged, is RelayEvent.ChatDeleted, is RelayEvent.ChatInvitesChanged -> onChatEvent(event)
                 is RelayEvent.PresenceChanged -> onChatEvent(event) // the member lists' online dots
+                is RelayEvent.VoiceRoomChanged, is RelayEvent.VoiceRoomDeleted -> Unit // wired with the voice UI
             }
         }
     }
