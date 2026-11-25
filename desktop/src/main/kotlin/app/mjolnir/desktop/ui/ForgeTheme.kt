@@ -255,7 +255,7 @@ fun ForgeInput(
         value = value, onValueChange = onValueChange, singleLine = true,
         textStyle = style(ForgeFonts.inter400, 14).copy(color = Forge.text),
         cursorBrush = SolidColor(Forge.accent),
-        modifier = modifier.onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { e ->
+        modifier = modifier.trackTextFocus().onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { e ->
             if (onEnter != null && e.type == KeyEventType.KeyDown && e.key == Key.Enter) { onEnter(); true } else false
         },
         decorationBox = { inner ->

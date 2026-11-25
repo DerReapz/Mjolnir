@@ -208,10 +208,14 @@ class AppController(
 
     fun joinVoice(room: VoiceRoom) { _voiceNotice.value = null; voice.join(room) }
 
-    fun createVoiceRoom(spaceId: String, name: String) {
+    fun createVoiceRoom(spaceId: String, name: String) = voiceCall { voice.createRoom(spaceId, name) }
+    fun renameVoiceRoom(id: String, name: String) = voiceCall { voice.renameRoom(id, name) }
+    fun deleteVoiceRoom(id: String) = voiceCall { voice.deleteRoom(id) }
+
+    private fun voiceCall(block: suspend () -> Unit) {
         scope.launch {
             try {
-                voice.createRoom(spaceId, name)
+                block()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: RelayException) {

@@ -118,6 +118,7 @@ import app.mjolnir.protocol.MessageReceipt
 import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.Receipt
 import app.mjolnir.protocol.Space
+import app.mjolnir.protocol.VoiceRoom
 import java.io.File
 import java.net.URI
 import java.time.Instant
@@ -289,13 +290,15 @@ private fun Modifier.dashedBorder(color: Color, radius: Float = 10f): Modifier =
 /** The Chats tab: the list (approvals on top, invitations at the bottom) and the open conversation. Layout per the `DesktopChats` mockup. */
 @Composable
 fun ChatsTabContent(ui: ChatsUi, actions: ChatsActions, now: () -> Long = System::currentTimeMillis) {
+    var managedRoom by remember { mutableStateOf<VoiceRoom?>(null) } // the room whose options are open
     var newRoomIn by remember { mutableStateOf<String?>(null) } // the space a *New voice room* dialog is open for
     Box(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxSize().background(Forge.background)) {
-            ChatList(ui, actions, now, onNewRoom = { newRoomIn = it })
+            ChatList(ui, actions, now, onNewRoom = { newRoomIn = it }, onManageRoom = { managedRoom = it })
             Box(Modifier.width(1.dp).fillMaxHeight().background(Forge.border))
             Box(Modifier.weight(1f).fillMaxHeight()) { Conversation(ui, actions) }
         }
+        managedRoom?.let { VoiceRoomDialog(it, actions.voice, onClose = { managedRoom = null }) }
         newRoomIn?.let { id ->
             val name = ui.voice.spaces.firstOrNull { it.id == id }?.name ?: ui.chats.firstOrNull { it.spaceId == id }?.spaceName.orEmpty()
             NewVoiceRoomDialog(name, onCreate = { room -> actions.voice.onCreateRoom(id, room); newRoomIn = null }, onClose = { newRoomIn = null })
@@ -306,7 +309,7 @@ fun ChatsTabContent(ui: ChatsUi, actions: ChatsActions, now: () -> Long = System
 // ---- the list ----
 
 @Composable
-private fun ChatList(ui: ChatsUi, actions: ChatsActions, now: () -> Long, onNewRoom: (String) -> Unit) {
+private fun ChatList(ui: ChatsUi, actions: ChatsActions, now: () -> Long, onNewRoom: (String) -> Unit, onManageRoom: (VoiceRoom) -> Unit) {
     val approvals = ui.invites.filter { it.state == InviteState.PENDING_APPROVAL }
     val invitations = ui.invites.filter { it.state == InviteState.APPROVED }
     val chatGroups = ui.chats.groupBy { it.spaceId }.mapValues { (_, chats) ->
@@ -339,7 +342,8 @@ private fun ChatList(ui: ChatsUi, actions: ChatsActions, now: () -> Long, onNewR
                     }
                 }
                 if (ui.voice.supported) item(key = "voice-$spaceId") {
-                    Column { VoiceRoomsSection(spaceId, ui.voice, ui.nicknameOf, actions.voice, onNewRoom = { onNewRoom(spaceId) }) }
+                    Column { VoiceRoomsSection(spaceId, ui.voice, ui.nicknameOf, actions.voice, onNewRoom = { onNewRoom(spaceId) },
+                        canManage = { it.creatorId == ui.selfId || it.spaceId in ui.adminSpaceIds }, onManage = onManageRoom) }
                 }
             }
         }
@@ -730,7 +734,7 @@ private fun Composer(chat: ChatSummary, editing: ChatMessage?, ui: ChatsUi, acti
         BasicTextField(
             value = text, onValueChange = { text = capCodePoints(it, Limits.MAX_CHAT_TEXT_LENGTH) },
             textStyle = body(14), cursorBrush = SolidColor(Forge.accent),
-            modifier = Modifier.weight(1f).onPreviewKeyEvent { e ->
+            modifier = Modifier.weight(1f).trackTextFocus().onPreviewKeyEvent { e ->
                 if (e.type == KeyEventType.KeyDown && e.key == Key.Enter && !e.isShiftPressed) {
                     if (candidates.isNotEmpty()) pick(candidates.first()) else submit() // Enter takes the first match while the picker is open
                     true
@@ -857,7 +861,7 @@ fun ChatsTab(c: AppController, parent: java.awt.Component? = null) {
         onOverlayChange = { conversationOverlay = it },
         voice = VoiceActions(
             onJoin = c::joinVoice, onLeave = c.voice::leave, onMute = c.voice::setMuted, onTalking = c.voice::setTalking,
-            onOpenMic = c.voice::setOpenMic, onCreateRoom = c::createVoiceRoom, onDismissNotice = c::dismissVoiceNotice,
+            onOpenMic = c.voice::setOpenMic, onCreateRoom = c::createVoiceRoom, onRename = { r, n -> c.renameVoiceRoom(r.id, n) }, onDelete = { c.deleteVoiceRoom(it.id) }, onDismissNotice = c::dismissVoiceNotice,
         ),
     )
 

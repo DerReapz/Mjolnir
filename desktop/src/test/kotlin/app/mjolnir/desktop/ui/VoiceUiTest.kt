@@ -7,6 +7,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -23,6 +26,7 @@ import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performKeyInput
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.down
 import androidx.compose.ui.test.up
@@ -49,6 +53,8 @@ class VoiceUiTest {
     private val lounge = VoiceRoom("r1", "s1", "Lounge", "me", listOf(sam, pixel))
     private val loungeWithMe = lounge.copy(participants = listOf(me, sam, pixel))
 
+    @kotlin.test.AfterTest fun resetTextFocus() = TextInputFocus.clear()
+
     private fun active(
         state: VoiceState = VoiceState.Live, speaking: Set<String> = emptySet(), muted: Boolean = false, talking: Boolean = false, openMic: Boolean = false,
     ) = ActiveVoice("r1", "Lounge", state, speaking, muted, talking, openMic)
@@ -57,17 +63,18 @@ class VoiceUiTest {
         supported: Boolean = true, rooms: List<VoiceRoom> = listOf(lounge), active: ActiveVoice? = null, notice: String? = null,
     ) = VoiceUi(supported, listOf(space), mapOf("s1" to rooms), active, notice)
 
-    private fun ComposeUiTest.show(voice: VoiceUi, log: MutableList<String> = mutableListOf()) = setContent {
+    private fun ComposeUiTest.show(voice: VoiceUi, log: MutableList<String> = mutableListOf(), admin: Set<String> = emptySet()) = setContent {
         // The key handler lives on the window (MainWindow); this box stands in for it, holding the focus.
         val focus = remember { FocusRequester() }
         LaunchedEffect(Unit) { focus.requestFocus() }
         MjolnirTheme { Box(Modifier.fillMaxSize().focusRequester(focus).focusable().onPreviewKeyEvent { pushToTalkKey(it, voice.active, { t -> log += "talking $t" }) }) {
             ChatsTabContent(
-                ChatsUi(emptyList(), emptyList(), emptyMap(), "me", emptySet(), null, emptyList(), emptyList(), { it.name }, notice = null, voice = voice),
+                ChatsUi(emptyList(), emptyList(), emptyMap(), "me", admin, null, emptyList(), emptyList(), { it.name }, notice = null, voice = voice),
                 ChatsActions(voice = VoiceActions(
                     onJoin = { log += "join ${it.name}" }, onLeave = { log += "leave" }, onMute = { log += "mute $it" },
                     onTalking = { log += "talking $it" }, onOpenMic = { log += "openMic $it" },
-                    onCreateRoom = { s, n -> log += "create $s $n" }, onDismissNotice = { log += "dismiss" },
+                    onCreateRoom = { s, n -> log += "create $s $n" },
+                    onRename = { r, n -> log += "rename ${r.name} $n" }, onDelete = { log += "delete ${it.name}" }, onDismissNotice = { log += "dismiss" },
                 )),
             )
         } }
@@ -212,5 +219,75 @@ class VoiceUiTest {
     @Test fun trayTooltipNamesTheRoom() {
         assertEquals("Mjolnir", trayTooltip("Mjolnir", null))
         assertEquals("In voice: Lounge", trayTooltip("Mjolnir", "Lounge"))
+    }
+
+    private val other = lounge.copy(creatorId = "sam")
+
+    @Test fun roomOptionsShownToCreator() = runComposeUiTest {
+        show(voice())
+        onNodeWithContentDescription("Room options: Lounge").assertExists()
+    }
+
+    @Test fun roomOptionsShownToSpaceAdmin() = runComposeUiTest {
+        show(voice(rooms = listOf(other)), admin = setOf("s1"))
+        onNodeWithContentDescription("Room options: Lounge").assertExists()
+    }
+
+    @Test fun roomOptionsHiddenForOthers() = runComposeUiTest {
+        show(voice(rooms = listOf(other)))
+        onAllNodesWithContentDescription("Room options: Lounge").assertCountEquals(0)
+    }
+
+    @Test fun renameCallsTheController() = runComposeUiTest {
+        val log = mutableListOf<String>()
+        show(voice(), log)
+        onNodeWithContentDescription("Room options: Lounge").performClick()
+        onNodeWithText("Rename").performClick()
+        onNode(hasSetTextAction()).performTextReplacement("Lounge 2")
+        onNodeWithText("Save").performClick()
+        assertEquals(listOf("rename Lounge Lounge 2"), log)
+    }
+
+    @Test fun deleteAsksThenCallsTheController() = runComposeUiTest {
+        val log = mutableListOf<String>()
+        show(voice(), log)
+        onNodeWithContentDescription("Room options: Lounge").performClick()
+        onNodeWithText("Delete").performClick()
+        onNodeWithText("Delete Lounge? Anyone in it is disconnected.").assertExists()
+        assertEquals(emptyList(), log)
+        onNodeWithText("Delete").performClick()
+        assertEquals(listOf("delete Lounge"), log)
+    }
+
+    @Test fun backtickTypesInATextFieldInsteadOfTalking() = runComposeUiTest {
+        val log = mutableListOf<String>()
+        var text by mutableStateOf("")
+        setContent {
+            val focus = remember { FocusRequester() }
+            MjolnirTheme {
+                Box(Modifier.fillMaxSize().focusable().onPreviewKeyEvent { pushToTalkKey(it, active(), { t -> log += "talking $t" }) }) {
+                    ForgeInput(text, { text = it }, modifier = Modifier.focusRequester(focus))
+                    LaunchedEffect(Unit) { focus.requestFocus() }
+                }
+            }
+        }
+        waitForIdle()
+        onNode(hasSetTextAction()).performKeyInput { keyDown(Key.Grave); keyUp(Key.Grave) }
+        assertEquals(emptyList(), log)
+    }
+
+    @Test fun releaseStillEndsTalkingInATextField() = runComposeUiTest {
+        val log = mutableListOf<String>()
+        TextInputFocus.set(Any(), true)
+        setContent {
+            val focus = remember { FocusRequester() }
+            LaunchedEffect(Unit) { focus.requestFocus() }
+            Box(Modifier.fillMaxSize().focusRequester(focus).focusable().onPreviewKeyEvent { pushToTalkKey(it, active(talking = true), { t -> log += "talking $t" }) })
+        }
+        waitForIdle()
+        onRoot().performKeyInput { keyDown(Key.Grave) }
+        assertEquals(emptyList(), log)
+        onRoot().performKeyInput { keyUp(Key.Grave) }
+        assertEquals(listOf("talking false"), log)
     }
 }

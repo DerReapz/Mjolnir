@@ -22,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
@@ -65,6 +66,8 @@ class VoiceActions(
     val onTalking: (Boolean) -> Unit = {},
     val onOpenMic: (Boolean) -> Unit = {},
     val onCreateRoom: (spaceId: String, name: String) -> Unit = { _, _ -> },
+    val onRename: (VoiceRoom, String) -> Unit = { _, _ -> },
+    val onDelete: (VoiceRoom) -> Unit = {},
     val onDismissNotice: () -> Unit = {},
 )
 
@@ -75,31 +78,58 @@ class VoiceActions(
 fun pushToTalkKey(e: KeyEvent, active: ActiveVoice?, onTalking: (Boolean) -> Unit): Boolean {
     if (e.key != Key.Grave || active == null || active.openMic) return false
     when (e.type) {
-        KeyEventType.KeyDown -> if (!active.talking) onTalking(true)
-        KeyEventType.KeyUp -> onTalking(false)
+        // A text field with focus gets the key as a character; a release still ends talking that began before it took focus.
+        KeyEventType.KeyDown -> if (TextInputFocus.any) return false else if (!active.talking) onTalking(true)
+        KeyEventType.KeyUp -> if (TextInputFocus.any && !active.talking) return false else onTalking(false)
         else -> return false
     }
     return true
 }
 
+/** Which text inputs have focus right now: the push-to-talk key is typing, not talking, while one does. */
+internal object TextInputFocus {
+    private val focused = java.util.Collections.synchronizedSet(HashSet<Any>())
+    val any: Boolean get() = focused.isNotEmpty()
+    fun set(owner: Any, on: Boolean) { if (on) focused.add(owner) else focused.remove(owner) }
+    fun clear() = focused.clear()
+}
+
+/** Marks a text input: while it has focus, `` ` `` types instead of talking. */
+@Composable
+internal fun Modifier.trackTextFocus(): Modifier {
+    val owner = remember { Any() }
+    androidx.compose.runtime.DisposableEffect(owner) { onDispose { TextInputFocus.set(owner, false) } }
+    return this.onFocusChanged { TextInputFocus.set(owner, it.isFocused) }
+}
+
 /** The voice room rows of one space, under the `Voice` label, and the button that makes a new room. */
 @Composable
-internal fun VoiceRoomsSection(spaceId: String, ui: VoiceUi, nicknameOf: (Peer) -> String, actions: VoiceActions, onNewRoom: () -> Unit) {
+internal fun VoiceRoomsSection(
+    spaceId: String, ui: VoiceUi, nicknameOf: (Peer) -> String, actions: VoiceActions, onNewRoom: () -> Unit,
+    canManage: (VoiceRoom) -> Boolean = { false }, onManage: (VoiceRoom) -> Unit = {},
+) {
     Text(Messages.VOICE, style = voiceBody(12, ForgeFonts.inter600, Forge.muted), modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 2.dp))
     for (room in ui.rooms[spaceId].orEmpty()) {
         val names = room.participants.joinToString(", ") { nicknameOf(it) }
         val inRoom = ui.active?.roomId == room.id
-        Column(
-            Modifier.fillMaxWidth().heightIn(min = 36.dp)
-                .background(if (inRoom) Forge.surface else androidx.compose.ui.graphics.Color.Transparent, Forge.rowShape)
-                .semantics(mergeDescendants = true) {
-                    role = Role.Button
-                    contentDescription = if (names.isEmpty()) room.name else "${room.name} — $names"
-                }
-                .clickable { actions.onJoin(room) }.padding(horizontal = 14.dp, vertical = 6.dp),
-        ) {
-            Text("🔊 ${room.name}", style = voiceBody(14, if (inRoom) ForgeFonts.inter600 else ForgeFonts.inter400, if (inRoom) Forge.accent else Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (names.isNotEmpty()) Text(names, style = voiceBody(12, color = Forge.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(
+                Modifier.weight(1f).heightIn(min = 36.dp)
+                    .background(if (inRoom) Forge.surface else androidx.compose.ui.graphics.Color.Transparent, Forge.rowShape)
+                    .semantics(mergeDescendants = true) {
+                        role = Role.Button
+                        contentDescription = if (names.isEmpty()) room.name else "${room.name} — $names"
+                    }
+                    .clickable { actions.onJoin(room) }.padding(horizontal = 14.dp, vertical = 6.dp),
+            ) {
+                Text("🔊 ${room.name}", style = voiceBody(14, if (inRoom) ForgeFonts.inter600 else ForgeFonts.inter400, if (inRoom) Forge.accent else Forge.text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (names.isNotEmpty()) Text(names, style = voiceBody(12, color = Forge.muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (canManage(room)) Text(
+                "⋯", style = voiceBody(16, color = Forge.muted),
+                modifier = Modifier.clickable(role = Role.Button) { onManage(room) }.padding(horizontal = 10.dp, vertical = 6.dp)
+                    .semantics { contentDescription = "Room options: ${room.name}" },
+            )
         }
     }
     Text(
@@ -173,6 +203,38 @@ private fun HoldToTalkButton(talking: Boolean, onTalking: (Boolean) -> Unit) {
     }
 }
 
+/** A voice room's options for its creator or the space admin: *Rename* and *Delete* (asked to confirm). */
+@Composable
+internal fun VoiceRoomDialog(room: VoiceRoom, actions: VoiceActions, onClose: () -> Unit) {
+    var mode by remember { mutableStateOf("main") }
+    var name by remember { mutableStateOf(room.name) }
+    val valid = name.isNotBlank()
+    ForgeModal(onDismiss = onClose) {
+        Text("🔊 ${room.name}", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
+        when (mode) {
+            "rename" -> {
+                ForgeInput(name, { name = it.take(Limits.MAX_SPACE_NAME_LENGTH) }, modifier = Modifier.trackTextFocus(), placeholder = Messages.VOICE_ROOM_NAME, onEnter = { if (valid) { actions.onRename(room, name.trim()); onClose() } })
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
+                    ForgeSecondaryButton("Cancel", onClick = onClose)
+                    ForgePrimaryButton("Save", enabled = valid, onClick = { actions.onRename(room, name.trim()); onClose() })
+                }
+            }
+            "delete" -> {
+                Text(Messages.deleteVoiceRoomConfirm(room.name), style = voiceBody(13, color = Forge.muted))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
+                    ForgeSecondaryButton("Cancel", onClick = onClose)
+                    ForgePrimaryButton("Delete", onClick = { actions.onDelete(room); onClose() })
+                }
+            }
+            else -> Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
+                ForgeSecondaryButton("Close", onClick = onClose)
+                ForgeSecondaryButton("Rename", onClick = { mode = "rename" })
+                ForgePrimaryButton("Delete", onClick = { mode = "delete" })
+            }
+        }
+    }
+}
+
 /** The last voice failure or ending, with a way to dismiss it. */
 @Composable
 internal fun VoiceNotice(text: String, onDismiss: () -> Unit) {
@@ -190,7 +252,7 @@ internal fun NewVoiceRoomDialog(spaceName: String, onCreate: (String) -> Unit, o
     ForgeModal(onDismiss = onClose) {
         Text(Messages.NEW_VOICE_ROOM, style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
         Text(spaceName, style = voiceBody(12, color = Forge.muted))
-        ForgeInput(name, { name = it.take(Limits.MAX_SPACE_NAME_LENGTH) }, placeholder = Messages.VOICE_ROOM_NAME, onEnter = { if (valid) onCreate(name.trim()) })
+        ForgeInput(name, { name = it.take(Limits.MAX_SPACE_NAME_LENGTH) }, modifier = Modifier.trackTextFocus(), placeholder = Messages.VOICE_ROOM_NAME, onEnter = { if (valid) onCreate(name.trim()) })
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)) {
             ForgeSecondaryButton("Cancel", onClick = onClose)
             ForgePrimaryButton("Create", enabled = valid, onClick = { onCreate(name.trim()) })
