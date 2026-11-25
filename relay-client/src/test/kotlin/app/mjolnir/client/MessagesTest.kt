@@ -116,4 +116,30 @@ class MessagesTest {
         assertEquals(Messages.NOT_FOR_OPEN_CHANNELS, Messages.chatError(RelayException(RelayErrorKind.ALREADY_SENT, "not_for_open_channels")))
         assertEquals("Open channels can't be joined or left — everyone in the space is in them.", Messages.NOT_FOR_OPEN_CHANNELS)
     }
+
+    @Test fun voiceCopyIsExact() {
+        assertEquals("Voice", Messages.VOICE); assertEquals("Join voice", Messages.JOIN_VOICE); assertEquals("Leave", Messages.LEAVE_VOICE)
+        assertEquals("Mute", Messages.MUTE); assertEquals("Unmute", Messages.UNMUTE)
+        assertEquals("Push to talk", Messages.PUSH_TO_TALK); assertEquals("Open mic", Messages.OPEN_MIC)
+        assertEquals("Hold ` to talk", Messages.HOLD_TO_TALK)
+        assertEquals("New voice room", Messages.NEW_VOICE_ROOM); assertEquals("Voice room name", Messages.VOICE_ROOM_NAME)
+        assertEquals("Reconnecting…", Messages.RECONNECTING)
+        assertEquals("Use headphones to avoid echo", Messages.USE_HEADPHONES)
+        assertEquals("Mjolnir needs the microphone for voice rooms.", Messages.MIC_PERMISSION)
+        assertEquals("Open settings", Messages.OPEN_SETTINGS)
+        assertEquals("In voice: Lounge", Messages.inVoice("Lounge"))
+        assertEquals("Mjolnir voice — Lounge", Messages.voiceNotificationTitle("Lounge"))
+        assertEquals("Delete Lounge? Anyone in it is disconnected.", Messages.deleteVoiceRoomConfirm("Lounge"))
+        assertEquals("Lounge is full (8/8)", Messages.voiceFull("Lounge", 8, 8))
+    }
+
+    @Test fun voiceEndedReasons() {
+        assertEquals("You left Lounge (connection lost)", Messages.voiceEnded("connection_lost", "Lounge"))
+        assertEquals("Lounge is full (8/8)", Messages.voiceEnded("room_full", "Lounge", n = 8, max = 8))
+        assertEquals("Lounge was deleted", Messages.voiceEnded("room_deleted", "Lounge"))
+        assertEquals("You were removed from Lounge", Messages.voiceEnded("removed", "Lounge"))
+        assertEquals("You joined Lounge somewhere else", Messages.voiceEnded("replaced", "Lounge"))
+        assertEquals("Lounge is gone", Messages.voiceEnded("not_found", "Lounge"))
+        assertEquals(null, Messages.voiceEnded(null, "Lounge"), "a deliberate leave says nothing")
+    }
 }

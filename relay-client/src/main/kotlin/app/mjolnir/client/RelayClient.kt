@@ -41,6 +41,20 @@ import app.mjolnir.protocol.Tab
 import app.mjolnir.protocol.CreateUploadRequest
 import app.mjolnir.protocol.FileRef
 import app.mjolnir.protocol.UploadStatus
+import app.mjolnir.protocol.CreateVoiceRoomRequest
+import app.mjolnir.protocol.VoiceRoom
+import app.mjolnir.protocol.VoiceRoster
+import app.mjolnir.client.voice.VoiceLink
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.close
+import io.ktor.websocket.readBytes
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import io.ktor.client.request.header
 import io.ktor.client.request.prepareGet
 import io.ktor.client.statement.bodyAsChannel
@@ -142,6 +156,11 @@ internal fun sha256HexOf(file: File): String {
     return md.digest().joinToString("") { "%02x".format(it) }
 }
 
+/** The close code of every voice socket close the relay makes; its reason text says why. */
+private const val VOICE_CLOSE_CODE: Short = 4000
+private const val VOICE_SEND_QUEUE = 50
+private const val VOICE_CLOSE_WAIT_MS = 3_000L
+
 internal fun backoffMs(attempt: Int): Long = min(30_000L, 1_000L shl attempt.coerceIn(0, 20))
 
 class RelayClient(
@@ -173,9 +192,13 @@ class RelayClient(
         }
     }
 
-    /** Closes the HTTP client and ends any active [events] flow cleanly. */
+    /** Where open voice links run; cancelled by [close]. */
+    private val voiceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Closes the HTTP client and ends any active [events] flow and voice link cleanly. */
     override fun close() {
         closed.complete()
+        voiceScope.cancel()
         http.close()
     }
 
@@ -385,6 +408,90 @@ class RelayClient(
         http.get("$base/v1/chats/$chatId/messages/$msgId/receipts") { auth() }
     }
 
+    override suspend fun voiceRooms(spaceId: String): List<VoiceRoom> = callBody { http.get("$base/v1/spaces/$spaceId/voice-rooms") { auth() } }
+
+    override suspend fun createVoiceRoom(spaceId: String, name: String): VoiceRoom = callBody {
+        http.post("$base/v1/spaces/$spaceId/voice-rooms") { auth(); jsonBody(CreateVoiceRoomRequest(name)) }
+    }
+
+    override suspend fun renameVoiceRoom(id: String, name: String): VoiceRoom = callBody {
+        http.patch("$base/v1/voice-rooms/$id") { auth(); jsonBody(CreateVoiceRoomRequest(name)) }
+    }
+
+    override suspend fun deleteVoiceRoom(id: String) { call { http.delete("$base/v1/voice-rooms/$id") { auth() } } }
+
+    override fun openVoice(roomId: String, onRoster: (List<String>) -> Unit, onFrame: (speakerIndex: Int, seq: Int, opus: ByteArray) -> Unit): VoiceLink {
+        // About a second of audio; when the socket can't keep up the oldest frames go (stale audio is worthless).
+        val outgoing = Channel<ByteArray>(VOICE_SEND_QUEUE, BufferOverflow.DROP_OLDEST)
+        val leave = CompletableDeferred<Unit>()
+        val reason = CompletableDeferred<String?>()
+        val job = voiceScope.launch {
+            var relayReason: String? = null
+            try {
+                http.webSocket(wsUrl("/v1/voice/$roomId"), request = {
+                    auth()
+                    timeout { requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS }
+                }) {
+                    val writer = launch { for (frame in outgoing) send(Frame.Binary(true, frame)) }
+                    val leaver = launch {
+                        leave.await()
+                        writer.cancel()
+                        close(CloseReason(CloseReason.Codes.NORMAL, "leave"))
+                    }
+                    try {
+                        for (frame in incoming) {
+                            when (frame) {
+                                is Frame.Text -> voiceRoster(frame.readText())?.let(onRoster)
+                                is Frame.Binary -> {
+                                    val data = frame.readBytes()
+                                    if (data.size >= 4) {
+                                        val seq = ((data[1].toInt() and 0xFF) shl 8) or (data[2].toInt() and 0xFF)
+                                        onFrame(data[0].toInt() and 0xFF, seq, data.copyOfRange(3, data.size))
+                                    }
+                                }
+                                else -> {}
+                            }
+                        }
+                    } finally {
+                        writer.cancel(); leaver.cancel()
+                    }
+                    val why = withTimeoutOrNull(1_000) { runCatching { closeReason.await() }.getOrNull() }
+                    if (why?.code == VOICE_CLOSE_CODE) relayReason = why.message
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // A failed connect or a dropped link: no relay reason.
+            } finally {
+                reason.complete(relayReason)
+            }
+        }
+        return object : VoiceLink {
+            override fun send(seq: Int, opus: ByteArray) {
+                val frame = ByteArray(opus.size + 2)
+                frame[0] = (seq shr 8).toByte(); frame[1] = seq.toByte()
+                opus.copyInto(frame, 2)
+                outgoing.trySend(frame)
+            }
+
+            override fun close() {
+                if (!leave.complete(Unit)) return
+                // The close handshake normally ends the link; one that hangs is cut.
+                voiceScope.launch { if (withTimeoutOrNull(VOICE_CLOSE_WAIT_MS) { job.join() } == null) job.cancel() }
+            }
+
+            override val closeReason: Deferred<String?> = reason
+        }
+    }
+
+    private fun voiceRoster(text: String): List<String>? = try {
+        MjolnirJson.decodeFromString(VoiceRoster.serializer(), text).takeIf { it.type == "roster" }?.participants
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
     override suspend fun openRoom(): RoomResponse = callBody { http.post("$base/v1/rooms") { auth() } }
 
     override suspend fun currentRoom(): RoomStatus? {
@@ -525,8 +632,12 @@ class RelayClient(
         watcher.cancel()
     }
 
+    /** The WebSocket URL of [path] on the relay (`wss` for an `https` relay). */
+    private fun wsUrl(path: String): String =
+        (if (base.startsWith("https", ignoreCase = true)) "wss" else "ws") + "://" + base.substringAfter("://") + path
+
     private fun connectLoop(): Flow<RelayEvent> = flow {
-        val wsUrl = (if (base.startsWith("https", ignoreCase = true)) "wss" else "ws") + "://" + base.substringAfter("://") + "/v1/ws"
+        val wsUrl = wsUrl("/v1/ws")
         var attempt = 0
         while (true) {
             var connected = false

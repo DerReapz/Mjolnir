@@ -14,6 +14,7 @@ dependencies {
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.client.websockets)
     implementation(libs.ktor.serialization.kotlinx.json)
+    implementation("io.github.jaredmdobson:concentus:1.0.2")
 
     testImplementation(project(":server"))
     testImplementation(libs.ktor.server.test.host)

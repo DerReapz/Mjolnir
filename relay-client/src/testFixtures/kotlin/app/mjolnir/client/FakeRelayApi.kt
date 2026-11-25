@@ -25,6 +25,8 @@ import app.mjolnir.protocol.Space
 import app.mjolnir.protocol.Tab
 import app.mjolnir.protocol.FileRef
 import app.mjolnir.protocol.UploadStatus
+import app.mjolnir.protocol.VoiceRoom
+import app.mjolnir.client.voice.VoiceLink
 import app.mjolnir.protocol.safeFileName
 import app.mjolnir.protocol.safeRelativePath
 import java.io.ByteArrayOutputStream
@@ -245,6 +247,55 @@ class FakeRelayApi : RelayApi {
     override suspend fun markChatSeen(chatId: String, rev: Long) { check(); chatState.markSeen(chatId, rev) }
     override suspend fun messageReceipts(chatId: String, msgId: String) = run { check(); chatState.messageReceipts(chatId, msgId) }
 
+    /** In-memory voice rooms by space, in creation order. */
+    val voiceRoomsBySpace: MutableMap<String, MutableList<VoiceRoom>> = mutableMapOf()
+    /** While true, [voiceRooms] answers like a relay without voice rooms (a bare 404). */
+    var voiceRoomsOutdated = false
+    /** Every link [openVoice] opened, in order. */
+    val voiceLinks: MutableList<FakeVoiceLink> = java.util.Collections.synchronizedList(mutableListOf())
+    private var nextVoiceRoom = 0
+
+    /** Test setup: a voice room in [spaceId] created by [creator]. */
+    fun addVoiceRoom(spaceId: String, name: String, creator: Peer = me): VoiceRoom =
+        VoiceRoom("vr-${++nextVoiceRoom}", spaceId, name, creator.deviceId).also { voiceRoomsBySpace.getOrPut(spaceId) { mutableListOf() } += it }
+
+    private fun voiceRoom(id: String): VoiceRoom =
+        voiceRoomsBySpace.values.flatten().find { it.id == id }?.also { memberSpace(it.spaceId) } ?: throw err(RelayErrorKind.NOT_FOUND, "not_found")
+
+    private fun manageableVoiceRoom(id: String): VoiceRoom = voiceRoom(id).also { r ->
+        if (r.creatorId != me.deviceId && memberSpace(r.spaceId).adminId != me.deviceId) throw err(RelayErrorKind.NOT_PAIRED, "not_owner")
+    }
+
+    override suspend fun voiceRooms(spaceId: String): List<VoiceRoom> {
+        check()
+        if (voiceRoomsOutdated) throw err(RelayErrorKind.RELAY_OUTDATED, "HTTP 404")
+        memberSpace(spaceId)
+        return voiceRoomsBySpace[spaceId].orEmpty().toList()
+    }
+
+    override suspend fun createVoiceRoom(spaceId: String, name: String): VoiceRoom {
+        check(); memberSpace(spaceId)
+        return addVoiceRoom(spaceId, validName(name))
+    }
+
+    override suspend fun renameVoiceRoom(id: String, name: String): VoiceRoom {
+        check()
+        val room = manageableVoiceRoom(id)
+        val renamed = room.copy(name = validName(name))
+        val list = voiceRoomsBySpace.getValue(room.spaceId)
+        list[list.indexOfFirst { it.id == id }] = renamed
+        return renamed
+    }
+
+    override suspend fun deleteVoiceRoom(id: String) {
+        check()
+        val room = manageableVoiceRoom(id)
+        voiceRoomsBySpace.getValue(room.spaceId).removeAll { it.id == id }
+    }
+
+    override fun openVoice(roomId: String, onRoster: (List<String>) -> Unit, onFrame: (speakerIndex: Int, seq: Int, opus: ByteArray) -> Unit): VoiceLink =
+        FakeVoiceLink(roomId, onRoster, onFrame).also { voiceLinks += it }
+
     /** The open guest room, if any (test setup may assign it directly). */
     var room: RoomResponse? = null
     /** The guest in [room]; shown by [currentRoom]. */
@@ -341,6 +392,26 @@ class FakeRelayApi : RelayApi {
         check()
         return FileRequest("$fileRequestBase/v1/files/$fileId", fileRequestToken?.let { mapOf("Authorization" to "Bearer $it") }.orEmpty())
     }
+}
+
+/** A voice link that records what is sent; the test plays the relay through [roster], [frame] and [drop]. */
+class FakeVoiceLink(
+    val roomId: String,
+    private val onRoster: (List<String>) -> Unit,
+    private val onFrame: (speakerIndex: Int, seq: Int, opus: ByteArray) -> Unit,
+) : VoiceLink {
+    val sent: MutableList<Pair<Int, ByteArray>> = java.util.Collections.synchronizedList(mutableListOf())
+    @Volatile var closed = false
+    private val reason = CompletableDeferred<String?>()
+    override val closeReason: kotlinx.coroutines.Deferred<String?> = reason
+
+    override fun send(seq: Int, opus: ByteArray) { if (!reason.isCompleted) sent += seq to opus }
+    override fun close() { closed = true; reason.complete(null) }
+
+    fun roster(ids: List<String>) = onRoster(ids)
+    fun frame(speakerIndex: Int, seq: Int, opus: ByteArray) = onFrame(speakerIndex, seq, opus)
+    /** The socket goes away: with a relay [reason], or dropped (null). */
+    fun drop(reason: String? = null) { this.reason.complete(reason) }
 }
 
 fun delivery(

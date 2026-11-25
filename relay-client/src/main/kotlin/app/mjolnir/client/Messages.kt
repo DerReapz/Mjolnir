@@ -272,4 +272,38 @@ object Messages {
      */
     fun relayUpdateReason(e: RelayException): String? =
         if (e.needsRelayUpdate && e.kind !in SPECIFIC_FAILURE_KINDS) failureReason(RelayErrorKind.RELAY_OUTDATED, "") else null
+
+    // ---- Voice ([MUTE] and [UNMUTE] above serve voice too) ----
+    const val VOICE = "Voice"
+    const val JOIN_VOICE = "Join voice"
+    const val LEAVE_VOICE = "Leave"
+    const val PUSH_TO_TALK = "Push to talk"
+    const val OPEN_MIC = "Open mic"
+    const val HOLD_TO_TALK = "Hold ` to talk"
+    const val NEW_VOICE_ROOM = "New voice room"
+    const val VOICE_ROOM_NAME = "Voice room name"
+    const val RECONNECTING = "Reconnecting…"
+    const val USE_HEADPHONES = "Use headphones to avoid echo"
+    const val MIC_PERMISSION = "Mjolnir needs the microphone for voice rooms."
+    const val OPEN_SETTINGS = "Open settings"
+
+    fun inVoice(room: String) = "In voice: $room"
+    /** The title of the phone's ongoing voice notification. */
+    fun voiceNotificationTitle(room: String) = "Mjolnir voice — $room"
+    fun deleteVoiceRoomConfirm(room: String) = "Delete $room? Anyone in it is disconnected."
+    fun voiceFull(room: String, n: Int, max: Int) = "$room is full ($n/$max)"
+
+    /**
+     * Why a voice session in [room] ended, from [VoiceState.Ended]'s reason, or null when there is nothing to say (the
+     * user left). For `room_full`, [n] and [max] are the room's count and limit.
+     */
+    fun voiceEnded(reason: String?, room: String, n: Int = 0, max: Int = 0): String? = when (reason) {
+        "connection_lost" -> "You left $room (connection lost)"
+        "room_full" -> voiceFull(room, n, max)
+        "room_deleted" -> "$room was deleted"
+        "removed" -> "You were removed from $room"
+        "replaced" -> "You joined $room somewhere else"
+        "not_found" -> "$room is gone"
+        else -> null
+    }
 }

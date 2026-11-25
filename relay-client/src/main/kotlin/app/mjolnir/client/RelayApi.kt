@@ -22,6 +22,8 @@ import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.Tab
 import app.mjolnir.protocol.FileRef
 import app.mjolnir.protocol.UploadStatus
+import app.mjolnir.protocol.VoiceRoom
+import app.mjolnir.client.voice.VoiceLink
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 
@@ -122,6 +124,20 @@ interface RelayApi {
     suspend fun markChatSeen(chatId: String, rev: Long)
     /** When each member first saw and first read the message ([msgId]): what the message's Info shows. */
     suspend fun messageReceipts(chatId: String, msgId: String): List<MessageReceipt>
+
+    // ---- Voice rooms. An older relay answers the list with RELAY_OUTDATED. ----
+
+    /** The voice rooms of [spaceId], each with who is in it. */
+    suspend fun voiceRooms(spaceId: String): List<VoiceRoom>
+    suspend fun createVoiceRoom(spaceId: String, name: String): VoiceRoom
+    /** The room's creator or the space admin only (else NOT_PAIRED `not_owner`). */
+    suspend fun renameVoiceRoom(id: String, name: String): VoiceRoom
+    suspend fun deleteVoiceRoom(id: String)
+    /**
+     * Opens the voice socket of [roomId] in the background and returns at once; see [VoiceLink]. [onRoster] and [onFrame]
+     * are called from the socket's reader, one at a time.
+     */
+    fun openVoice(roomId: String, onRoster: (List<String>) -> Unit, onFrame: (speakerIndex: Int, seq: Int, opus: ByteArray) -> Unit): VoiceLink
 
     /** Opens the guest room (ALREADY_SENT when one is open: 409 room_open). */
     suspend fun openRoom(): RoomResponse
