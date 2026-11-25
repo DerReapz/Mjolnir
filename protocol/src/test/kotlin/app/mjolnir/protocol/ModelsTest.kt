@@ -44,7 +44,7 @@ class GuestRoomModelsTest {
         assertEquals("\"GUEST\"", MjolnirJson.encodeToString(DeviceKind.serializer(), DeviceKind.GUEST))
         val guest = Peer("g", "Guest", DeviceKind.GUEST)
         assertEquals(
-            """{"type":"guest_joined","roomId":"r","guest":{"deviceId":"g","name":"Guest","kind":"GUEST","space":null,"online":false,"lastSeenMs":null}}""",
+            """{"type":"guest_joined","roomId":"r","guest":{"deviceId":"g","name":"Guest","kind":"GUEST","space":null,"online":false,"lastSeenMs":null,"voiceRoomId":null}}""",
             MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.GuestJoined("r", guest)),
         )
         assertEquals("""{"type":"room_ended","roomId":"r"}""", MjolnirJson.encodeToString(RelayEvent.serializer(), RelayEvent.RoomEnded("r")))
@@ -145,8 +145,16 @@ class OpenChannelModelsTest {
 
     @Test fun presenceEventUsesItsSerialName() {
         val e = RelayEvent.PresenceChanged("d", false, 7)
-        assertEquals("""{"type":"presence","deviceId":"d","online":false,"lastSeenMs":7}""", MjolnirJson.encodeToString(RelayEvent.serializer(), e))
+        assertEquals("""{"type":"presence","deviceId":"d","online":false,"lastSeenMs":7,"voiceRoomId":null}""", MjolnirJson.encodeToString(RelayEvent.serializer(), e))
         assertEquals(e, MjolnirJson.decodeFromString(RelayEvent.serializer(), """{"type":"presence","deviceId":"d","online":false,"lastSeenMs":7}"""))
         assertEquals(RelayEvent.PresenceChanged("d", true), MjolnirJson.decodeFromString(RelayEvent.serializer(), """{"type":"presence","deviceId":"d","online":true}"""))
+    }
+
+    @Test fun voiceRosterWireFormat() {
+        val r = VoiceRoster(participants = listOf("a", "b"))
+        assertEquals("""{"type":"roster","participants":["a","b"]}""", MjolnirJson.encodeToString(VoiceRoster.serializer(), r))
+        assertEquals(r, MjolnirJson.decodeFromString(VoiceRoster.serializer(), """{"type":"roster","participants":["a","b"]}"""))
+        val inVoice = Peer("d", "n", DeviceKind.PC, voiceRoomId = "v")
+        assertEquals(inVoice, MjolnirJson.decodeFromString<Peer>(MjolnirJson.encodeToString(Peer.serializer(), inVoice)))
     }
 }

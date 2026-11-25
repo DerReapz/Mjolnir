@@ -3,6 +3,7 @@ package app.mjolnir.server
 import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.ErrorResponse
 import app.mjolnir.protocol.MjolnirJson
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -91,6 +92,8 @@ data class RelayDeps(
     val presence: PresenceWatch = PresenceWatch(),
     /** Who is in which voice room (in memory only). */
     val voice: VoiceHub = VoiceHub(),
+    /** How long a device whose voice socket dropped stays in its room (a reconnect within it takes the slot back silently). */
+    val voiceGraceMs: Long = 10_000,
 )
 
 internal fun readRelayVersion(): String {
@@ -119,12 +122,17 @@ fun Application.relayModule(deps: RelayDeps) {
     install(RequestBodyLimit) {
         // JSON bodies are capped at 1 MiB. Upload chunks are exempt: the PUT handler itself reads at most the
         // Content-Range length (≤ UPLOAD_CHUNK_BYTES, else 400) and rejects any extra byte.
+        // A WebSocket's frames arrive on the upgraded request's body, so a socket is exempt too (frames have their own caps).
         bodyLimit { call ->
             if (isChunkUpload(call.request.httpMethod.value, call.request.path())) Long.MAX_VALUE
+            else if (call.request.header(HttpHeaders.Upgrade).equals("websocket", ignoreCase = true)) Long.MAX_VALUE
             else Limits.MAX_BODY_BYTES
         }
     }
-    install(WebSockets) { pingPeriod = 30.seconds }
+    install(WebSockets) {
+        pingPeriod = 30.seconds
+        maxFrameSize = 64L * 1024 // clients send only small frames (voice audio is under 1.3 KB)
+    }
     install(StatusPages) {
         exception<PayloadTooLargeException> { call, _ ->
             call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))

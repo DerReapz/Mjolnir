@@ -24,7 +24,10 @@ object DeviceKindSerializer : KSerializer<DeviceKind> {
 }
 @Serializable data class Tab(val url: String, val title: String? = null)
 @Serializable data class SpaceRef(val id: String, val name: String)
-/** [online] and [lastSeenMs] are filled only in [Space.members]; every other Peer keeps the defaults. */
+/**
+ * [online], [lastSeenMs] and [voiceRoomId] are filled only in [Space.members]; every other Peer keeps the defaults.
+ * [voiceRoomId] is the voice room of that space the member is in, if any.
+ */
 @Serializable data class Peer(
     val deviceId: String,
     val name: String,
@@ -32,6 +35,7 @@ object DeviceKindSerializer : KSerializer<DeviceKind> {
     val space: SpaceRef? = null,
     val online: Boolean = false,
     val lastSeenMs: Long? = null,
+    val voiceRoomId: String? = null,
 )
 @Serializable data class RegisterRequest(val name: String, val kind: DeviceKind)
 @Serializable data class RegisterResponse(val deviceId: String, val token: String)
@@ -86,6 +90,11 @@ object DeviceKindSerializer : KSerializer<DeviceKind> {
 /** A voice room of a space; [participants] are the members currently in it (only space members ever see them). */
 @Serializable data class VoiceRoom(val id: String, val spaceId: String, val name: String, val creatorId: String, val participants: List<Peer> = emptyList())
 @Serializable data class CreateVoiceRoomRequest(val name: String)
+/**
+ * The text frame on a voice socket (`/v1/voice/{roomId}`), sent on join and whenever the room's participants change.
+ * [participants] are device ids; a device's index in the list is the speaker index on the audio frames it sends.
+ */
+@Serializable data class VoiceRoster(val type: String = "roster", val participants: List<String>)
 @Serializable data class TransferAdminRequest(val deviceId: String)
 @Serializable data class RoomResponse(val roomId: String, val secret: String, val expiresAtEpochMs: Long)
 /** [downloadedFileIds]: files sent to the room's guest that the guest has already downloaded, so an owner app that wasn't listening can catch up. */

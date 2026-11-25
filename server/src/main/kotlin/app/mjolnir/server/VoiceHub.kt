@@ -1,5 +1,32 @@
 package app.mjolnir.server
 
+import io.ktor.server.websocket.WebSocketServerSession
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * One open voice socket of [deviceId] in [roomId]. Frames for it are queued here and written by one sender coroutine:
+ * [control] carries roster text frames (never dropped; a link that lets them pile up is cut), [audio] at most
+ * [AUDIO_QUEUE] frames, a frame that does not fit being dropped for this receiver only.
+ */
+class VoiceLink(val deviceId: String, val roomId: String, val session: WebSocketServerSession) {
+    internal val control = Channel<String>(CONTROL_QUEUE)
+    internal val audio = Channel<ByteArray>(AUDIO_QUEUE)
+    internal val queued = AtomicInteger()
+
+    /** Queues [frame] unless the queue is full (then this receiver just misses it). */
+    internal fun offerAudio(frame: ByteArray) {
+        if (audio.trySend(frame).isSuccess) queued.incrementAndGet()
+    }
+
+    companion object {
+        const val AUDIO_QUEUE = 16
+        const val CONTROL_QUEUE = 32
+    }
+}
+
 /** Who is in which voice room. In memory only: rooms are stored, participants are not. Thread-safe. */
 class VoiceHub {
     sealed interface JoinResult {
@@ -14,6 +41,29 @@ class VoiceHub {
 
     /** Task 2 sets this to close the voice sockets of [deviceIds] that were removed from [roomId] by the relay. */
     @Volatile var onRemoved: (roomId: String, deviceIds: List<String>) -> Unit = { _, _ -> }
+
+    /** Each device's open voice socket (a device has at most one: a new one replaces it). */
+    internal val links = ConcurrentHashMap<String, VoiceLink>()
+
+    /** The grace timers of devices whose voice socket dropped: each removes its device from its room when it fires. */
+    internal val graces = ConcurrentHashMap<String, Job>()
+
+    private val deviceLocks = Array(64) { Any() }
+    private val roomLocks = Array(64) { Any() }
+
+    /** Serializes one device's socket decisions (join, drop, grace expiry, kick), as [PresenceWatch] does for presence. */
+    internal fun lockFor(deviceId: String): Any = deviceLocks[Math.floorMod(deviceId.hashCode(), deviceLocks.size)]
+
+    /** Serializes what a room's sockets are sent, so a roster and the audio indexed by it are queued in order. */
+    internal fun roomLockFor(roomId: String): Any = roomLocks[Math.floorMod(roomId.hashCode(), roomLocks.size)]
+
+    /** Test hook: runs on a voice socket right after its join, before the room and membership are checked again. */
+    @Volatile internal var afterJoin: (roomId: String, deviceId: String) -> Unit = { _, _ -> }
+
+    fun linkOf(deviceId: String): VoiceLink? = links[deviceId]
+
+    /** Audio frames waiting for [deviceId]'s socket (at most [VoiceLink.AUDIO_QUEUE]). */
+    internal fun queued(deviceId: String): Int = links[deviceId]?.queued?.get() ?: 0
 
     fun participants(roomId: String): List<String> = synchronized(lock) { rooms[roomId]?.toList() ?: emptyList() }
 
