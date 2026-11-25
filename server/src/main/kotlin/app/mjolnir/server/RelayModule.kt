@@ -4,6 +4,7 @@ import app.mjolnir.protocol.DeviceKind
 import app.mjolnir.protocol.ErrorResponse
 import app.mjolnir.protocol.MjolnirJson
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -94,6 +95,8 @@ data class RelayDeps(
     val voice: VoiceHub = VoiceHub(),
     /** How long a device whose voice socket dropped stays in its room (a reconnect within it takes the slot back silently). */
     val voiceGraceMs: Long = 10_000,
+    /** Ping interval and pong timeout of a voice socket, so a half-open link is noticed well within [voiceGraceMs]. */
+    val voicePingMs: Long = 5_000,
 )
 
 internal fun readRelayVersion(): String {
@@ -105,6 +108,13 @@ internal fun readRelayVersion(): String {
 /** The registration rate-limit key: Fly's own `Fly-Client-IP` when present, else the last proxy hop. */
 internal fun clientIp(call: ApplicationCall): String =
     call.request.header("Fly-Client-IP")?.trim()?.takeIf { it.isNotEmpty() } ?: call.request.origin.remoteHost
+
+/** A WebSocket upgrade on one of the relay's socket routes (`/v1/ws`, `/v1/voice/{roomId}`). */
+internal fun isSocketUpgrade(call: ApplicationCall): Boolean =
+    isSocketUpgrade(call.request.httpMethod, call.request.path(), call.request.header(HttpHeaders.Upgrade))
+
+internal fun isSocketUpgrade(method: HttpMethod, path: String, upgrade: String?): Boolean =
+    method == HttpMethod.Get && (path == "/v1/ws" || path.startsWith("/v1/voice/")) && upgrade.equals("websocket", ignoreCase = true)
 
 data class DevicePrincipal(val deviceId: String, val name: String, val kind: DeviceKind)
 
@@ -122,10 +132,11 @@ fun Application.relayModule(deps: RelayDeps) {
     install(RequestBodyLimit) {
         // JSON bodies are capped at 1 MiB. Upload chunks are exempt: the PUT handler itself reads at most the
         // Content-Range length (≤ UPLOAD_CHUNK_BYTES, else 400) and rejects any extra byte.
-        // A WebSocket's frames arrive on the upgraded request's body, so a socket is exempt too (frames have their own caps).
+        // A WebSocket's frames arrive on the upgraded request's body, so the socket routes are exempt too (frames are
+        // capped by maxFrameSize). Only those GET routes: an Upgrade header on any other request changes nothing.
         bodyLimit { call ->
             if (isChunkUpload(call.request.httpMethod.value, call.request.path())) Long.MAX_VALUE
-            else if (call.request.header(HttpHeaders.Upgrade).equals("websocket", ignoreCase = true)) Long.MAX_VALUE
+            else if (isSocketUpgrade(call)) Long.MAX_VALUE
             else Limits.MAX_BODY_BYTES
         }
     }

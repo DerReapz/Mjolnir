@@ -39,23 +39,37 @@ private fun RelayDeps.voiceRoomOf(deviceId: String): Pair<String, Set<String>>? 
 fun RelayDeps.voiceRoomIn(spaceId: String, deviceId: String): String? =
     voice.roomOf(deviceId)?.takeIf { store.voiceRoom(it)?.spaceId == spaceId }
 
-/** Sends [deviceId]'s presence to its co-members; its voice room goes only to members of that room's space. */
-private fun RelayDeps.emitPresence(deviceId: String, online: Boolean, lastSeenMs: Long?) {
+/** Sends [deviceId]'s presence to [to] (its co-members by default); its voice room goes only to members of that room's space. */
+private fun RelayDeps.emitPresence(deviceId: String, online: Boolean, lastSeenMs: Long?, to: Collection<String> = coMembers(deviceId)) {
     val inVoice = voiceRoomOf(deviceId)
-    for (id in coMembers(deviceId)) {
+    for (id in to) {
         val roomId = inVoice?.takeIf { id in it.second }?.first
         hub.emit(id, RelayEvent.PresenceChanged(deviceId, online, lastSeenMs, roomId))
     }
 }
 
+/** True while [deviceId] has an open event socket or is in a voice room (its voice link is open, or within its grace). */
+fun RelayDeps.presentNow(deviceId: String): Boolean = hub.isConnected(deviceId) || voice.roomOf(deviceId) != null
+
+/** What members see as [deviceId]'s presence: present, or gone for less than the offline grace. */
+fun RelayDeps.isOnline(deviceId: String): Boolean = presentNow(deviceId) || presence.offlinePending(deviceId)
+
 /**
- * [deviceId] joined, left or switched voice rooms: its co-members hear its presence with the room it is in now. Under
- * the presence lock, so it never interleaves with an online or offline report.
+ * [deviceId] joined, left or switched voice rooms; [spaceIds] are the spaces of the rooms involved and [wasInVoice]
+ * whether it was in a room before. Only the co-members in those spaces hear it, with the room it is in now. When the
+ * voice link is its only connection (no event socket), its online state changed too, and every co-member hears that;
+ * going offline writes its last-seen time. Under the presence lock, so it never interleaves with an online or offline report.
  */
-fun RelayDeps.onVoiceChanged(deviceId: String) {
+fun RelayDeps.onVoiceChanged(deviceId: String, spaceIds: Collection<String>, wasInVoice: Boolean) {
     synchronized(presence.lockFor(deviceId)) {
-        val online = hub.isConnected(deviceId) || presence.offlinePending(deviceId)
-        emitPresence(deviceId, online, if (online) null else store.lastSeen(deviceId))
+        val inVoice = voice.roomOf(deviceId) != null
+        val eventOnline = hub.isConnected(deviceId) || presence.offlinePending(deviceId)
+        val online = eventOnline || inVoice
+        if (!online) store.setLastSeen(deviceId, clock.nowMs())
+        val coMembers = coMembers(deviceId)
+        val to = if (!eventOnline && inVoice != wasInVoice) coMembers
+            else spaceIds.toSet().flatMapTo(HashSet()) { s -> store.members(s).map { it.id } }.filter { it in coMembers }
+        emitPresence(deviceId, online, if (online) null else store.lastSeen(deviceId), to)
     }
 }
 
@@ -70,18 +84,20 @@ fun RelayDeps.onConnected(deviceId: String) {
 }
 
 /**
- * One of [deviceId]'s connections closed. Its last-seen time is written at once; when no connection is left, its
- * co-members hear it is offline after [RelayDeps.presenceGraceMs], unless it reconnected meanwhile.
+ * One of [deviceId]'s event connections closed. Its last-seen time is written at once; when no connection is left
+ * (and it is in no voice room), its co-members hear it is offline after [RelayDeps.presenceGraceMs], unless it
+ * reconnected meanwhile.
  */
 fun RelayDeps.onDisconnected(deviceId: String) {
     store.setLastSeen(deviceId, clock.nowMs())
-    if (hub.isConnected(deviceId)) return
+    // A device still in a voice room stays online; leaving voice reports it offline then (see onVoiceChanged).
+    if (presentNow(deviceId)) return
     lateinit var job: Job
     job = asyncScope.launch(start = CoroutineStart.LAZY) {
         try {
             delay(presenceGraceMs)
             synchronized(presence.lockFor(deviceId)) {
-                if (!hub.isConnected(deviceId)) {
+                if (!presentNow(deviceId)) {
                     presence.pending.remove(deviceId, job) // from here on a member list says offline too
                     presence.beforeOfflineReport(deviceId)
                     emitPresence(deviceId, false, store.lastSeen(deviceId))

@@ -4,8 +4,11 @@ import app.mjolnir.protocol.*
 import io.ktor.client.call.body
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.webSocketSession
+import io.ktor.client.plugins.websocket.cio.webSocketRawSession
 import io.ktor.client.request.*
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
@@ -115,6 +118,24 @@ class VoiceSocketTest {
         assertEquals(CloseReason.Codes.TOO_BIG.code, sa.closedWith()?.code)
     }
 
+    @Test fun audioIsIndexedByTheRosterReceiversHold() = relayTest {
+        val a = register("A"); val b = register("B"); val c = register("C")
+        val lounge = lounge(spaceOf(a, b, c))
+        val sb = voice(b, lounge); sb.awaitRoster(b)
+        val sc = voice(c, lounge); sc.awaitRoster(b, c)
+        val sa = voice(a, lounge); sa.awaitRoster(b, c, a)
+        sb.awaitRoster(b, c, a)
+        // As if C had just left in the hub and the new roster [b, a] had not gone out yet: A keeps index 2.
+        deps.voice.leave(lounge, c.deviceId)
+        sa.sendAudio(0, 1, 0x11)
+        assertContentEquals(bytes(2, 0, 1, 0x11), sb.nextBinary())
+        // As if A had just joined and its roster had not gone out yet: A's audio waits for it.
+        deps.voice.sentRosters[lounge] = listOf(b.deviceId)
+        sa.sendAudio(0, 2, 0x22)
+        assertNull(sb.nextFrameOrNull(300))
+        listOf(sa, sb, sc).forEach { it.close() }
+    }
+
     @Test fun ninthJoinIsRefused() = relayTest(limits = RelayLimits(maxVoicePerRoom = 2)) {
         val a = register("A"); val b = register("B"); val c = register("C")
         val lounge = lounge(spaceOf(a, b, c))
@@ -162,16 +183,22 @@ class VoiceSocketTest {
         val sb = voice(b, lounge); sb.awaitRoster(a, b)
         val sc = voice(c, lounge); sc.awaitRoster(a, b, c)
         sa.awaitRoster(a, b, c)
-        // B never reads from here on. Full-size frames, so B's link backs up quickly.
+        // B never reads from here on. Full-size frames, so B's link backs up; keep sending until it has (at most 5000).
         val payload = ByteArray(1275) { 0x55 }
-        for (seq in 0 until 200) {
+        var n = 0
+        while (n < 200 || (deps.voice.dropped(b.deviceId) == 0 && n < 5000)) {
+            val seq = n and 0xFFFF
             sa.send(Frame.Binary(true, byteArrayOf((seq shr 8).toByte(), seq.toByte()) + payload))
             val got = sc.nextBinary()
             assertEquals(0, got[0].toInt())
             assertEquals(seq, ((got[1].toInt() and 0xFF) shl 8) or (got[2].toInt() and 0xFF), "C got frame out of order")
-            assertTrue(deps.voice.queued(b.deviceId) <= 16, "B's queue is capped")
+            // Accepted and not yet written: the queue plus the frame being written.
+            assertTrue(deps.voice.queued(b.deviceId) <= VoiceLink.AUDIO_QUEUE + 1, "B's queue is capped")
+            n++
         }
-        assertTrue(deps.voice.queued(b.deviceId) <= 16)
+        // B really backed up and lost frames, alone: C got every one of them.
+        assertTrue(deps.voice.dropped(b.deviceId) > 0, "B never backed up in $n frames")
+        assertEquals(0, deps.voice.dropped(c.deviceId))
         sa.close(); sc.close(); sb.drop()
     }
 
@@ -326,8 +353,10 @@ class VoiceSocketTest {
         val s1 = spaceOf(a, b)
         val s2 = spaceOf(x, a) // X shares another space with A, not the room's
         val lounge = lounge(s1)
-        withEvents(b, presence = true) { val eb = this
+        withEvents(a) { withEvents(b, presence = true) { val eb = this
             withEvents(x, presence = true) { val ex = this
+                while (eb.nextOrNull(300) != null) Unit // A's own online reports
+                while (ex.nextOrNull(300) != null) Unit
                 val sa = voice(a, lounge); sa.awaitRoster(a)
                 var seen: RelayEvent.PresenceChanged? = null
                 while (seen == null) seen = eb.next() as? RelayEvent.PresenceChanged
@@ -338,8 +367,8 @@ class VoiceSocketTest {
                 assertNull(inS1.single { it.deviceId == b.deviceId }.voiceRoomId)
                 val inS2 = client.get("/v1/spaces") { bearerAuth(x.token) }.body<List<Space>>().single { it.id == s2 }.members
                 assertNull(inS2.single { it.deviceId == a.deviceId }.voiceRoomId)
-                // X shares a space with A but not the room's: whatever it hears names no room.
-                ex.nextOrNull(300)?.let { assertNull(assertIs<RelayEvent.PresenceChanged>(it).voiceRoomId) }
+                // X shares a space with A but not the room's, and A was online already: X hears nothing at all.
+                assertNull(ex.nextOrNull(300))
 
                 sa.close(CloseReason(CloseReason.Codes.NORMAL, "leave"))
                 seen = null
@@ -347,7 +376,82 @@ class VoiceSocketTest {
                 assertEquals(a.deviceId, seen.deviceId); assertNull(seen.voiceRoomId)
                 assertNull(client.get("/v1/spaces") { bearerAuth(b.token) }.body<List<Space>>().single { it.id == s1 }
                     .members.single { it.deviceId == a.deviceId }.voiceRoomId)
+                assertNull(ex.nextOrNull(300))
+            }
+        } }
+    }
+
+    private suspend fun EventReader.nextPresence(): RelayEvent.PresenceChanged {
+        while (true) (next() as? RelayEvent.PresenceChanged)?.let { return it }
+    }
+
+    private suspend fun RelayTestScope.memberView(viewer: RegisterResponse, spaceId: String, of: RegisterResponse): Peer =
+        client.get("/v1/spaces") { bearerAuth(viewer.token) }.body<List<Space>>().single { it.id == spaceId }.members.single { it.deviceId == of.deviceId }
+
+    @Test fun voiceAloneKeepsADeviceOnline() = relayTest(voiceGraceMs = 60_000) {
+        val a = register("A"); val b = register("B"); val x = register("X")
+        val sid = spaceOf(a, b)
+        spaceOf(x, b)
+        val lounge = lounge(sid)
+        withEvents(a, presence = true) { val ea = this
+            withEvents(x, presence = true) { val ex = this
+                // B has no event socket: joining voice brings it online for every co-member.
+                val sb = voice(b, lounge); sb.awaitRoster(b)
+                assertEquals(RelayEvent.PresenceChanged(b.deviceId, true, null, lounge), ea.nextPresence())
+                assertEquals(RelayEvent.PresenceChanged(b.deviceId, true, null, null), ex.nextPresence())
+                assertTrue(memberView(a, sid, b).online)
+                clock.now += 5_000
+                sb.close(VOICE_LEAVE)
+                assertEquals(RelayEvent.PresenceChanged(b.deviceId, false, clock.now, null), ea.nextPresence())
+                assertEquals(RelayEvent.PresenceChanged(b.deviceId, false, clock.now, null), ex.nextPresence())
+                assertFalse(memberView(a, sid, b).online)
+                assertEquals(clock.now, store.lastSeen(b.deviceId))
             }
         }
+    }
+
+    @Test fun closingTheEventSocketInVoiceStaysOnline() = relayTest(voiceGraceMs = 60_000, presenceGraceMs = 300) {
+        val a = register("A"); val b = register("B")
+        val sid = spaceOf(a, b)
+        val lounge = lounge(sid)
+        withEvents(a, presence = true) {
+            val sb = voice(b, lounge); sb.awaitRoster(b)
+            assertEquals(lounge, nextPresence().voiceRoomId)
+            withEvents(b) { }
+            // B's event socket came and went; its voice link keeps it online past the offline grace.
+            assertTrue(nextPresence().online) // the event socket's own online report
+            assertNull(nextOrNull(1_200))
+            assertTrue(memberView(a, sid, b).online)
+            sb.close(VOICE_LEAVE)
+            val off = nextPresence()
+            assertFalse(off.online); assertNull(off.voiceRoomId); assertEquals(clock.now, off.lastSeenMs)
+        }
+    }
+
+    @Test fun halfOpenVoiceLinkIsNoticed() = relayTest(voiceGraceMs = 60_000, voicePingMs = 200) {
+        val a = register("A")
+        val lounge = lounge(spaceOf(a))
+        // A raw session never answers pings, like a peer whose network vanished.
+        val raw = client.webSocketRawSession(path = "/v1/voice/$lounge") { bearerAuth(a.token) }
+        withTimeout(5_000) { while (deps.voice.linkOf(a.deviceId) == null) delay(10) }
+        withTimeout(5_000) { while (deps.voice.linkOf(a.deviceId) != null) delay(20) }
+        assertEquals(lounge, deps.voice.roomOf(a.deviceId)) // in its grace now
+        raw.cancel()
+    }
+
+    @Test fun onlyTheSocketRoutesSkipTheBodyLimit() = relayTest {
+        // The test client may not set Upgrade itself, so the predicate the body limit uses is checked directly.
+        assertTrue(isSocketUpgrade(HttpMethod.Get, "/v1/ws", "websocket"))
+        assertTrue(isSocketUpgrade(HttpMethod.Get, "/v1/voice/r1", "WebSocket"))
+        assertFalse(isSocketUpgrade(HttpMethod.Post, "/v1/devices", "websocket"))
+        assertFalse(isSocketUpgrade(HttpMethod.Post, "/v1/voice/r1", "websocket"))
+        assertFalse(isSocketUpgrade(HttpMethod.Get, "/v1/spaces", "websocket"))
+        assertFalse(isSocketUpgrade(HttpMethod.Get, "/v1/ws", null))
+        // And a large JSON body without it is still refused.
+        val r = client.post("/v1/devices") {
+            contentType(io.ktor.http.ContentType.Application.Json)
+            setBody(ByteArray(Limits.MAX_BODY_BYTES.toInt() + 1024) { ' '.code.toByte() })
+        }
+        assertEquals(HttpStatusCode.PayloadTooLarge, r.status)
     }
 }

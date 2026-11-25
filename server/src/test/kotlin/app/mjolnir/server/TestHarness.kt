@@ -224,13 +224,14 @@ fun relayTest(
     version: String = "1.0.0",
     presenceGraceMs: Long = 30_000,
     voiceGraceMs: Long = 10_000,
+    voicePingMs: Long = 5_000,
     store: Store = Store("jdbc:sqlite::memory:"),
     block: suspend RelayTestScope.() -> Unit,
 ) = testApplication {
     val deps = RelayDeps(
         store = store, clock = clock, limits = limits, files = files, push = push,
         heartbeatMs = heartbeatMs, roomSweepMs = roomSweepMs, version = version, presenceGraceMs = presenceGraceMs,
-        voiceGraceMs = voiceGraceMs,
+        voiceGraceMs = voiceGraceMs, voicePingMs = voicePingMs,
     )
     var app: Application? = null
     application { relayModule(deps); app = this }

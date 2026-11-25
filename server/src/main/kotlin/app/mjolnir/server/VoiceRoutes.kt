@@ -80,10 +80,19 @@ private fun RelayDeps.closeLink(link: VoiceLink, reason: String) {
     }
 }
 
-/** Sends [roomId]'s roster to [only], or else to every open socket in the room. */
+/**
+ * Sends [roomId]'s current roster to every open socket in the room and records it as the one audio is indexed by.
+ * With [only] (a silent takeover: nothing changed for the others) just that socket gets the roster the others hold.
+ */
 private fun RelayDeps.sendRoster(roomId: String, only: VoiceLink? = null) {
     synchronized(voice.roomLockFor(roomId)) {
-        val roster = voice.participants(roomId)
+        val roster = (if (only != null) voice.sentRosters[roomId] else null) ?: voice.participants(roomId)
+        if (roster.isEmpty()) {
+            voice.sentRosters.remove(roomId)
+            voice.roomSpaces.remove(roomId)
+        } else {
+            voice.sentRosters[roomId] = roster
+        }
         val text = MjolnirJson.encodeToString(VoiceRoster.serializer(), VoiceRoster(participants = roster))
         val targets = if (only != null) listOf(only) else roster.mapNotNull { id -> voice.linkOf(id)?.takeIf { it.roomId == roomId } }
         // Rosters are rare; a socket that lets them pile up is stuck, and is cut (it may reconnect within the grace).
@@ -97,12 +106,13 @@ private fun RelayDeps.voiceParticipantsChanged(roomId: String) {
     store.voiceRoom(roomId)?.let { emitVoiceRoomChanged(this, it) }
 }
 
-/** Relays one audio frame of [link] to the other open sockets of its room, prefixed with the sender's roster index. */
+/** Relays one audio frame of [link] to the other open sockets of its room, prefixed with the sender's index in the last roster sent. */
 private fun RelayDeps.forward(link: VoiceLink, data: ByteArray) {
     if (data.size < 3 || data.size > 2 + MAX_OPUS_BYTES) return
     synchronized(voice.roomLockFor(link.roomId)) {
         if (voice.linkOf(link.deviceId) !== link) return
-        val roster = voice.participants(link.roomId)
+        // The roster the receivers hold; a sender not in it yet waits until it goes out.
+        val roster = voice.sentRosters[link.roomId] ?: return
         val index = roster.indexOf(link.deviceId)
         if (index !in 0..255) return
         val out = ByteArray(data.size + 1)
@@ -114,6 +124,9 @@ private fun RelayDeps.forward(link: VoiceLink, data: ByteArray) {
     }
 }
 
+/** The space of [roomId]: remembered from a join, so it is still known while the room is being deleted. */
+private fun RelayDeps.spaceOfRoom(roomId: String): String? = voice.roomSpaces[roomId] ?: store.voiceRoom(roomId)?.spaceId
+
 private class VoiceJoin(val replaced: VoiceLink?, val movedFrom: String?, val silent: Boolean)
 
 /** Puts [link]'s device in its room and makes [link] its socket; null when the room is full (nothing changes then). */
@@ -121,8 +134,8 @@ private fun RelayDeps.joinVoice(link: VoiceLink): VoiceJoin? = synchronized(voic
     val already = voice.roomOf(link.deviceId) == link.roomId
     val result = voice.join(link.roomId, link.deviceId, limits.maxVoicePerRoom)
     if (result == VoiceHub.JoinResult.FULL) return null
-    voice.graces.remove(link.deviceId)?.cancel()
     val replaced = voice.links.put(link.deviceId, link)
+    voice.graces.remove(link.deviceId)?.cancel()
     VoiceJoin(replaced, (result as? VoiceHub.JoinResult.MOVED)?.previousRoomId, already)
 }
 
@@ -136,9 +149,13 @@ private fun RelayDeps.voiceLinkClosed(link: VoiceLink, leave: Boolean) {
     val roomId = link.roomId
     var left = false
     synchronized(voice.lockFor(deviceId)) {
-        if (!voice.links.remove(deviceId, link)) return
-        if (voice.roomOf(deviceId) != roomId) return
+        if (voice.links[deviceId] !== link) return
+        if (voice.roomOf(deviceId) != roomId) {
+            voice.links.remove(deviceId, link)
+            return
+        }
         if (leave) {
+            voice.links.remove(deviceId, link)
             left = voice.leave(roomId, deviceId)
         } else {
             lateinit var job: Job
@@ -151,20 +168,23 @@ private fun RelayDeps.voiceLinkClosed(link: VoiceLink, leave: Boolean) {
                         voice.graces.remove(deviceId, job)
                     }
                     if (gone) {
+                        val spaceId = spaceOfRoom(roomId)
                         voiceParticipantsChanged(roomId)
-                        onVoiceChanged(deviceId)
+                        onVoiceChanged(deviceId, listOfNotNull(spaceId), wasInVoice = true)
                     }
                 } finally {
                     voice.graces.remove(deviceId, job)
                 }
             }
             voice.graces.put(deviceId, job)?.cancel()
+            voice.links.remove(deviceId, link)
             job.start()
         }
     }
     if (left) {
+        val spaceId = spaceOfRoom(roomId)
         voiceParticipantsChanged(roomId)
-        onVoiceChanged(deviceId)
+        onVoiceChanged(deviceId, listOfNotNull(spaceId), wasInVoice = true)
     }
 }
 
@@ -174,6 +194,7 @@ private fun RelayDeps.voiceLinkClosed(link: VoiceLink, leave: Boolean) {
  */
 private fun RelayDeps.kickedFromVoice(roomId: String, deviceIds: List<String>) {
     val reason = if (store.voiceRoom(roomId) == null) "room_deleted" else "removed"
+    val spaceId = spaceOfRoom(roomId)
     for (id in deviceIds) {
         val link = synchronized(voice.lockFor(id)) {
             if (voice.roomOf(id) == null) voice.graces.remove(id)?.cancel()
@@ -182,7 +203,7 @@ private fun RelayDeps.kickedFromVoice(roomId: String, deviceIds: List<String>) {
         link?.let { closeLink(it, reason) }
     }
     sendRoster(roomId)
-    deviceIds.forEach { onVoiceChanged(it) }
+    deviceIds.forEach { onVoiceChanged(it, listOfNotNull(spaceId), wasInVoice = true) }
 }
 
 private suspend fun ApplicationCall.error(status: HttpStatusCode, code: String) = respond(status, ErrorResponse(code))
@@ -191,9 +212,9 @@ fun Route.voiceRoutes(deps: RelayDeps) {
     val store = deps.store
     deps.voice.onRemoved = { roomId, deviceIds -> deps.kickedFromVoice(roomId, deviceIds) }
 
-    /** True when [deviceId] may be in [roomId]: the room exists and it is a member of the room's space. */
-    fun mayJoin(roomId: String, deviceId: String): Boolean =
-        store.voiceRoom(roomId)?.let { r -> store.members(r.spaceId).any { it.id == deviceId } } == true
+    /** The space of [roomId] when [deviceId] may be in it (the room exists and it is a member of the room's space), else null. */
+    fun spaceToJoin(roomId: String, deviceId: String): String? =
+        store.voiceRoom(roomId)?.spaceId?.takeIf { s -> store.members(s).any { it.id == deviceId } }
 
     /** The room for `{id}` when the caller is a member of its space and its creator or the space admin; else answers 404 or 403 `not_owner` and returns null. */
     suspend fun ApplicationCall.manageable(): Pair<VoiceRoomRow, String>? {
@@ -251,10 +272,15 @@ fun Route.voiceRoutes(deps: RelayDeps) {
         }
 
         webSocket("/v1/voice/{roomId}") {
+            // Its own heartbeat: a half-open link (a phone that lost its network) must be noticed well within the grace.
+            pingIntervalMillis = deps.voicePingMs
+            timeoutMillis = deps.voicePingMs
             val me = call.principal<DevicePrincipal>()!!
             val roomId = call.parameters["roomId"]!!
             // A guest is in no space, so it can never be in one of its rooms.
-            if (me.kind == DeviceKind.GUEST || !mayJoin(roomId, me.deviceId)) return@webSocket close(voiceClose("not_found"))
+            val spaceId = if (me.kind == DeviceKind.GUEST) null else spaceToJoin(roomId, me.deviceId)
+            if (spaceId == null) return@webSocket close(voiceClose("not_found"))
+            deps.voice.roomSpaces[roomId] = spaceId
             val link = VoiceLink(me.deviceId, roomId, this)
             val joined = deps.joinVoice(link) ?: return@webSocket close(voiceClose("room_full"))
             var leave = false
@@ -266,7 +292,7 @@ fun Route.voiceRoutes(deps: RelayDeps) {
                         while (true) {
                             select<Unit> {
                                 link.control.onReceive { send(Frame.Text(it)) } // first: a roster precedes audio indexed by it
-                                link.audio.onReceive { link.queued.decrementAndGet(); send(Frame.Binary(true, it)) }
+                                link.audio.onReceive { send(Frame.Binary(true, it)); link.queued.decrementAndGet() }
                             }
                         }
                     } catch (e: CancellationException) {
@@ -278,7 +304,8 @@ fun Route.voiceRoutes(deps: RelayDeps) {
                 joined.replaced?.takeIf { it !== link }?.let { deps.closeLink(it, "replaced") }
                 deps.voice.afterJoin(roomId, me.deviceId)
                 // A room delete or a removal from the space may have run between the first check and the join.
-                if (!mayJoin(roomId, me.deviceId)) {
+                val spaces = listOfNotNull(spaceId, joined.movedFrom?.let { deps.spaceOfRoom(it) })
+                if (spaceToJoin(roomId, me.deviceId) == null) {
                     val reason = if (store.voiceRoom(roomId) == null) "room_deleted" else "removed"
                     var changed = false
                     synchronized(deps.voice.lockFor(me.deviceId)) {
@@ -287,7 +314,7 @@ fun Route.voiceRoutes(deps: RelayDeps) {
                     }
                     joined.movedFrom?.let { deps.voiceParticipantsChanged(it) }
                     if (changed) deps.voiceParticipantsChanged(roomId)
-                    if (changed || joined.movedFrom != null) deps.onVoiceChanged(me.deviceId)
+                    if (changed || joined.movedFrom != null) deps.onVoiceChanged(me.deviceId, spaces, wasInVoice = joined.movedFrom != null || joined.silent)
                     close(voiceClose(reason))
                     return@webSocket
                 }
@@ -296,7 +323,7 @@ fun Route.voiceRoutes(deps: RelayDeps) {
                     deps.sendRoster(roomId, only = link)
                 } else {
                     deps.voiceParticipantsChanged(roomId)
-                    deps.onVoiceChanged(me.deviceId)
+                    deps.onVoiceChanged(me.deviceId, spaces, wasInVoice = joined.movedFrom != null)
                 }
                 for (frame in incoming) if (frame is Frame.Binary) deps.forward(link, frame.data)
                 // Only a normal close saying `leave` is a deliberate leave; anything else is a dropped link and gets the grace.

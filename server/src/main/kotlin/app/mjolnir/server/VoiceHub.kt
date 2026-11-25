@@ -15,10 +15,11 @@ class VoiceLink(val deviceId: String, val roomId: String, val session: WebSocket
     internal val control = Channel<String>(CONTROL_QUEUE)
     internal val audio = Channel<ByteArray>(AUDIO_QUEUE)
     internal val queued = AtomicInteger()
+    internal val dropped = AtomicInteger()
 
     /** Queues [frame] unless the queue is full (then this receiver just misses it). */
     internal fun offerAudio(frame: ByteArray) {
-        if (audio.trySend(frame).isSuccess) queued.incrementAndGet()
+        if (audio.trySend(frame).isSuccess) queued.incrementAndGet() else dropped.incrementAndGet()
     }
 
     companion object {
@@ -48,6 +49,15 @@ class VoiceHub {
     /** The grace timers of devices whose voice socket dropped: each removes its device from its room when it fires. */
     internal val graces = ConcurrentHashMap<String, Job>()
 
+    /**
+     * The roster each room's sockets were last sent (written under the room's lock). Audio is indexed by it, not by
+     * [participants], which may already be newer than what the receivers hold.
+     */
+    internal val sentRosters = ConcurrentHashMap<String, List<String>>()
+
+    /** The space of each room someone joined, so its members can be told even after the room is deleted. */
+    internal val roomSpaces = ConcurrentHashMap<String, String>()
+
     private val deviceLocks = Array(64) { Any() }
     private val roomLocks = Array(64) { Any() }
 
@@ -62,8 +72,11 @@ class VoiceHub {
 
     fun linkOf(deviceId: String): VoiceLink? = links[deviceId]
 
-    /** Audio frames waiting for [deviceId]'s socket (at most [VoiceLink.AUDIO_QUEUE]). */
+    /** Audio frames accepted for [deviceId]'s socket and not yet written: at most [VoiceLink.AUDIO_QUEUE] queued plus the one being written. */
     internal fun queued(deviceId: String): Int = links[deviceId]?.queued?.get() ?: 0
+
+    /** Audio frames [deviceId]'s socket missed because its queue was full. */
+    internal fun dropped(deviceId: String): Int = links[deviceId]?.dropped?.get() ?: 0
 
     fun participants(roomId: String): List<String> = synchronized(lock) { rooms[roomId]?.toList() ?: emptyList() }
 

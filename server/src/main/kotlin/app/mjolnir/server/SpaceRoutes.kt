@@ -28,13 +28,13 @@ fun SpaceRow.toRef() = SpaceRef(id, name)
 
 /** True when [adminId] has not been seen for over 30 days and has no live connection (so it may be taken over). */
 fun RelayDeps.adminSilent(adminId: String): Boolean =
-    !hub.isConnected(adminId) && clock.nowMs() - store.lastSeen(adminId) > Limits.ADMIN_SILENT_TAKEOVER_MS
+    !presentNow(adminId) && clock.nowMs() - store.lastSeen(adminId) > Limits.ADMIN_SILENT_TAKEOVER_MS
 
-/** The wire view of [row]: its members with their presence (online until the grace ends, as the events say) and voice room in it, and whether its admin is silent. */
+/** The wire view of [row]: its members with their presence (online while connected or in voice, and until the grace ends, as the events say) and voice room in it, and whether its admin is silent. */
 fun RelayDeps.spaceView(row: SpaceRow): Space {
     val members = store.members(row.id).map {
         it.toPeer().copy(
-            online = hub.isConnected(it.id) || presence.offlinePending(it.id),
+            online = isOnline(it.id),
             lastSeenMs = store.lastSeen(it.id).takeIf { ms -> ms > 0 },
             voiceRoomId = voiceRoomIn(row.id, it.id),
         )
