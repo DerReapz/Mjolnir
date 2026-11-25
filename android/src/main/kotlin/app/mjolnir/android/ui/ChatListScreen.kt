@@ -144,7 +144,7 @@ fun ChatListContent(
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
             for (invite in ui.approvals) item(key = "approve-${invite.id}") { ApprovalCard(invite, nameOf, onApprove, onDeny) }
             for (invite in ui.invitations) item(key = "invite-${invite.id}") { InvitationCard(invite, onJoin, onDecline) }
-            if (ui.groups.isEmpty() && ui.invitations.isEmpty() && ui.approvals.isEmpty()) {
+            if (showNoChatsHint(ui, voice)) {
                 item(key = "empty") {
                     Text(
                         "No chats yet. Start one with ${Messages.NEW_CHAT_PHONE}.", color = Forge.Muted, style = MaterialTheme.typography.bodyMedium,

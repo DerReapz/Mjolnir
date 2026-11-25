@@ -65,4 +65,20 @@ class VoiceServiceTest {
         mode.claim().release()
         assertEquals(listOf(true, false, true, false), calls)
     }
+
+    @Test fun aRefusedForegroundServiceLeavesTheSessionAndSaysSo() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob())
+        val fake = FakeRelayApi()
+        fake.asMemberOf("s1", Peer("adm", "Admin", DeviceKind.PC))
+        val voice = phoneVoiceController(fake, scope, SilentAudio(), selfId = { fake.me.deviceId }, audioDispatcher = Dispatchers.IO)
+        try {
+            voice.join(fake.addVoiceRoom("s1", "Lounge"))
+            val said = mutableListOf<String>()
+            foregroundRefused(voice) { said += it }
+            assertNull(voice.active.value)
+            assertEquals(listOf(Messages.VOICE_AUDIO_ERROR), said)
+        } finally {
+            voice.leave(); scope.cancel()
+        }
+    }
 }

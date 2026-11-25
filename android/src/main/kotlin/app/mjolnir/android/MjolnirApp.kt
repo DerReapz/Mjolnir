@@ -60,6 +60,7 @@ import java.io.InputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.builtins.ListSerializer
@@ -207,6 +208,9 @@ class AppContainer(context: Context) {
         api, CoroutineScope(SupervisorJob() + Dispatchers.IO), AndroidAudioFactory(appContext),
         selfId = { try { config.read().deviceId } catch (e: IOException) { null } }, audioDispatcher = newVoiceAudioDispatcher(),
     )
+
+    /** Why the VoiceService ended a session (Android would not let it run in the foreground); shown by the voice UI. */
+    val voiceServiceNotices = MutableSharedFlow<String>(extraBufferCapacity = 4)
 
     /** True while an activity of the app is started. */
     val appForeground = MutableStateFlow(false)

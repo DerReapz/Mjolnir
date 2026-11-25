@@ -10,7 +10,10 @@ import app.mjolnir.protocol.Space
 import app.mjolnir.protocol.VoiceRoom
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -57,9 +60,15 @@ class VoiceViewModel(
     private val controller: VoiceController,
     private val selfId: () -> String?,
     private val hasMicPermission: () -> Boolean,
-    private val startService: (VoiceRoom) -> Unit,
+    /** Starts the foreground service; false when Android refused it. */
+    private val startService: (VoiceRoom) -> Boolean,
+    /** Why the service ended a session (it could not run in the foreground). */
+    private val serviceNotices: Flow<String> = emptyFlow(),
+    private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
     private val spaces = MutableStateFlow<List<Space>>(emptyList())
+    /** This phone's device id, read from disk off the main thread (at start and with each spaces load), never per update. */
+    private val self = MutableStateFlow<String?>(null)
     private val notice = MutableStateFlow<String?>(null)
     private val micPrompt = MutableStateFlow<MicPrompt?>(null)
     /** The room waiting for the permission answer. */
@@ -70,18 +79,21 @@ class VoiceViewModel(
 
     val ui: StateFlow<PhoneVoiceUi> = combine(
         combine(controller.supported, spaces, controller.rooms, ::Triple),
-        controller.active, notice, micPrompt,
-    ) { (supported, spaces, rooms), active, notice, prompt ->
-        PhoneVoiceUi(supported, spaces, rooms, active, notice, prompt, selfId())
+        controller.active, notice, micPrompt, self,
+    ) { (supported, spaces, rooms), active, notice, prompt, self ->
+        PhoneVoiceUi(supported, spaces, rooms, active, notice, prompt, self)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, PhoneVoiceUi())
 
     init {
         viewModelScope.launch { controller.notices.collect { notice.value = it } }
+        viewModelScope.launch { serviceNotices.collect { notice.value = it } }
+        readSelf()
     }
 
     /** The spaces were (re)loaded: their names and admins for the list, and their rooms fetched again. */
     fun spacesLoaded(all: List<Space>) {
         spaces.value = all
+        readSelf() // a re-registration changes it
         viewModelScope.launch {
             try { controller.refresh(all) } catch (e: CancellationException) { throw e } catch (_: Exception) { /* the next load or reconnect tries again */ }
         }
@@ -106,9 +118,13 @@ class VoiceViewModel(
         if (granted) start(room) else micPrompt.value = MicPrompt()
     }
 
+    private fun readSelf() {
+        viewModelScope.launch(io) { self.value = try { selfId() } catch (e: CancellationException) { throw e } catch (_: Exception) { self.value } }
+    }
+
+    /** Never voice without the foreground service: if Android refuses it, the room is not joined. */
     private fun start(room: VoiceRoom) {
-        startService(room)
-        controller.join(room)
+        if (startService(room)) controller.join(room) else notice.value = Messages.VOICE_AUDIO_ERROR
     }
 
     fun leave() = controller.leave()
@@ -135,3 +151,7 @@ class VoiceViewModel(
         }
     }
 }
+
+/** "No chats yet": only when there is nothing else to show, voice rooms included. */
+internal fun showNoChatsHint(ui: ChatListUi, voice: PhoneVoiceUi): Boolean =
+    ui.groups.isEmpty() && ui.invitations.isEmpty() && ui.approvals.isEmpty() && (!voice.supported || voice.rooms.values.all { it.isEmpty() })

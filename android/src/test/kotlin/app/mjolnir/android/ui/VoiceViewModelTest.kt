@@ -21,6 +21,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -55,16 +56,24 @@ class VoiceViewModelTest {
 
     private val admin = Peer("adm", "Admin", DeviceKind.PC)
 
-    private class Env(val fake: FakeRelayApi, val controller: VoiceController, val vm: VoiceViewModel, val started: MutableList<VoiceRoom>)
+    private class Env(
+        val fake: FakeRelayApi, val controller: VoiceController, val vm: VoiceViewModel, val started: MutableList<VoiceRoom>,
+        val selfReads: java.util.concurrent.atomic.AtomicInteger, val serviceNotices: MutableSharedFlow<String>,
+    )
 
-    private fun test(mic: () -> Boolean = { true }, block: suspend Env.() -> Unit) = runBlocking {
+    private fun test(mic: () -> Boolean = { true }, serviceStarts: Boolean = true, block: suspend Env.() -> Unit) = runBlocking {
         val scope = CoroutineScope(SupervisorJob())
         val fake = FakeRelayApi()
         fake.asMemberOf("s1", admin, name = "Crew")
         val controller = phoneVoiceController(fake, scope, SilentAudio(), selfId = { fake.me.deviceId }, audioDispatcher = Dispatchers.IO)
         val started = java.util.Collections.synchronizedList(mutableListOf<VoiceRoom>())
-        val vm = VoiceViewModel(controller, selfId = { fake.me.deviceId }, hasMicPermission = mic, startService = { started += it })
-        try { withTimeout(20_000) { Env(fake, controller, vm, started).block() } } finally { controller.leave(); scope.cancel() }
+        val selfReads = java.util.concurrent.atomic.AtomicInteger()
+        val serviceNotices = MutableSharedFlow<String>(extraBufferCapacity = 8)
+        val vm = VoiceViewModel(
+            controller, selfId = { selfReads.incrementAndGet(); fake.me.deviceId }, hasMicPermission = mic,
+            startService = { started += it; serviceStarts }, serviceNotices = serviceNotices,
+        )
+        try { withTimeout(20_000) { Env(fake, controller, vm, started, selfReads, serviceNotices).block() } } finally { controller.leave(); scope.cancel() }
     }
 
     private suspend fun eventually(what: String, cond: () -> Boolean) {
@@ -157,5 +166,46 @@ class VoiceViewModelTest {
         fake.voiceRoomsOutdated = true
         vm.spacesLoaded(fake.spaces())
         eventually("hidden") { !vm.ui.value.supported }
+    }
+
+    @Test fun theUiFollowsTheSessionWithoutReReadingTheDeviceId() = test {
+        val lounge = fake.addVoiceRoom("s1", "Lounge")
+        vm.spacesLoaded(fake.spaces())
+        eventually("self known") { vm.ui.value.selfId == fake.me.deviceId }
+        val reads = selfReads.get()
+        vm.join(lounge)
+        eventually("in the room") { vm.ui.value.active?.roomId == lounge.id }
+        repeat(5) { i ->
+            vm.setMuted(i % 2 == 0)
+            eventually("mute $i shown") { vm.ui.value.active?.muted == (i % 2 == 0) }
+        }
+        vm.setOpenMic(false)
+        eventually("push to talk shown") { vm.ui.value.active?.openMic == false }
+        assertEquals(reads, selfReads.get(), "session updates never read the device id again")
+        assertTrue(vm.ui.value.canManage(lounge))
+    }
+
+    @Test fun aServiceThatCannotStartMeansNoVoice() = test(serviceStarts = false) {
+        val lounge = fake.addVoiceRoom("s1", "Lounge")
+        vm.spacesLoaded(fake.spaces())
+        vm.join(lounge)
+        assertEquals(listOf(lounge), started.toList())
+        assertNull(controller.active.value, "never voice without the foreground service")
+        assertEquals(Messages.VOICE_AUDIO_ERROR, vm.ui.value.notice)
+    }
+
+    @Test fun theServiceReportsWhyVoiceEnded() = test {
+        serviceNotices.emit(Messages.VOICE_AUDIO_ERROR)
+        eventually("shown") { vm.ui.value.notice == Messages.VOICE_AUDIO_ERROR }
+    }
+
+    @Test fun noChatsHintHidesWhenASpaceHasVoiceRooms() {
+        val room = VoiceRoom("r1", "s1", "Lounge", "adm")
+        val empty = ChatListUi()
+        assertTrue(showNoChatsHint(empty, PhoneVoiceUi()))
+        assertTrue(showNoChatsHint(empty, PhoneVoiceUi(supported = true, rooms = mapOf("s1" to emptyList()))))
+        assertFalse(showNoChatsHint(empty, PhoneVoiceUi(supported = true, rooms = mapOf("s1" to listOf(room)))))
+        // An old relay shows no voice: the hint stays.
+        assertTrue(showNoChatsHint(empty, PhoneVoiceUi(supported = false, rooms = mapOf("s1" to listOf(room)))))
     }
 }

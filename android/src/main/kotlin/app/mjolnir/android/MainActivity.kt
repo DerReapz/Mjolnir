@@ -135,7 +135,7 @@ class MainActivity : ComponentActivity() {
                     VoiceViewModel(
                         c.voice, selfId = { try { c.config.read().deviceId } catch (e: java.io.IOException) { null } },
                         hasMicPermission = { appContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED },
-                        startService = { room -> startVoiceService(appContext, room.name) },
+                        startService = { room -> startVoiceService(appContext, room.name) }, serviceNotices = c.voiceServiceNotices,
                     )
                 }
                 SettingsViewModel::class.java -> SettingsViewModel(c.api, c.config, session, onRelayUrlChanged = c::invalidateRelayClient)

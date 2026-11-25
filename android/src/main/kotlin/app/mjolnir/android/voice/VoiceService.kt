@@ -55,15 +55,24 @@ internal fun applyVoiceAction(action: String?, voice: VoiceController): Boolean 
 }
 
 /**
+ * The service could not run in the foreground (Android 14 refuses a `microphone` service without the permission or
+ * outside the foreground): never voice without it, so the session is left and [report] says why.
+ */
+internal fun foregroundRefused(voice: VoiceController, report: (String) -> Unit) {
+    voice.leave()
+    report(Messages.VOICE_AUDIO_ERROR)
+}
+
+/**
  * Starts the microphone foreground service for a session just joined in [room]. Call it from the app in the foreground,
  * with the microphone permission granted (Android 14 refuses a `microphone` service otherwise), right before joining.
+ * False when Android refused: then the room must not be joined.
  */
-fun startVoiceService(context: Context, room: String) {
-    try {
-        context.startForegroundService(Intent(context, VoiceService::class.java).setAction(ACTION_VOICE_START).putExtra(EXTRA_ROOM, room))
-    } catch (_: RuntimeException) {
-        // Not allowed right now: the session still runs while the app is open.
-    }
+fun startVoiceService(context: Context, room: String): Boolean = try {
+    context.startForegroundService(Intent(context, VoiceService::class.java).setAction(ACTION_VOICE_START).putExtra(EXTRA_ROOM, room))
+    true
+} catch (_: RuntimeException) {
+    false // not allowed now (e.g. ForegroundServiceStartNotAllowedException): the room is not joined
 }
 
 /**
@@ -93,7 +102,8 @@ class VoiceService : Service() {
                 if (Build.VERSION.SDK_INT >= 30) startForeground(VOICE_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
                 else startForeground(VOICE_NOTIFICATION_ID, notification)
             } catch (_: RuntimeException) {
-                // No microphone permission, or not allowed from the background: the session runs while the app is open.
+                // No microphone permission, or not allowed from the background: no voice without the service.
+                foregroundRefused(voice) { (application as MjolnirApp).container.voiceServiceNotices.tryEmit(it) }
                 stopNow()
                 return START_NOT_STICKY
             }
