@@ -172,6 +172,8 @@ class VoiceViewModelTest {
         val lounge = fake.addVoiceRoom("s1", "Lounge")
         vm.spacesLoaded(fake.spaces())
         eventually("self known") { vm.ui.value.selfId == fake.me.deviceId }
+        // The init read and the spacesLoaded read are separate IO launches: count only once both have happened.
+        eventually("both device-id reads done") { selfReads.get() >= 2 }
         val reads = selfReads.get()
         vm.join(lounge)
         eventually("in the room") { vm.ui.value.active?.roomId == lounge.id }
