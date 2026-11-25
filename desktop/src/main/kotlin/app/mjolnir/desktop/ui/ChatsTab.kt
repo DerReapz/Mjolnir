@@ -167,6 +167,8 @@ class ChatsUi(
     val overlayOpen: Boolean = false,
     /** Who is online, by device id (the shared client's presence). */
     val presence: Map<String, Presence> = emptyMap(),
+    /** Voice rooms: the list per space and the room this device is in. */
+    val voice: VoiceUi = VoiceUi(),
 ) {
     val selected: ChatSummary? get() = chats.firstOrNull { it.id == selectedId }
 
@@ -196,6 +198,7 @@ class ChatsActions(
     val onSettings: () -> Unit = {},
     val onAdminJoin: () -> Unit = {},
     val onDismissNotice: () -> Unit = {},
+    val voice: VoiceActions = VoiceActions(),
     /** Saves these attachments of the message into the save folder. */
     val onDownload: (ChatMessage, List<Attachment>) -> Unit = { _, _ -> },
     /** *Attach*: pick files or folders to send to the open chat. */
@@ -286,22 +289,33 @@ private fun Modifier.dashedBorder(color: Color, radius: Float = 10f): Modifier =
 /** The Chats tab: the list (approvals on top, invitations at the bottom) and the open conversation. Layout per the `DesktopChats` mockup. */
 @Composable
 fun ChatsTabContent(ui: ChatsUi, actions: ChatsActions, now: () -> Long = System::currentTimeMillis) {
-    Row(Modifier.fillMaxSize().background(Forge.background)) {
-        ChatList(ui, actions, now)
-        Box(Modifier.width(1.dp).fillMaxHeight().background(Forge.border))
-        Box(Modifier.weight(1f).fillMaxHeight()) { Conversation(ui, actions) }
+    var newRoomIn by remember { mutableStateOf<String?>(null) } // the space a *New voice room* dialog is open for
+    Box(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxSize().background(Forge.background)) {
+            ChatList(ui, actions, now, onNewRoom = { newRoomIn = it })
+            Box(Modifier.width(1.dp).fillMaxHeight().background(Forge.border))
+            Box(Modifier.weight(1f).fillMaxHeight()) { Conversation(ui, actions) }
+        }
+        newRoomIn?.let { id ->
+            val name = ui.voice.spaces.firstOrNull { it.id == id }?.name ?: ui.chats.firstOrNull { it.spaceId == id }?.spaceName.orEmpty()
+            NewVoiceRoomDialog(name, onCreate = { room -> actions.voice.onCreateRoom(id, room); newRoomIn = null }, onClose = { newRoomIn = null })
+        }
     }
 }
 
 // ---- the list ----
 
 @Composable
-private fun ChatList(ui: ChatsUi, actions: ChatsActions, now: () -> Long) {
+private fun ChatList(ui: ChatsUi, actions: ChatsActions, now: () -> Long, onNewRoom: (String) -> Unit) {
     val approvals = ui.invites.filter { it.state == InviteState.PENDING_APPROVAL }
     val invitations = ui.invites.filter { it.state == InviteState.APPROVED }
-    val groups = ui.chats.groupBy { it.spaceId }.values
-        .sortedBy { it.first().spaceName.lowercase() }
-        .map { chats -> chats.sortedWith(compareByDescending<ChatSummary> { it.lastMessage?.sentAtEpochMs ?: 0L }.thenBy { it.name.lowercase() }) }
+    val chatGroups = ui.chats.groupBy { it.spaceId }.mapValues { (_, chats) ->
+        chats.sortedWith(compareByDescending<ChatSummary> { it.lastMessage?.sentAtEpochMs ?: 0L }.thenBy { it.name.lowercase() })
+    }
+    // Every space with chats, and (on a relay with voice rooms) every space of this device: each has a Voice section.
+    val voiceSpaces = if (ui.voice.supported) ui.voice.spaces else emptyList()
+    val spaceNames = voiceSpaces.associate { it.id to it.name } + chatGroups.mapValues { it.value.first().spaceName }
+    val spaceIds = (chatGroups.keys + voiceSpaces.map { it.id }).sortedBy { spaceNames.getValue(it).lowercase() }
     Column(Modifier.width(270.dp).fillMaxHeight().background(Forge.panel)) {
         Row(Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 16.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Chats", style = titleStyle(20), modifier = Modifier.weight(1f))
@@ -309,22 +323,28 @@ private fun ChatList(ui: ChatsUi, actions: ChatsActions, now: () -> Long) {
         }
         for (invite in approvals) ApprovalCard(invite, ui.nicknameOf, actions)
         LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-            for (chats in groups) {
-                item(key = "space-${chats.first().spaceId}") {
-                    Box(Modifier.padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 4.dp)) { ForgeSectionLabel(chats.first().spaceName) }
+            for (spaceId in spaceIds) {
+                val chats = chatGroups[spaceId].orEmpty()
+                item(key = "space-$spaceId") {
+                    Box(Modifier.padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 4.dp)) { ForgeSectionLabel(spaceNames.getValue(spaceId)) }
                 }
                 val sections = chatSections(chats)
                 for ((label, rows) in listOf(Messages.CHANNELS to sections.channels, Messages.PRIVATE_CHATS to sections.privateChats)) {
                     if (rows.isEmpty()) continue
-                    item(key = "label-${chats.first().spaceId}-$label") {
+                    item(key = "label-$spaceId-$label") {
                         Text(label, style = body(12, ForgeFonts.inter600, Forge.muted), modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 2.dp))
                     }
                     items(rows, key = { it.id }) { chat ->
                         ChatListItem(chat, selected = chat.id == ui.selectedId, unread = ui.unread[chat.id] ?: 0, mention = chat.id in ui.unreadMentions, ui, now, onClick = { actions.onSelect(chat.id) })
                     }
                 }
+                if (ui.voice.supported) item(key = "voice-$spaceId") {
+                    Column { VoiceRoomsSection(spaceId, ui.voice, ui.nicknameOf, actions.voice, onNewRoom = { onNewRoom(spaceId) }) }
+                }
             }
         }
+        ui.voice.notice?.let { VoiceNotice(it, actions.voice.onDismissNotice) }
+        VoicePanel(ui.voice, ui.selfId, ui.nicknameOf, actions.voice)
         for (invite in invitations) InvitationCard(invite, actions)
     }
 }
@@ -785,6 +805,10 @@ fun ChatsTab(c: AppController, parent: java.awt.Component? = null) {
     val messages by remember(id) { id?.let(c.chats::messages) ?: MutableStateFlow(emptyList()) }.collectAsState()
     val members by remember(id) { id?.let(c.chats::members) ?: MutableStateFlow(emptyList()) }.collectAsState()
     val presence by c.chats.presence.collectAsState()
+    val voiceRooms by c.voice.rooms.collectAsState()
+    val voiceSupported by c.voice.supported.collectAsState()
+    val voiceActive by c.voice.active.collectAsState()
+    val voiceNotice by c.voiceNotice.collectAsState()
     val receipts by remember(id) { id?.let(c.chats::receipts) ?: MutableStateFlow(emptyList()) }.collectAsState()
     var dialog by remember { mutableStateOf<ChatDialog?>(null) }
     var conversationOverlay by remember { mutableStateOf(false) }
@@ -831,6 +855,10 @@ fun ChatsTab(c: AppController, parent: java.awt.Component? = null) {
         onDropFiles = { files -> if (id != null) c.sendChatFiles(id, files) },
         onDismissSend = c.chats::dismissSend,
         onOverlayChange = { conversationOverlay = it },
+        voice = VoiceActions(
+            onJoin = c::joinVoice, onLeave = c.voice::leave, onMute = c.voice::setMuted, onTalking = c.voice::setTalking,
+            onOpenMic = c.voice::setOpenMic, onCreateRoom = c::createVoiceRoom, onDismissNotice = c::dismissVoiceNotice,
+        ),
     )
 
     Box(Modifier.fillMaxSize()) {
@@ -839,6 +867,7 @@ fun ChatsTab(c: AppController, parent: java.awt.Component? = null) {
                 chats, invites, unread, config.deviceId, adminSpaceIds, selectedId, messages, members, nicknameOf, notice, receipts, unreadMentions,
                 pending = pending, media = c.chatMediaSource, animate = showing, info = info, video = JavaFxVideo,
                 overlayOpen = dialog != null, presence = presence,
+                voice = VoiceUi(voiceSupported, spaces, voiceRooms, voiceActive, voiceNotice),
             ),
             actions,
         )

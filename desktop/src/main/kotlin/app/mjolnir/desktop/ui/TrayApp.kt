@@ -1,5 +1,6 @@
 package app.mjolnir.desktop.ui
 
+import app.mjolnir.client.Messages
 import app.mjolnir.client.RelayUrls
 import app.mjolnir.client.UpdateState
 import androidx.compose.foundation.layout.Arrangement
@@ -49,7 +50,9 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     val config by c.config.collectAsState()
     val peers by c.peers.collectAsState()
     val nicknames by c.nicknames.changes.collectAsState()
-    val tooltip by c.tooltip.collectAsState()
+    val idleTooltip by c.tooltip.collectAsState()
+    val voiceActive by c.voice.active.collectAsState()
+    val tooltip = trayTooltip(idleTooltip, voiceActive?.roomName)
     val pairRequest by c.pairRequest.collectAsState()
     val update by c.updateState.collectAsState()
     val icon = remember { loadIcon() }
@@ -85,6 +88,11 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
             Item("Send clipboard to $name", onClick = { c.sendClipboard() })
         }
         Item("Open received files", onClick = { c.openReceivedFiles() })
+        voiceActive?.let {
+            Separator()
+            Item(Messages.inVoice(it.roomName), enabled = false, onClick = {})
+            Item(Messages.LEAVE_VOICE, onClick = { c.voice.leave() })
+        }
         Separator()
         Item("Quit Mjolnir", onClick = onQuit)
     })
@@ -99,6 +107,9 @@ fun ApplicationScope.TrayApp(c: AppController, incoming: Flow<List<String>> = em
     }
     pairRequest?.let { PairRequestDialog(c, it, icon) }
 }
+
+/** The tray tooltip: `In voice: {room}` while in a voice room (sending progress shows only when not in one), else [idle]. */
+internal fun trayTooltip(idle: String, voiceRoom: String?): String = if (voiceRoom == null) idle else Messages.inVoice(voiceRoom)
 
 /** The tray's `Update to {version}` item, shown only while an update is available (not once it is downloading). */
 internal fun trayUpdateLabel(state: UpdateState): String? = (state as? UpdateState.Available)?.let { "Update to ${it.version}" }

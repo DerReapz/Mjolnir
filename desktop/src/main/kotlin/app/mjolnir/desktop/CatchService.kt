@@ -26,6 +26,8 @@ class CatchService(
     private val onGuestRoomEvent: (RelayEvent) -> Unit = {},
     /** Runs when the relay says a newer app version exists (sent once per connect when this app is older). */
     private val onUpdateAvailable: (version: String) -> Unit = {},
+    /** Runs for the voice rooms' events and on each (re)connect (which refreshes the room lists). */
+    private val onVoiceEvent: (RelayEvent) -> Unit = {},
 ) {
     /** Collects relay events until cancelled; RelayException(UNAUTHORIZED) and any drain failure propagate. */
     suspend fun run() {
@@ -39,7 +41,7 @@ class CatchService(
     private suspend fun collect() {
         api.events().collect { event ->
             when (event) {
-                is RelayEvent.Connected -> { onConnectionChange(true); drain(); onConnected(); onChatEvent(event) }
+                is RelayEvent.Connected -> { onConnectionChange(true); drain(); onConnected(); onChatEvent(event); onVoiceEvent(event) }
                 is RelayEvent.Disconnected -> onConnectionChange(false)
                 is RelayEvent.DeliveryArrived -> drain()
                 is RelayEvent.PairRequested -> onPairRequest(event)
@@ -53,7 +55,7 @@ class CatchService(
                 is RelayEvent.UpdateAvailable -> onUpdateAvailable(event.version)
                 is RelayEvent.ChatChanged, is RelayEvent.ChatDeleted, is RelayEvent.ChatInvitesChanged -> onChatEvent(event)
                 is RelayEvent.PresenceChanged -> onChatEvent(event) // the member lists' online dots
-                is RelayEvent.VoiceRoomChanged, is RelayEvent.VoiceRoomDeleted -> Unit // wired with the voice UI
+                is RelayEvent.VoiceRoomChanged, is RelayEvent.VoiceRoomDeleted -> onVoiceEvent(event)
             }
         }
     }

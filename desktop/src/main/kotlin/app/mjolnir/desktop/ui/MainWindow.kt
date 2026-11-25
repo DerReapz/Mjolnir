@@ -151,6 +151,8 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
         onCloseRequest = onClose, state = rememberWindowState(size = DpSize(1040.dp, 680.dp)),
         title = "Mjolnir", icon = icon,
         onPreviewKeyEvent = { e ->
+            // Hold ` to talk, on any tab, while the window has focus.
+            if (pushToTalkKey(e, c.voice.active.value, c.voice::setTalking)) true else
             // Ctrl+V anywhere on the Send tab: files from Explorer, else text (links).
             if (tab == MainTab.SEND && e.type == KeyEventType.KeyDown && e.isCtrlPressed && e.key == Key.V) {
                 val (files, text) = readClipboard()
@@ -172,6 +174,13 @@ fun MainWindow(c: AppController, tab: MainTab, onTab: (MainTab) -> Unit, onClose
             val listener = java.awt.event.WindowStateListener { c.setWindowMinimized(it.newState and Frame.ICONIFIED != 0) }
             awtWindow.addWindowStateListener(listener)
             onDispose { awtWindow.removeWindowStateListener(listener) }
+        }
+        DisposableEffect(awtWindow) { // a key held while the window loses focus never sends its release
+            val listener = object : java.awt.event.WindowAdapter() {
+                override fun windowLostFocus(e: java.awt.event.WindowEvent?) { if (c.voice.active.value?.talking == true) c.voice.setTalking(false) }
+            }
+            awtWindow.addWindowFocusListener(listener)
+            onDispose { awtWindow.removeWindowFocusListener(listener) }
         }
         LaunchedEffect(Unit) { c.openRequests.collect { bringToFront(awtWindow) } } // Explorer's *Send to*, tray: come to the front
         MjolnirTheme {

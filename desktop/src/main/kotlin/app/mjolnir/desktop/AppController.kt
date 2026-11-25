@@ -13,6 +13,12 @@ import app.mjolnir.protocol.ChatMessage
 import app.mjolnir.protocol.safeFileName
 import app.mjolnir.protocol.safeRelativePath
 import app.mjolnir.client.ChatStore
+import app.mjolnir.client.voice.ActiveVoice
+import app.mjolnir.client.voice.VoiceController
+import app.mjolnir.desktop.voice.DesktopAudioFactory
+import app.mjolnir.desktop.voice.newAudioDispatcher
+import kotlinx.coroutines.asCoroutineDispatcher
+import app.mjolnir.protocol.VoiceRoom
 import app.mjolnir.client.FileSeenDeliveries
 import app.mjolnir.client.IncomingMessage
 import app.mjolnir.client.Exchanged
@@ -157,7 +163,7 @@ class AppController(
     /** Spaces this device is in: the list, invite code, join flow and admin actions. */
     val spaces = SpacesController(
         api = ::api, scope = scope,
-        onSpacesLoaded = { all -> chats.seedPresence(all) }, // always the full list: the seed replaces the whole map
+        onSpacesLoaded = { all -> chats.seedPresence(all); refreshVoiceRooms(all) }, // always the full list: the seed replaces the whole map
         onPeersAffected = { scope.launch { refreshAfterSpaceChange() } },
         onUnauthorized = { scope.launch { recoverUnauthorized(store.read().token) } },
     )
@@ -174,6 +180,45 @@ class AppController(
         outbox = ChatOutbox(File(dataDir, "chat-outbox")), media = chatMedia,
         me = { _config.value.deviceId },
     )
+
+    /** Capture and playout block on the audio devices: their own small pool, closed in [shutdown]. */
+    private val audioPool = newAudioDispatcher()
+
+    /** Voice rooms: the PC is push to talk by default (hold ` or the on-screen button); one room at a time. */
+    val voice = VoiceController(
+        apiProvider = { api() ?: throw RelayException(RelayErrorKind.NETWORK, "no relay configured") },
+        scope = scope, audio = DesktopAudioFactory(), selfId = { _config.value.deviceId },
+        openMicByDefault = false, audioDispatcher = audioPool.asCoroutineDispatcher(),
+    )
+
+    private val _voiceNotice = MutableStateFlow<String?>(null)
+    /** Why the last voice session ended (or a room action failed), as a sentence; null once dismissed or on joining. */
+    val voiceNotice: StateFlow<String?> = _voiceNotice.asStateFlow()
+    fun dismissVoiceNotice() { _voiceNotice.value = null }
+
+    init {
+        scope.launch { voice.notices.collect { _voiceNotice.value = it } }
+    }
+
+    private fun refreshVoiceRooms(spaces: List<Space>) {
+        scope.launch {
+            try { voice.refresh(spaces) } catch (e: CancellationException) { throw e } catch (_: Exception) { /* the next change or reconnect tries again */ }
+        }
+    }
+
+    fun joinVoice(room: VoiceRoom) { _voiceNotice.value = null; voice.join(room) }
+
+    fun createVoiceRoom(spaceId: String, name: String) {
+        scope.launch {
+            try {
+                voice.createRoom(spaceId, name)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: RelayException) {
+                _voiceNotice.value = e.userMessage ?: Messages.chatError(e)
+            }
+        }
+    }
 
     /** What the chat bubbles show: attachments through [chatMedia], fetched with the current relay connection. */
     val chatMediaSource: ChatMediaSource = object : ChatMediaSource {
@@ -472,6 +517,7 @@ class AppController(
                     onConnectionChange = { connected.value = it },
                     onSpaceChanged = { spaces.refresh() },
                     onChatEvent = chats::onEvent,
+                    onVoiceEvent = voice::onEvent,
                     onSpaceDeleted = { onSpaceDeleted(it.space) },
                     onGuestRoomEvent = ::onGuestRoomEvent,
                     onUpdateAvailable = updater::onUpdateAvailable,
@@ -1005,6 +1051,8 @@ class AppController(
     }
 
     fun shutdown() {
+        voice.leave()
+        audioPool.shutdownNow()
         synchronized(clientLock) { (client as? AutoCloseable)?.close(); client = null }
         scope.coroutineContext[Job]?.cancel()
     }

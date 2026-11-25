@@ -140,6 +140,7 @@ class MessagesTest {
         assertEquals("You were removed from Lounge", Messages.voiceEnded("removed", "Lounge"))
         assertEquals("You joined Lounge somewhere else", Messages.voiceEnded("replaced", "Lounge"))
         assertEquals("Lounge is gone", Messages.voiceEnded("not_found", "Lounge"))
+        assertEquals("Can't use the microphone or speaker.", Messages.voiceEnded("audio_error", "Lounge"))
         assertEquals(null, Messages.voiceEnded(null, "Lounge"), "a deliberate leave says nothing")
         assertEquals(Messages.RELAY_OUTDATED, Messages.voiceEnded("relay_outdated", "Lounge"))
         assertEquals(Messages.APP_OUTDATED, Messages.voiceEnded("app_outdated", "Lounge"))

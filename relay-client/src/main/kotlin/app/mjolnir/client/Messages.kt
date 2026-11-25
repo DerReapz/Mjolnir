@@ -286,6 +286,8 @@ object Messages {
     const val USE_HEADPHONES = "Use headphones to avoid echo"
     const val MIC_PERMISSION = "Mjolnir needs the microphone for voice rooms."
     const val OPEN_SETTINGS = "Open settings"
+    /** A voice session that could not open the microphone or speaker (no device, or another app has it). */
+    const val VOICE_AUDIO_ERROR = "Can't use the microphone or speaker."
 
     fun inVoice(room: String) = "In voice: $room"
     /** The title of the phone's ongoing voice notification. */
@@ -312,6 +314,7 @@ object Messages {
         "removed" -> "You were removed from $room"
         "replaced" -> "You joined $room somewhere else"
         "not_found" -> "$room is gone"
+        "audio_error" -> VOICE_AUDIO_ERROR
         else -> null
     }
 }

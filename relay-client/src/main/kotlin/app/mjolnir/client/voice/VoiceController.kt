@@ -40,7 +40,8 @@ data class ActiveVoice(
  * Open mic starts as [openMicByDefault] (the phone) or push to talk (the PC), and [setOpenMic] carries over between rooms.
  */
 class VoiceController(
-    private val api: RelayApi,
+    /** The relay client now in use (the PC's changes with the relay address). */
+    private val apiProvider: () -> RelayApi,
     private val scope: CoroutineScope,
     private val audio: VoiceAudioFactory,
     private val selfId: () -> String? = { null },
@@ -50,6 +51,18 @@ class VoiceController(
     /** Paces each session's playout; one ticker per session. */
     private val newTicker: () -> VoiceTicker = { RealtimeTicker() },
 ) {
+    constructor(
+        api: RelayApi,
+        scope: CoroutineScope,
+        audio: VoiceAudioFactory,
+        selfId: () -> String? = { null },
+        openMicByDefault: Boolean = false,
+        audioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+        newTicker: () -> VoiceTicker = { RealtimeTicker() },
+    ) : this({ api }, scope, audio, selfId, openMicByDefault, audioDispatcher, newTicker)
+
+    private val api: RelayApi get() = apiProvider()
+
     private val _rooms = MutableStateFlow<Map<String, List<VoiceRoom>>>(emptyMap())
     /** Each space's voice rooms by space id, in the relay's order. */
     val rooms: StateFlow<Map<String, List<VoiceRoom>>> = _rooms.asStateFlow()
