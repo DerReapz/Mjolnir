@@ -37,6 +37,18 @@ class VoiceRoomsTest {
         assertTrue(list.single().participants.isEmpty())
     }
 
+    @Test fun roomsCarryTheRelaysLimit() = relayTest(limits = RelayLimits(maxVoicePerRoom = 12)) {
+        val a = register("A")
+        val s = spaceOf(a)
+        assertEquals(listOf(12), rooms(a, s).body<List<VoiceRoom>>().map { it.maxParticipants })
+        assertEquals(12, create(a, s, "Games").body<VoiceRoom>().maxParticipants)
+    }
+
+    @Test fun oldRelayRoomWithoutLimitReadsAsEight() {
+        val json = """{"id":"r","spaceId":"s","name":"Lounge","creatorId":"a"}"""
+        assertEquals(8, MjolnirJson.decodeFromString(VoiceRoom.serializer(), json).maxParticipants)
+    }
+
     @Test fun backfillAddsLoungeOnce() {
         val file = createTempDirectory().resolve("pre.db").toString()
         val st = Store("jdbc:sqlite:$file")

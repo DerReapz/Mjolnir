@@ -88,7 +88,15 @@ object DeviceKindSerializer : KSerializer<DeviceKind> {
 @Serializable data class CreateSpaceRequest(val name: String)
 @Serializable data class RenameSpaceRequest(val name: String)
 /** A voice room of a space; [participants] are the members currently in it (only space members ever see them). */
-@Serializable data class VoiceRoom(val id: String, val spaceId: String, val name: String, val creatorId: String, val participants: List<Peer> = emptyList())
+/** [maxParticipants]: the relay's per-room limit (`MJOLNIR_MAX_VOICE`); an older relay leaves it out (the default, 8). */
+@Serializable data class VoiceRoom(
+    val id: String,
+    val spaceId: String,
+    val name: String,
+    val creatorId: String,
+    val participants: List<Peer> = emptyList(),
+    val maxParticipants: Int = 8,
+)
 @Serializable data class CreateVoiceRoomRequest(val name: String)
 /**
  * The text frame on a voice socket (`/v1/voice/{roomId}`), sent on join and whenever the room's participants change.

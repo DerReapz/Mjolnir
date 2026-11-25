@@ -37,6 +37,7 @@ fun RelayDeps.voiceRoomView(row: VoiceRoomRow): VoiceRoom =
     VoiceRoom(
         row.id, row.spaceId, row.name, row.creatorId,
         voice.participants(row.id).map { id -> store.device(id)?.toPeer() ?: Peer(id, "Unknown device", DeviceKind.PC) },
+        maxParticipants = limits.maxVoicePerRoom,
     )
 
 /** Tells every member of the room's space that [row] changed. */

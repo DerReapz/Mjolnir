@@ -291,13 +291,21 @@ object Messages {
     /** The title of the phone's ongoing voice notification. */
     fun voiceNotificationTitle(room: String) = "Mjolnir voice — $room"
     fun deleteVoiceRoomConfirm(room: String) = "Delete $room? Anyone in it is disconnected."
-    fun voiceFull(room: String, n: Int, max: Int) = "$room is full ($n/$max)"
+    /** An unknown limit ([max] ≤ 0) reads as the relay's default of 8; an unknown count as the limit. Never "0/0". */
+    fun voiceFull(room: String, n: Int, max: Int): String {
+        val limit = if (max > 0) max else DEFAULT_VOICE_MAX
+        return "$room is full (${if (n > 0) n else limit}/$limit)"
+    }
+    private const val DEFAULT_VOICE_MAX = 8
 
     /**
      * Why a voice session in [room] ended, from [VoiceState.Ended]'s reason, or null when there is nothing to say (the
-     * user left). For `room_full`, [n] and [max] are the room's count and limit.
+     * user left). For `room_full`, [n] and [max] are the room's count and limit (unknown: 0; see [voiceFull]).
+     * A relay that refused the voice socket itself says so with the app-wide copy.
      */
     fun voiceEnded(reason: String?, room: String, n: Int = 0, max: Int = 0): String? = when (reason) {
+        VOICE_RELAY_OUTDATED -> RELAY_OUTDATED
+        VOICE_APP_OUTDATED -> APP_OUTDATED
         "connection_lost" -> "You left $room (connection lost)"
         "room_full" -> voiceFull(room, n, max)
         "room_deleted" -> "$room was deleted"

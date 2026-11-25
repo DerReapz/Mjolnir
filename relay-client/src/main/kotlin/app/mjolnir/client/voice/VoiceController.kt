@@ -8,7 +8,9 @@ import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.Space
 import app.mjolnir.protocol.VoiceRoom
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +45,10 @@ class VoiceController(
     private val audio: VoiceAudioFactory,
     private val selfId: () -> String? = { null },
     openMicByDefault: Boolean = false,
+    /** Where each session's capture and playout loops run (they block on the audio devices). */
+    private val audioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /** Paces each session's playout; one ticker per session. */
+    private val newTicker: () -> VoiceTicker = { RealtimeTicker() },
 ) {
     private val _rooms = MutableStateFlow<Map<String, List<VoiceRoom>>>(emptyMap())
     /** Each space's voice rooms by space id, in the relay's order. */
@@ -118,7 +124,10 @@ class VoiceController(
         val current = session
         if (current != null && _active.value?.roomId == room.id && current.state.value !is VoiceState.Ended) return
         stop()
-        val s = VoiceSession({ onRoster, onFrame -> api.openVoice(room.id, onRoster, onFrame) }, audio.input(), audio.output(), scope, selfId())
+        val s = VoiceSession(
+            { onRoster, onFrame -> api.openVoice(room.id, onRoster, onFrame) }, audio.input(), audio.output(), scope, selfId(),
+            ticker = newTicker(), audioDispatcher = audioDispatcher,
+        )
         s.openMic = openMic
         session = s
         _active.value = ActiveVoice(room.id, room.name, s.state.value, emptySet(), muted = false, talking = false, openMic = openMic)
@@ -166,8 +175,9 @@ class VoiceController(
             watcher?.cancel()
             watcher = null
             left?.let {
-                val n = roomById(it.roomId)?.participants?.size ?: 0
-                Messages.voiceEnded(reason, it.roomName, n, n)
+                // The room as last listed: its count and the relay's limit (unknown: Messages falls back to 8, never 0/0).
+                val room = roomById(it.roomId)
+                Messages.voiceEnded(reason, it.roomName, room?.participants?.size ?: 0, room?.maxParticipants ?: 0)
             }
         }
         notice?.let { _notices.tryEmit(it) }

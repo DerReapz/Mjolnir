@@ -13,6 +13,24 @@ import app.mjolnir.server.RelayDeps
 import app.mjolnir.server.RelayLimits
 import app.mjolnir.server.Store
 import io.ktor.server.routing.routing
+import io.ktor.server.routing.get
+import io.ktor.server.response.respond
+import io.ktor.server.application.install
+import io.ktor.server.application.ApplicationCallPipeline
+import io.ktor.server.websocket.webSocket
+import io.ktor.http.Headers
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.close
+import io.ktor.client.engine.okhttp.OkHttpConfig
+import app.mjolnir.client.VOICE_APP_OUTDATED
+import app.mjolnir.client.VOICE_RELAY_OUTDATED
+import app.mjolnir.client.newMjolnirHttpClient
+import app.mjolnir.protocol.APP_VERSION_HEADER
+import app.mjolnir.protocol.ErrorResponse
+import app.mjolnir.protocol.RELAY_VERSION_HEADER
+import kotlinx.coroutines.CompletableDeferred
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
@@ -43,6 +61,7 @@ class RelayClientVoiceTest {
         val (a, b, spaceId) = space()
         val lounge = a.api.voiceRooms(spaceId).single()
         assertEquals("Lounge", lounge.name); assertEquals(spaceId, lounge.spaceId)
+        assertEquals(8, lounge.maxParticipants, "the relay's default MJOLNIR_MAX_VOICE")
         val games = b.api.createVoiceRoom(spaceId, "Games")
         assertEquals(b.id, games.creatorId)
         assertEquals(listOf("Lounge", "Games"), a.api.voiceRooms(spaceId).map { it.name })
@@ -58,6 +77,68 @@ class RelayClientVoiceTest {
         application { routing { } }
         val api = RelayClient(createClient { installMjolnirDefaults() }, "http://localhost", "1.0.0") { "t" }
         assertKind(RelayErrorKind.RELAY_OUTDATED) { api.voiceRooms("s") }
+    }
+
+    @Test fun voiceClientPingsEvery5Seconds() {
+        RelayClient.create("http://relay.test", "1.0.7") { "tok" }.use { c ->
+            assertEquals(5_000, (c.voiceHttp.engine.config as OkHttpConfig).preconfigured!!.pingIntervalMillis)
+        }
+        newMjolnirHttpClient().use { assertEquals(20_000, (it.engine.config as OkHttpConfig).preconfigured!!.pingIntervalMillis) }
+    }
+
+    /** The voice client is a separate HttpClient; its handshake carries the same app version, bearer and relay-version read. */
+    @Test fun voiceSocketCarriesTheSameHeaders() = testApplication {
+        val seen = CompletableDeferred<Headers>()
+        application {
+            install(io.ktor.server.websocket.WebSockets)
+            intercept(ApplicationCallPipeline.Plugins) { context.response.headers.append(RELAY_VERSION_HEADER, "1.0.9") }
+            routing {
+                webSocket("/v1/voice/{id}") {
+                    seen.complete(call.request.headers)
+                    close(CloseReason(4000, "room_full"))
+                }
+            }
+        }
+        val api = RelayClient(createClient { installMjolnirDefaults() }, "http://localhost", "1.0.7", voiceHttp = createClient { installMjolnirDefaults() }) { "tok" }
+        val link = api.openVoice("r", {}, { _, _, _ -> })
+        assertEquals("room_full", withTimeout(10_000) { link.closeReason.await() })
+        val headers = seen.await()
+        assertEquals("1.0.7", headers[APP_VERSION_HEADER])
+        assertEquals("Bearer tok", headers[HttpHeaders.Authorization])
+        assertEquals("1.0.9", api.relayVersion.value)
+    }
+
+    private suspend fun RelayClient.reasonFor(room: String) = withTimeout(10_000) { openVoice(room, {}, { _, _, _ -> }).closeReason.await() }
+
+    @Test fun oldRelayEndsAtOnceAsRelayOutdated() = testApplication {
+        application { routing { } } // no voice socket, no voice rooms: bare 404s
+        val api = RelayClient(createClient { installMjolnirDefaults() }, "http://localhost", "1.0.0") { "t" }
+        assertEquals(VOICE_RELAY_OUTDATED, api.reasonFor("r"))
+    }
+
+    @Test fun relayNeedingANewerAppEndsAtOnceAsAppOutdated() = testApplication {
+        application { intercept(ApplicationCallPipeline.Plugins) { context.respond(HttpStatusCode.UpgradeRequired); finish() } }
+        val api = RelayClient(createClient { installMjolnirDefaults() }, "http://localhost", "1.0.0") { "t" }
+        assertEquals(VOICE_APP_OUTDATED, api.reasonFor("r"))
+    }
+
+    @Test fun failedUpgradeOnAVoiceRelayIsRetried() = testApplication {
+        application {
+            routing {
+                get("/v1/voice/{id}") { call.respond(HttpStatusCode.ServiceUnavailable) }
+                get("/v1/spaces/{id}/voice-rooms") { call.respond(HttpStatusCode.NotFound, ErrorResponse("not_found")) }
+            }
+        }
+        val api = RelayClient(createClient { installMjolnirDefaults() }, "http://localhost", "1.0.0") { "t" }
+        assertEquals(null, api.reasonFor("r"), "a voice relay that failed this once: worth retrying")
+        // A client closed before the link starts still ends the link.
+        api.close()
+        assertEquals(null, api.reasonFor("r"))
+    }
+
+    @Test fun rejectedTokenEndsAsNotFound() = clientTest {
+        val link = apiWithToken("bogus").openVoice("any", {}, { _, _, _ -> })
+        assertEquals("not_found", withTimeout(10_000) { link.closeReason.await() })
     }
 
     @Test fun rosterFramesAndLeave() = clientTest {

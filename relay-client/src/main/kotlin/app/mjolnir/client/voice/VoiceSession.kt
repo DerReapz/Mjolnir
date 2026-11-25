@@ -4,6 +4,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.DisposableHandle
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -111,6 +116,9 @@ class VoiceSession(
     private val ended = AtomicBoolean(false)
     private val jobs = mutableListOf<Job>()
 
+    /** Ends the session (as a leave) when [scope] ends, so a cancelled scope never leaves the mic on or the device in the room. */
+    private val scopeWatch: DisposableHandle? = scope.coroutineContext[Job]?.invokeOnCompletion { finish(null) }
+
     init {
         synchronized(jobs) {
             // Undispatched, so the first link is open (and closeable by leave) when the constructor returns.
@@ -126,6 +134,7 @@ class VoiceSession(
     private fun finish(reason: String?) {
         if (!ended.compareAndSet(false, true)) return
         _state.value = VoiceState.Ended(reason)
+        scopeWatch?.dispose()
         current?.close()
         current = null
         synchronized(jobs) { jobs.forEach { it.cancel() } }
@@ -141,25 +150,39 @@ class VoiceSession(
         var attempt = 0
         var everLive = false
         while (!ended.get()) {
-            val live = AtomicBoolean(false)
+            val live = CompletableDeferred<Unit>()
             val link = links.open(
                 onRoster = { ids ->
                     roster = ids
                     synchronized(lock) { speakers.keys.retainAll(ids.toSet()) }
-                    live.set(true)
+                    live.complete(Unit)
                     setState(VoiceState.Live)
                 },
                 onFrame = ::onFrame,
             )
             current = link
-            if (ended.get()) { link.close(); return }
-            val reason = link.closeReason.await()
-            current = null
-            if (ended.get()) return
-            if (reason != null) return finish(reason)
+            try {
+                if (ended.get()) return
+                // Until the relay's roster arrives, the attempt counts against the reconnect limit.
+                val remaining = reconnectLimitMs - (nowMs() - lostSince)
+                val settled = withTimeoutOrNull(remaining.coerceAtLeast(1)) {
+                    select<Unit> {
+                        live.onAwait {}
+                        link.closeReason.onAwait {}
+                    }
+                }
+                if (settled == null) return finish(CONNECTION_LOST)
+                val reason = link.closeReason.await()
+                if (ended.get()) return
+                if (reason != null) return finish(reason)
+            } finally {
+                // Left, cancelled or given up while the link is open: close it (a leave), so it never lingers.
+                if (!link.closeReason.isCompleted) link.close()
+                if (current === link) current = null
+            }
             roster = emptyList()
             synchronized(lock) { speakers.clear() }
-            if (live.get()) { everLive = true; lostSince = nowMs(); attempt = 0 }
+            if (live.isCompleted) { everLive = true; lostSince = nowMs(); attempt = 0 }
             val elapsed = nowMs() - lostSince
             if (elapsed >= reconnectLimitMs) return finish(CONNECTION_LOST)
             setState(if (everLive) VoiceState.Reconnecting else VoiceState.Connecting)
@@ -176,7 +199,7 @@ class VoiceSession(
         }
     }
 
-    private fun capture() {
+    private suspend fun capture() {
         val frame = ShortArray(OpusCodec.FRAME_SAMPLES)
         val codec = OpusCodec()
         val detector = SpeakingDetector()
@@ -184,13 +207,15 @@ class VoiceSession(
         val preRoll = ArrayDeque<Pair<Int, ByteArray>>()
         var seq = 0
         var sending = false
+        var started = false
         try {
             if (ended.get()) return
             input.start()
-            if (ended.get()) return input.stop()
-            while (!ended.get()) {
+            started = true
+            // A blocking read returns once per frame, so a cancelled scope is noticed within 20 ms.
+            while (!ended.get() && currentCoroutineContext().isActive) {
                 val n = input.read(frame)
-                if (n < 0 || ended.get()) break
+                if (n < 0 || ended.get() || !currentCoroutineContext().isActive) break
                 if (n < frame.size) frame.fill(0, n.coerceAtLeast(0))
                 val s = seq
                 seq = (seq + 1) and 0xFFFF
@@ -222,6 +247,7 @@ class VoiceSession(
             finish(AUDIO_ERROR)
         } finally {
             selfSpeaking = false
+            if (started) runCatching { input.stop() }
         }
     }
 

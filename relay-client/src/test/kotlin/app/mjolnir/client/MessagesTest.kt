@@ -141,5 +141,13 @@ class MessagesTest {
         assertEquals("You joined Lounge somewhere else", Messages.voiceEnded("replaced", "Lounge"))
         assertEquals("Lounge is gone", Messages.voiceEnded("not_found", "Lounge"))
         assertEquals(null, Messages.voiceEnded(null, "Lounge"), "a deliberate leave says nothing")
+        assertEquals(Messages.RELAY_OUTDATED, Messages.voiceEnded("relay_outdated", "Lounge"))
+        assertEquals(Messages.APP_OUTDATED, Messages.voiceEnded("app_outdated", "Lounge"))
+    }
+
+    @Test fun voiceFullNeverSaysZeroOfZero() {
+        assertEquals("Lounge is full (8/8)", Messages.voiceEnded("room_full", "Lounge"))
+        assertEquals("Lounge is full (12/12)", Messages.voiceEnded("room_full", "Lounge", n = 0, max = 12))
+        assertEquals("Lounge is full (8/8)", Messages.voiceFull("Lounge", 8, 0))
     }
 }

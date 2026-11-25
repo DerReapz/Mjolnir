@@ -16,6 +16,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Collections
@@ -154,6 +155,21 @@ class VoiceSessionTest {
         assertTrue(b.id.isNotEmpty())
     }
 
+    @Test fun cancellingTheScopeLeaves() = voiceTest { scope ->
+        val (a, b, room) = room()
+        val scopeA = CoroutineScope(SupervisorJob())
+        val pa = party(a, room, scopeA, openMic = true, loud = true)
+        val pb = party(b, room, scope, openMic = true)
+        try {
+            pa.session.awaitState(VoiceState.Live); pb.session.awaitState(VoiceState.Live)
+            scopeA.cancel() // no leave(): the app's scope just went away
+            eventually("mic and speaker stop") { pa.mic.stopped && pa.speaker.stopped }
+            assertEquals(VoiceState.Ended(null), pa.session.state.value)
+            // Closed as a leave, so the relay drops A at once, well inside its 10 s grace.
+            eventually("the relay removed A at once", timeoutMs = 5_000) { deps.voice.participants(room) == listOf(b.id) }
+        } finally { pb.session.leave() }
+    }
+
     @Test fun droppedLinkReconnects() = voiceTest { scope ->
         val (a, b, room) = room()
         val pa = party(a, room, scope, openMic = true, loud = true)
@@ -167,6 +183,30 @@ class VoiceSessionTest {
             pb.speaker.frames.clear()
             eventually("audio flows again") { pb.speaker.recentRms() > loudRms }
         } finally { pa.session.leave(); pb.session.leave() }
+    }
+
+    /** A link that neither gets a roster nor closes: the attempt is cut at the limit instead of hanging in Connecting. */
+    @Test fun hangingAttemptNeverOverrunsTheLimit() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob())
+        val opened = Collections.synchronizedList(mutableListOf<VoiceLink>())
+        var closed = 0
+        val hanging = VoiceLinkFactory { _, _ ->
+            object : VoiceLink {
+                val reason = CompletableDeferred<String?>()
+                override fun send(seq: Int, opus: ByteArray) {}
+                override fun close() { closed++; reason.complete(null) }
+                override val closeReason: Deferred<String?> = reason
+            }.also { opened += it }
+        }
+        val mic = FakeMic(); val speaker = FakeSpeaker()
+        try {
+            val start = System.nanoTime()
+            val session = VoiceSession(hanging, mic, speaker, scope, reconnectLimitMs = 1_500)
+            withTimeout(10_000) { session.state.first { it == VoiceState.Ended("connection_lost") } }
+            val tookMs = (System.nanoTime() - start) / 1_000_000
+            assertTrue(tookMs < 6_000, "ended after $tookMs ms")
+            assertEquals(1, opened.size); assertEquals(1, closed, "the hanging link was closed")
+        } finally { scope.cancel() }
     }
 
     @Test fun linkThatNeverComesBackEndsAsConnectionLost() = voiceTest { scope ->

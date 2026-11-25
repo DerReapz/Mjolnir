@@ -6,9 +6,11 @@ import java.util.concurrent.ConcurrentLinkedDeque
 class FakeMic(@Volatile var loud: Boolean = false) : AudioInput {
     @Volatile var started = false
     @Volatile var stopped = false
+    /** The thread [start] ran on. */
+    @Volatile var startThread: String? = null
     private var index = 0
 
-    override fun start() { started = true }
+    override fun start() { started = true; startThread = Thread.currentThread().name }
 
     override fun read(into: ShortArray): Int {
         if (stopped) return -1

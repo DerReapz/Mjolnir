@@ -8,8 +8,12 @@ import app.mjolnir.protocol.Peer
 import app.mjolnir.protocol.RelayEvent
 import app.mjolnir.protocol.VoiceRoom
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.asCoroutineDispatcher
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -110,13 +114,45 @@ class VoiceControllerTest {
     @Test fun relayEndingTheSessionClearsActiveWithANotice() = test { fake, c, _ ->
         val lounge = fake.addVoiceRoom("s1", "Lounge")
         c.refresh(fake.spaces())
-        val notice = async { c.notices.first() }
+        val notice = async(start = CoroutineStart.UNDISPATCHED) { c.notices.first() }
         c.join(lounge)
         fake.voiceLinks.single().roster(listOf(fake.me.deviceId))
         eventually("live") { c.active.value?.state == VoiceState.Live }
         fake.voiceLinks.single().drop("room_deleted")
         eventually("ended") { c.active.value == null }
         assertEquals(Messages.voiceEnded("room_deleted", "Lounge"), notice.await())
+    }
+
+    @Test fun roomFullNoticeUsesTheRelaysLimit() = test { fake, c, _ ->
+        val lounge = fake.addVoiceRoom("s1", "Lounge")
+        c.refresh(fake.spaces())
+        val others = List(4) { Peer("p$it", "P$it", DeviceKind.PHONE) }
+        c.onEvent(RelayEvent.VoiceRoomChanged(lounge.copy(participants = others, maxParticipants = 4)))
+        val notice = async(start = CoroutineStart.UNDISPATCHED) { c.notices.first() }
+        c.join(lounge)
+        fake.voiceLinks.single().drop("room_full")
+        assertEquals("Lounge is full (4/4)", notice.await())
+        // A room the controller has not listed: never "0/0".
+        val other = VoiceRoom("unlisted", "s2", "Den", admin.deviceId)
+        val second = async(start = CoroutineStart.UNDISPATCHED) { c.notices.first() }
+        c.join(other)
+        fake.voiceLinks.last().drop("room_full")
+        assertEquals("Den is full (8/8)", second.await())
+    }
+
+    @Test fun sessionsUseTheGivenAudioThreads() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob())
+        val count = AtomicInteger()
+        val pool = Executors.newFixedThreadPool(2) { r -> Thread(r, "voice-audio-${count.incrementAndGet()}").apply { isDaemon = true } }
+        try {
+            val fake = FakeRelayApi(); fake.asMemberOf("s1", admin)
+            val audio = Audio()
+            val c = VoiceController(fake, scope, audio, audioDispatcher = pool.asCoroutineDispatcher())
+            c.join(fake.addVoiceRoom("s1", "Lounge"))
+            eventually("capture started") { audio.mics.single().startThread != null }
+            assertTrue(audio.mics.single().startThread!!.startsWith("voice-audio-"), audio.mics.single().startThread)
+            c.leave()
+        } finally { scope.cancel(); pool.shutdownNow() }
     }
 
     @Test fun oldRelayHidesVoice() = test { fake, c, _ ->

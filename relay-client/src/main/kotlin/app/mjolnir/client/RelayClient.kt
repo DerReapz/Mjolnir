@@ -113,24 +113,37 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
 import kotlin.math.min
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
-fun HttpClientConfig<*>.installMjolnirDefaults() {
+fun HttpClientConfig<*>.installMjolnirDefaults(pingIntervalMillis: Long = DEFAULT_PING_SECONDS * 1_000) {
     install(ContentNegotiation) { json(MjolnirJson) }
-    install(WebSockets) { pingIntervalMillis = 20_000 }
+    install(WebSockets) { this.pingIntervalMillis = pingIntervalMillis }
     install(HttpTimeout) {
         connectTimeoutMillis = 10_000
         requestTimeoutMillis = 20_000
     }
 }
 
-/** The Ktor client every relay call uses: OkHttp engine plus [installMjolnirDefaults]. */
-fun newMjolnirHttpClient(): HttpClient = HttpClient(OkHttp) {
-    installMjolnirDefaults()
-    engine { config { pingInterval(20, TimeUnit.SECONDS) } }
+/** WebSocket ping interval of the relay client: a socket whose pong does not come back within it fails. */
+const val DEFAULT_PING_SECONDS = 20L
+
+/**
+ * Voice sockets ping faster (Ruling V6): a dead voice link must be noticed well within the relay's 10 s grace so a
+ * reconnect takes the slot back silently, and a quiet room sends no frames a read watchdog could use.
+ */
+const val VOICE_PING_SECONDS = 5L
+
+/**
+ * The Ktor client every relay call uses: OkHttp engine plus [installMjolnirDefaults], with WebSocket pings every
+ * [pingSeconds] ([VOICE_PING_SECONDS] for the voice client).
+ */
+fun newMjolnirHttpClient(pingSeconds: Long = DEFAULT_PING_SECONDS): HttpClient = HttpClient(OkHttp) {
+    installMjolnirDefaults(pingSeconds * 1_000)
+    engine { preconfigured = OkHttpClient.Builder().pingInterval(pingSeconds, TimeUnit.SECONDS).build() }
 }
 
 private fun isHeartbeat(text: String): Boolean = try {
@@ -158,7 +171,14 @@ internal fun sha256HexOf(file: File): String {
 
 /** The close code of every voice socket close the relay makes; its reason text says why. */
 private const val VOICE_CLOSE_CODE: Short = 4000
+/** [VoiceLink.closeReason] when the relay has no voice socket (an older relay: a 404 for the upgrade). */
+const val VOICE_RELAY_OUTDATED = "relay_outdated"
+/** [VoiceLink.closeReason] when the relay needs a newer app (426 for the upgrade). */
+const val VOICE_APP_OUTDATED = "app_outdated"
 private const val VOICE_SEND_QUEUE = 50
+/** A space id no relay has: the voice-room list for it tells a voice-capable relay (its own 404) from an old one. */
+private const val VOICE_PROBE_SPACE = "voice-probe"
+
 private const val VOICE_CLOSE_WAIT_MS = 3_000L
 
 internal fun backoffMs(attempt: Int): Long = min(30_000L, 1_000L shl attempt.coerceIn(0, 20))
@@ -173,6 +193,11 @@ class RelayClient(
     private val stableAfterMs: Long = 30_000,
     /** Socket (idle read/write) timeout for chunk uploads and downloads, which have no overall deadline; null = none. */
     private val transferSocketTimeoutMs: Long? = TRANSFER_SOCKET_TIMEOUT_MS,
+    /**
+     * The client voice sockets use: [newMjolnirHttpClient] with [VOICE_PING_SECONDS] in production. It carries the same
+     * headers as [http] (see [installRelayInterceptors]). Defaults to [http] (tests).
+     */
+    internal val voiceHttp: HttpClient = http,
     private val token: () -> String?,
 ) : RelayApi, AutoCloseable {
     private val base = baseUrl.trimEnd('/')
@@ -186,9 +211,20 @@ class RelayClient(
     val relayVersion: StateFlow<String?> = _relayVersion.asStateFlow()
 
     init {
-        http.requestPipeline.intercept(HttpRequestPipeline.State) { context.headers[APP_VERSION_HEADER] = appVersion }
-        http.plugin(HttpSend).intercept { request ->
-            execute(request).also { call -> call.response.headers[RELAY_VERSION_HEADER]?.let { _relayVersion.value = it } }
+        installRelayInterceptors(http)
+        if (voiceHttp !== http) installRelayInterceptors(voiceHttp)
+    }
+
+    /**
+     * What every request of this client carries and reads, on whichever HttpClient sends it: the app's version header
+     * out, the relay's version back. The bearer is added per request by `auth()`.
+     */
+    private fun installRelayInterceptors(client: HttpClient) {
+        client.requestPipeline.intercept(HttpRequestPipeline.State) { context.headers[APP_VERSION_HEADER] = appVersion }
+        client.plugin(HttpSend).intercept { request ->
+            execute(request).also { call ->
+                call.response.headers[RELAY_VERSION_HEADER]?.let { _relayVersion.value = it }
+            }
         }
     }
 
@@ -200,6 +236,7 @@ class RelayClient(
         closed.complete()
         voiceScope.cancel()
         http.close()
+        if (voiceHttp !== http) voiceHttp.close()
     }
 
     companion object {
@@ -210,8 +247,10 @@ class RelayClient(
                 newMjolnirHttpClient(),
                 baseUrl,
                 appVersion,
+                voiceHttp = newMjolnirHttpClient(VOICE_PING_SECONDS),
                 token = token,
             )
+
     }
 
     private fun HttpRequestBuilder.auth() { token()?.let { bearerAuth(it) } }
@@ -427,11 +466,13 @@ class RelayClient(
         val reason = CompletableDeferred<String?>()
         val job = voiceScope.launch {
             var relayReason: String? = null
+            var opened = false
             try {
-                http.webSocket(wsUrl("/v1/voice/$roomId"), request = {
+                voiceHttp.webSocket(wsUrl("/v1/voice/$roomId"), request = {
                     auth()
                     timeout { requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS }
                 }) {
+                    opened = true
                     val writer = launch { for (frame in outgoing) send(Frame.Binary(true, frame)) }
                     val leaver = launch {
                         leave.await()
@@ -461,11 +502,14 @@ class RelayClient(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                // A failed connect or a dropped link: no relay reason.
+                // A dropped link or a failed connect: no relay reason, unless the relay refused the upgrade itself.
+                if (!opened) relayReason = refusedVoiceReason()
             } finally {
                 reason.complete(relayReason)
             }
         }
+        // A link opened after [close] never runs its body: it still ends.
+        job.invokeOnCompletion { reason.complete(null) }
         return object : VoiceLink {
             override fun send(seq: Int, opus: ByteArray) {
                 val frame = ByteArray(opus.size + 2)
@@ -481,6 +525,25 @@ class RelayClient(
             }
 
             override val closeReason: Deferred<String?> = reason
+        }
+    }
+
+    /**
+     * Why a voice socket that never opened won't open on a retry, or null when a retry may work. The engines don't
+     * report the upgrade's HTTP status, so a voice route every voice-capable relay has is asked instead: a rejected
+     * device (401/403) reads as `not_found`, a relay without voice rooms (a bare 404) as [VOICE_RELAY_OUTDATED], a relay
+     * that needs a newer app (426) as [VOICE_APP_OUTDATED]. Its own not-found answer (the probe names no real space)
+     * or a network error mean: try again.
+     */
+    private suspend fun refusedVoiceReason(): String? = try {
+        voiceRooms(VOICE_PROBE_SPACE)
+        null
+    } catch (e: RelayException) {
+        when (e.kind) {
+            RelayErrorKind.UNAUTHORIZED, RelayErrorKind.NOT_PAIRED -> "not_found"
+            RelayErrorKind.RELAY_OUTDATED -> VOICE_RELAY_OUTDATED
+            RelayErrorKind.APP_OUTDATED -> VOICE_APP_OUTDATED
+            else -> null
         }
     }
 

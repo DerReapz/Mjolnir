@@ -7,7 +7,7 @@ interface AudioInput {
     /** Fills [into] with the next 20 ms frame (960 samples), blocking until it is captured; returns the samples read, or -1 once stopped. */
     fun read(into: ShortArray): Int
 
-    /** Stops capture; a blocked [read] returns. */
+    /** Stops capture; a blocked [read] returns. May be called more than once. */
     fun stop()
 }
 
@@ -18,6 +18,7 @@ interface AudioOutput {
     /** Plays one 20 ms frame. */
     fun write(pcm: ShortArray)
 
+    /** May be called more than once. */
     fun stop()
 }
 
