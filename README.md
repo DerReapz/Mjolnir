@@ -52,6 +52,20 @@ Chats are private conversations inside a space. Only the chat's members and the 
 - **Retention:** messages are kept on the relay until the chat is deleted. Chat files are not removed by the 1-hour cleanup of unsent files or the 7-day cleanup of deliveries; an uploaded file that is never posted is still removed after 1 hour. Chat files are freed right away when their message, chat or space is deleted.
 - **Relay update:** out-of-range media length, width or height is dropped (a video without a valid length shows no badge); the message still posts. Chats need the new relay. Rebuild with `./gradlew :server:buildFatJar` and replace the jar on your relay host (or `fly deploy`), then update the apps. Defaults: 60 messages a minute (`chatMessagesPerMinute`), 7-day invite expiry.
 
+## Voice rooms
+
+Voice rooms are live group calls inside a space, for talking while you work or play. They sit beside the channels on the *Chats* tab.
+
+- **Rooms:** every space has a voice room called `Lounge`. Anyone in the space can add more with *New voice room*; the room's creator or the space admin can rename or delete one. Only members of the space can join, and everyone in the space sees who is in each room.
+- **Limits:** up to `MJOLNIR_MAX_VOICE` people in a room (default 8, at most 16); a ninth person sees `Lounge is full (8/8)`. You are in one room at a time: joining another leaves the first.
+- **Join and leave:** *Join voice* on a room, *Leave* to go. A ring lights up around whoever is speaking.
+- **On the PC:** push-to-talk by default. Hold `` ` `` (when you are not typing in a text box) or hold the on-screen button to talk. Switch to *Open mic* in the voice panel if you prefer. Use headphones to avoid echo (the app reminds you).
+- **On the phone:** open mic by default; *Mute* switches yourself off. Voice keeps running with the screen off, shown by a notification with *Mute* and *Leave*. The phone uses the loudspeaker unless a headset is connected. The first join asks for the microphone permission.
+- **Network:** the audio goes through your relay over the existing HTTPS address, so there are no new ports and no reverse-proxy changes. It is never stored.
+- **Dropped connection:** the app reconnects for up to 30 seconds (`Reconnecting…`). The relay keeps your seat for 10 seconds, so a quick blip puts you straight back; after 30 seconds you see `You left {room} (connection lost)`.
+- **Old apps and relays:** apps from before this feature ignore voice. A new app on an old relay hides Voice.
+- **Relay update:** voice needs the new relay. Rebuild with `./gradlew :server:buildFatJar` and replace the jar on your relay host (or `fly deploy`), then update the apps.
+
 ## Run the relay locally
 
 ```
@@ -70,6 +84,7 @@ The relay listens on port 8080. Settings are environment variables:
 | `MJOLNIR_MAX_STORAGE_MB` | `2048` | Total storage cap for unsent and undelivered files and chat files |
 | `MJOLNIR_MAX_SPACES` | `50` | Spaces a device can be in (at least 1) |
 | `MJOLNIR_MAX_MEMBERS` | `50` | Members per space (at least 2) |
+| `MJOLNIR_MAX_VOICE` | `8` | People per voice room (1 to 16) |
 | `MJOLNIR_GUEST_MAX_MB` | unset | Cap on the total size of one guest room (at least 1); never above the relay's total storage cap |
 | `GOOGLE_APPLICATION_CREDENTIALS` | unset | Path to a Firebase service-account JSON; enables push |
 

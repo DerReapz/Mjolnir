@@ -84,6 +84,20 @@ Needs a PC (A, admin), a phone (B) and, for the late-joiner check, a third devic
 - **Online dot:** the space's member list (Devices → Spaces) and a channel's member list show a green dot and `Online` for connected devices. Close the app on C: within about 30 s its dot goes grey and shows `Last seen just now`, then `Last seen 1m ago` a minute later.
 - **Old app:** an app from before this feature still lists a channel as a normal chat (and can read and post in it).
 
+## Voice rooms
+Needs two PCs (A, B) and a phone (C) in one space, plus a spare device or enough accounts to fill a room; all on the updated relay and apps. Use headphones on the PCs.
+- **Lounge:** every device sees the `Lounge` voice room on the Chats tab. Everyone who joins hears everyone else.
+- **Rings:** the speaker's ring lights up on every device while they talk and goes out when they stop.
+- **Push-to-talk on the PC:** on A, hold `` ` `` (the window focused, not typing in a text box): B and C hear A; release and they don't. Repeat holding the on-screen button. Switch to *Open mic* and back; the headphones hint `Use headphones to avoid echo` shows.
+- **Phone with the screen off:** join on C, lock the screen: voice continues and the notification `Mjolnir voice — Lounge` stays.
+- **Notification actions:** *Mute* on the notification mutes C (others stop hearing C); *Leave* leaves the room and dismisses the notification.
+- **Speaker:** C uses the loudspeaker; connect a headset and the sound moves to it.
+- **Full room:** with 8 people in `Lounge` (or the limit set by `MJOLNIR_MAX_VOICE`), a 9th sees `Lounge is full (8/8)`.
+- **Reconnect:** turn C's Wi-Fi off and on: it shows `Reconnecting…` and rejoins by itself. Off for more than 30 s shows `You left Lounge (connection lost)`.
+- **Removed from the space:** remove C from the space; C drops out of voice.
+- **Manage:** create a room with *New voice room*; its creator and the admin can rename and delete it (`Delete {room}? Anyone in it is disconnected.`), another member cannot.
+- **Old app:** an app from before this feature ignores voice and keeps working normally.
+
 ## Chat media
 Needs two PCs (A, B) and a phone (C) in one chat, on the updated relay.
 - **Send each kind from every app:** a photo, a GIF, a file and a folder from A, B and C. Photos and GIFs show as thumbnails; a file shows its name and `File · {size}`; a folder shows one `Folder · {n} files · {size}` bubble. Sends start immediately (no caption step).
